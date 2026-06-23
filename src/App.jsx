@@ -1,122 +1,166 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { useGameState } from './hooks/useGameState';
+import HomeScreen from './components/HomeScreen';
+import OnboardingScreen from './components/OnboardingScreen';
+import ZoneScreen from './components/ZoneScreen';
+import GridScreen from './components/GridScreen';
+import HuntPreview from './components/HuntPreview';
+import Minigame from './components/Minigame';
+import WinScreen from './components/WinScreen';
+import BoardScreen from './components/BoardScreen';
+import HuntsScreen from './components/HuntsScreen';
+import YouScreen from './components/YouScreen';
+import NavBar from './components/NavBar';
 
-function App() {
-  const [count, setCount] = useState(0)
+const THEME_CLASS = { plum: 'lg-plum', rust: 'lg-rust' };
+
+export default function App() {
+  const game = useGameState('terracotta', 9);
+  const { state, gridCells } = game;
+
+  const themeClass = THEME_CLASS[state.surface] || '';
+  const showZones = state.view === 'map' && !state.mapZone;
+  const showGrid  = state.view === 'map' && !!state.mapZone;
+
+  function handleNav(id) {
+    if (id === 'map') {
+      game.setView('map');
+    } else if (id === 'hunts') {
+      game.setView('hunts');
+    } else if (id === 'board') {
+      game.setView('board');
+    } else if (id === 'you') {
+      game.setView('you');
+    }
+  }
+
+  const showNavBar = ['map', 'hunts', 'board', 'you'].includes(state.view);
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div
+      className={`lg-root ${themeClass}`}
+      style={{
+        position: 'relative',
+        width: 390,
+        height: 844,
+        background: 'var(--surface)',
+        border: '4px solid #0C0C10',
+        boxShadow: '16px 16px 0 #0C0C10',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
+      {/* ---- home ---- */}
+      {state.view === 'home' && (
+        <HomeScreen
+          state={state}
+          onEnter={() => game.setView('onboarding')}
+          onSkipIntro={() => game.setView('map')}
+        />
+      )}
 
-      <div className="ticks"></div>
+      {/* ---- onboarding ---- */}
+      {state.view === 'onboarding' && (
+        <OnboardingScreen
+          state={state}
+          onNext={game.nextOnb}
+          onSkip={game.skipOnb}
+        />
+      )}
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+      {/* ---- map: zone picker ---- */}
+      {showZones && (
+        <ZoneScreen
+          state={state}
+          onGoHome={() => game.setView('home')}
+          onEnterZone={game.enterZone}
+        />
+      )}
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+      {/* ---- map: grid ---- */}
+      {showGrid && (
+        <GridScreen
+          state={state}
+          gridCells={gridCells}
+          onGoHome={() => game.setView('home')}
+          onBackZones={game.backZones}
+          onTile={game.onTile}
+        />
+      )}
+
+      {/* ---- other tabs ---- */}
+      {state.view === 'hunts' && (
+        <HuntsScreen
+          state={state}
+          setField={game.setField}
+          onDeposit={game.depositEscrow}
+          onPublish={game.newHunt}
+        />
+      )}
+      {state.view === 'board' && (
+        <BoardScreen
+          state={state}
+          onTabDaily={() => game.setField('boardTab', 'daily')}
+          onTabAll={() => game.setField('boardTab', 'all')}
+        />
+      )}
+      {state.view === 'you' && <YouScreen />}
+
+      {/* ---- overlays (render above everything) ---- */}
+      {state.huntPreview && (
+        <HuntPreview
+          cell={state.huntPreview}
+          onConfirm={game.confirmHunt}
+          onClose={game.closeHunt}
+        />
+      )}
+
+      {state.showMinigame && (
+        <Minigame
+          state={state}
+          onMgTap={game.onMgTap}
+          onMemPad={game.onMemPad}
+          onMathPick={game.onMathPick}
+          onSeqTap={game.onSeqTap}
+        />
+      )}
+
+      {state.showWin && (
+        <WinScreen
+          state={state}
+          onShare={game.doShare}
+          onBackToMap={game.backToMap}
+        />
+      )}
+
+      {/* ---- nav bar ---- */}
+      {showNavBar && (
+        <NavBar view={state.view} onNav={handleNav} />
+      )}
+
+      {/* ---- live ticker (map views) ---- */}
+      {(showZones || showGrid) && (
+        <div style={{
+          flexShrink: 0, borderTop: '3px solid #0C0C10', background: '#0C0C10',
+          overflow: 'hidden', height: 30, display: 'flex', alignItems: 'center',
+        }}>
+          <div style={{
+            display: 'flex', gap: 0,
+            animation: 'lg-marquee 18s linear infinite',
+            whiteSpace: 'nowrap',
+          }}>
+            {[0,1].map(rep => (
+              <span key={rep} style={{ display: 'flex', gap: 0 }}>
+                {['@maya cracked $12.00', '@deji solved a puzzle', '@ama found a clue', '@kofi opened 3 tiles', '@zara is hunting DEEP HOLLOW'].map((t, i) => (
+                  <span key={i} style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, color: '#FFD51F', padding: '0 24px', letterSpacing: '.08em' }}>
+                    {t} ·
+                  </span>
+                ))}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
-
-export default App
