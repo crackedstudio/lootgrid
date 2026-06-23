@@ -133,12 +133,7 @@ export default function App() {
         />
       )}
 
-      {/* ---- nav bar ---- */}
-      {showNavBar && (
-        <NavBar view={state.view} onNav={handleNav} />
-      )}
-
-      {/* ---- live ticker (map views) ---- */}
+      {/* ---- live ticker (map views only, sits above nav) ---- */}
       {(showZones || showGrid) && (
         <div style={{
           flexShrink: 0, borderTop: '3px solid #0C0C10', background: '#0C0C10',
@@ -160,6 +155,11 @@ export default function App() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* ---- nav bar ---- */}
+      {showNavBar && (
+        <NavBar view={state.view} onNav={handleNav} />
       )}
     </div>
   );
