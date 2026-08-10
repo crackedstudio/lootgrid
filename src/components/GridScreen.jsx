@@ -1,4 +1,4 @@
-import { SPEC9, ZONES, COLS } from '../data/gameData';
+import { SPEC9 } from '../data/gameData';
 
 const TILE_SIZE = 54;
 const GAP = 8;
@@ -10,75 +10,83 @@ const TYPE_COLORS = {
   mystery: '#8A3DFF',
   puzzle:  '#B7FF3B',
   found:   '#FFD51F',
-  treasure:'transparent',
-  puzzleHunt:'transparent',
 };
 
 function TileCell({ cell, onClick }) {
-  const isHidden = !cell.opened && !cell.treasure && !cell.puzzle;
-  const isTreasure = cell.treasure && !cell.opened;
-  const isPuzzleHunt = cell.puzzle && !cell.opened;
+  const { opened, hunt, reveal } = cell;
 
   let bg = '#1A1815';
   let border = '2px solid #0C0C10';
   let content = null;
 
-  if (cell.opened) {
-    bg = TYPE_COLORS[cell.type] || '#0C0C10';
-    if (cell.type === 'found') {
-      content = (
-        <div style={{ fontSize: 9, fontFamily: "'Space Mono', monospace", fontWeight: 700, color: '#0C0C10', textAlign: 'center', lineHeight: 1.2, padding: 2 }}>
-          {cell.prize || 'FOUND'}
-        </div>
-      );
-    }
-  } else if (isTreasure) {
+  if (hunt) {
     bg = '#0C0C10';
-    border = '2px solid #FFD51F';
-    content = (
+    const isCash = hunt.kind === 'cash';
+    border = `2px solid ${isCash ? '#FFD51F' : '#8A3DFF'}`;
+    content = isCash ? (
       <div style={{ width: '100%', height: '100%', display: 'flex', flexWrap: 'wrap', overflow: 'hidden' }}>
         {SPEC9.map((c, i) => <div key={i} style={{ flex: '1 0 33%', background: c, opacity: .7 }} />)}
       </div>
-    );
-  } else if (isPuzzleHunt) {
-    bg = '#0C0C10';
-    border = '2px solid #8A3DFF';
-    content = (
+    ) : (
       <div style={{
         width: '100%', height: '100%',
         background: 'repeating-linear-gradient(45deg, #8A3DFF22, #8A3DFF22 4px, transparent 4px, transparent 8px)',
       }} />
     );
+  } else if (opened) {
+    bg = TYPE_COLORS[reveal.type] || '#0C0C10';
   }
 
   return (
     <div
       onClick={() => onClick(cell)}
+      title={opened ? `${reveal.type} · ${reveal.byHandle}` : undefined}
       style={{
         width: TILE_SIZE, height: TILE_SIZE,
         background: bg, border,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        cursor: (!cell.opened || isTreasure || isPuzzleHunt) ? 'pointer' : 'default',
+        cursor: opened ? 'default' : 'pointer',
         position: 'relative', overflow: 'hidden',
         transition: 'transform .08s',
         flexShrink: 0,
       }}
     >
       {content}
-      {!cell.opened && !isTreasure && !isPuzzleHunt && (
-        <div style={{ position: 'absolute', inset: 0, background: '#1A1815', opacity: .95 }} />
-      )}
     </div>
   );
 }
 
-export default function GridScreen({ state, gridCells, onGoHome, onBackZones, onTile }) {
-  const { mapZone, energy, energyMax, floats, showToast, toastText } = state;
-  const zone = ZONES.find(z => z.id === mapZone) || ZONES[0];
+export default function GridScreen({ state, onBackZones, onTile }) {
+  const { grid, energy, showToast, toastText, zones, mapZone } = state;
+  const zone = zones.find(z => z.id === mapZone);
 
-  const energyCells = Array.from({ length: energyMax }).map((_, i) => ({
-    filled: i < energy,
-    color: i < energy ? '#FFD51F' : '#0C0C10',
+  if (!grid) {
+    return (
+      <div style={{
+        flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'var(--surface)', fontFamily: "'Space Mono', monospace",
+        fontSize: 11, fontWeight: 700, letterSpacing: '.14em', color: 'var(--cream)', opacity: .6,
+      }}>
+        LOADING GRID…
+      </div>
+    );
+  }
+
+  // Cells are derived from what the server told us: a live hunt, an uncovered
+  // reveal, or fog. Anything absent from the payload stays fog — the client has
+  // no way to know what is under it.
+  const huntAt = new Map(grid.hunts.map(h => [`${h.r},${h.c}`, h]));
+  const cells = [];
+  for (let r = 0; r < grid.rows; r++) {
+    for (let c = 0; c < grid.cols; c++) {
+      const key = `${r},${c}`;
+      const reveal = grid.reveals[key];
+      cells.push({ id: key, r, c, reveal, opened: !!reveal, hunt: huntAt.get(key) });
+    }
+  }
+
+  const energyCells = Array.from({ length: energy.max }).map((_, i) => ({
+    color: i < energy.value ? '#FFD51F' : '#0C0C10',
   }));
 
   return (
@@ -97,10 +105,11 @@ export default function GridScreen({ state, gridCells, onGoHome, onBackZones, on
           }}>←</div>
           <div>
             <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.14em', color: '#0C0C10', opacity: .55 }}>HUNTING IN</div>
-            <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 17, color: '#0C0C10', lineHeight: 1, marginTop: 2 }}>{zone.name}</div>
+            <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 17, color: '#0C0C10', lineHeight: 1, marginTop: 2 }}>
+              {zone?.name ?? '…'}
+            </div>
           </div>
         </div>
-        {/* energy bar */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
           <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, color: '#0C0C10', opacity: .5 }}>ENERGY</div>
           <div style={{ display: 'flex', gap: 3 }}>
@@ -111,36 +120,23 @@ export default function GridScreen({ state, gridCells, onGoHome, onBackZones, on
         </div>
       </div>
 
-      {/* zone accent stripe */}
-      <div style={{ height: 4, background: zone.accent, flexShrink: 0 }} />
+      <div style={{ height: 4, background: zone?.accent ?? '#FF7A1A', flexShrink: 0 }} />
 
       {/* scrollable grid */}
       <div className="lg-scroll" style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
-        {/* floating cost labels */}
-        {floats.map(f => (
-          <div key={f.id} style={{
-            position: 'absolute', left: f.x, top: f.y, zIndex: 50,
-            fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700,
-            color: '#FFD51F', pointerEvents: 'none',
-            animation: 'lg-costfloat .75s ease-out forwards',
-            transform: 'translate(-50%, 0)',
-          }}>-{f.amt}⚡</div>
-        ))}
-
         <div style={{
           display: 'grid',
-          gridTemplateColumns: `repeat(${COLS}, ${TILE_SIZE}px)`,
+          gridTemplateColumns: `repeat(${grid.cols}, ${TILE_SIZE}px)`,
           gap: GAP,
           padding: '18px 16px 22px',
           width: 'max-content',
         }}>
-          {gridCells.map(cell => (
+          {cells.map(cell => (
             <TileCell key={cell.id} cell={cell} onClick={onTile} />
           ))}
         </div>
       </div>
 
-      {/* toast */}
       {showToast && (
         <div style={{
           position: 'absolute', bottom: 70, left: '50%', transform: 'translateX(-50%)',

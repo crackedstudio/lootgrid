@@ -7,7 +7,10 @@ const ICON_PATHS = {
   puzzle: ['M12 3 L20 7 L20 17 L12 21 L4 17 L4 7 Z', 'M12 8 L16 10 L12 12 L8 10 Z'],
 };
 
-export default function YouScreen() {
+export default function YouScreen({ state }) {
+  const handle = state?.player?.handle ?? '@…';
+  const energy = state?.energy ?? { value: 0, max: 12 };
+
   return (
     <div className="lg-scroll" style={{ flex: 1, overflow: 'auto', background: 'var(--surface)', display: 'flex', flexDirection: 'column' }}>
       {/* profile header */}
@@ -17,12 +20,13 @@ export default function YouScreen() {
             @
           </div>
           <div>
-            <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 20, color: '#0C0C10', lineHeight: 1 }}>@otaiki</div>
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: '#0C0C10', opacity: .55, marginTop: 4 }}>HUNTER · RANK #3 ALL TIME</div>
+            {/* Real handle from the server session. */}
+            <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 20, color: '#0C0C10', lineHeight: 1 }}>{handle}</div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: '#0C0C10', opacity: .55, marginTop: 4 }}>HUNTER</div>
           </div>
           <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-            <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 20, color: '#0C0C10' }}>$14.20</div>
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, color: '#0C0C10', opacity: .5, marginTop: 2 }}>BALANCE</div>
+            <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 20, color: '#0C0C10' }}>⚡ {energy.value}/{energy.max}</div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, color: '#0C0C10', opacity: .5, marginTop: 2 }}>ENERGY</div>
           </div>
         </div>
 

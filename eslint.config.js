@@ -5,7 +5,9 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // The server and contracts are separate packages with their own toolchains
+  // (tsc/vitest and forge) — this config is for the browser client only.
+  globalIgnores(['**/dist', 'server', 'contracts']),
   {
     files: ['**/*.{js,jsx}'],
     extends: [

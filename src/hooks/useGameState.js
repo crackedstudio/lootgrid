@@ -1,341 +1,448 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { buildGrid, ONB_CARDS } from '../data/gameData';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { get, post, ApiError } from '../api/http';
+import { createSender, socket } from '../api/socket';
+import { ONB_CARDS } from '../data/gameData';
 
-const INITIAL_STATE = {
+/** Display-only: the server is authoritative and corrects us on every response. */
+const REGEN_MS = 9000;
+
+const INITIAL = {
   view: 'home',
   onbStep: 0,
   mapZone: null,
-  liveLoot: 48217,
-  liveHunters: 1204,
-  energy: 9,
-  energyMax: 12,
+
+  // session
+  status: 'connecting', // connecting | online | offline
+  fatal: null, // { code, message } — unrecoverable, blocks the app
+  player: null,
+  energy: { value: 0, max: 12, nextRegenMs: 0 },
+
+  // world (all of it from the server; the client has no map of its own)
+  zones: [],
+  grid: null, // { cols, rows, epoch, reveals: {}, hunts: [] }
+
+  // hunt flow
+  huntPreview: null,
+  attempt: null, // { attemptId, gameType, spec, limitMs }
+  game: null, // per-game render state
+  rivals: [],
+  chasers: 0,
+
+  // outcomes
+  outcome: null, // pending | won | lost | failed
+  failReason: null,
+  lostTo: null,
+  winData: null,
+  shared: false,
+
   boardTab: 'daily',
   showToast: false,
   toastText: '',
-  huntPreview: null,
-  showMinigame: false,
-  mgType: 'tap',
-  mgCell: null,
-  mgTaps: 0,
-  mgTarget: 14,
-  mgTime: 6.0,
-  mgFail: false,
-  memSeq: [],
-  memInput: 0,
-  memPhase: 'watch',
-  memLit: -1,
-  mathQ: '',
-  mathOpts: [],
-  mathAns: 0,
-  mathPick: -1,
-  mathStreak: 0,
-  seqTiles: [],
-  seqNext: 1,
-  seqN: 5,
-  seqWrong: -1,
-  showWin: false,
-  winData: null,
-  shared: false,
-  rivals: [],
-  showRivals: false,
-  lostTo: null,
-  floats: [],
-  chPrize: '10.00',
-  chToken: 'cUSD',
-  chDiff: 'med',
-  chDur: '24h',
-  chDeposited: false,
 };
 
-export function useGameState(surface = 'terracotta', startEnergy = 9) {
-  const [gridCells, setGridCells] = useState(() => buildGrid());
-  const [state, setState] = useState({ ...INITIAL_STATE, energy: startEnergy });
-  const toastTimer = useRef(null);
-  const mgTimerRef = useRef(null);
-  const regenRef = useRef(null);
-  const liveRef = useRef(null);
-  const memTimers = useRef([]);
+const cellKey = (r, c) => `${r},${c}`;
 
-  const set = useCallback((patch) => {
+/** Fresh render state for whichever game the block handed us. */
+function initGame(gameType, spec) {
+  switch (gameType) {
+    case 'tap':
+      return { taps: 0, target: spec.target, remainingMs: spec.limitMs };
+    case 'sequence':
+      return { next: 1, tapped: [], tiles: spec.tiles, n: spec.n };
+    case 'memory':
+      return { phase: 'watch', lit: -1, index: 0, sequence: spec.sequence, padCount: spec.padCount };
+    case 'math':
+      return { index: 0, count: spec.count, question: spec.question, picked: null };
+    default:
+      return {};
+  }
+}
+
+export function useGameState() {
+  const [state, setState] = useState(INITIAL);
+  const senderRef = useRef(null);
+  const memTimers = useRef([]);
+  const toastTimer = useRef(null);
+  // Event handlers and socket callbacks read the latest state without having to
+  // be re-created on every change. Written in an effect rather than during
+  // render — mutating a ref mid-render is not safe under concurrent rendering,
+  // and every reader here runs after commit anyway.
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  });
+
+  const set = useCallback(patch => {
     setState(s => ({ ...s, ...(typeof patch === 'function' ? patch(s) : patch) }));
   }, []);
 
-  // energy regen
-  useEffect(() => {
-    regenRef.current = setInterval(() => {
-      set(s => s.energy < s.energyMax ? { energy: s.energy + 1 } : null);
-    }, 9000);
-    return () => clearInterval(regenRef.current);
-  }, [set]);
+  const toast = useCallback(
+    text => {
+      set({ showToast: true, toastText: text });
+      clearTimeout(toastTimer.current);
+      toastTimer.current = setTimeout(() => set({ showToast: false }), 1600);
+    },
+    [set],
+  );
 
-  // live counters
-  useEffect(() => {
-    liveRef.current = setInterval(() => {
-      set(s => ({
-        liveLoot: s.liveLoot + Math.floor(Math.random() * 46) + 4,
-        liveHunters: 1180 + Math.floor(Math.random() * 70),
-      }));
-    }, 2200);
-    return () => clearInterval(liveRef.current);
-  }, [set]);
-
-  const toast = useCallback((text) => {
-    set({ showToast: true, toastText: text });
-    clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => set({ showToast: false }), 1500);
-  }, [set]);
-
-  // ---- navigation ----
-  const setView = useCallback((view) => set({ view }), [set]);
-
-  const nextOnb = useCallback(() => {
-    set(s => {
-      if (s.onbStep >= ONB_CARDS.length - 1) return { view: 'map' };
-      return { onbStep: s.onbStep + 1 };
-    });
-  }, [set]);
-
-  const skipOnb = useCallback(() => set({ view: 'map' }), [set]);
-
-  const enterZone = useCallback((zoneId) => set({ mapZone: zoneId }), [set]);
-  const backZones = useCallback(() => set({ mapZone: null }), [set]);
-  const backToMap = useCallback(() => set({ view: 'map', showWin: false, winData: null, showMinigame: false, showRivals: false, lostTo: null }), [set]);
-
-  // ---- grid tile tap ----
-  const spendFloat = useCallback((cell, amt) => {
-    const sz = 54, step = sz + 8, padL = 16, padT = 18;
-    const x = padL + cell.c * step + sz / 2;
-    const y = padT + cell.r * step + sz / 2;
-    const id = 'fl' + Date.now() + Math.random();
-    set(s => ({ floats: [...s.floats, { id, x, y, amt }] }));
-    setTimeout(() => set(s => ({ floats: s.floats.filter(f => f.id !== id) })), 750);
-  }, [set]);
-
-  const openHunt = useCallback((cell) => set({ huntPreview: cell }), [set]);
-  const closeHunt = useCallback(() => set({ huntPreview: null }), [set]);
-
-  const onTile = useCallback((cell) => {
-    if (cell.opened) return;
-    if (cell.treasure || cell.puzzle) {
-      const cost = cell.treasure ? 3 : 2;
-      if (state.energy < cost) { toast(`NEED ${cost} ENERGY TO HUNT`); return; }
-      openHunt(cell);
-      return;
-    }
-    if (state.energy < 1) { toast('OUT OF ENERGY — REGENERATING'); return; }
-    setGridCells(prev => prev.map(c => c.id === cell.id ? { ...c, opened: true, runtimeOpened: true } : c));
-    spendFloat(cell, 1);
-    set(s => ({ energy: s.energy - 1 }));
-  }, [state.energy, toast, openHunt, spendFloat, set]);
-
-  // ---- confirm hunt → start minigame ----
-  const confirmHunt = useCallback(() => {
-    const cell = state.huntPreview;
-    if (!cell) return;
-    const cost = cell.treasure ? 3 : 2;
-    set(s => ({ huntPreview: null, energy: Math.max(0, s.energy - cost) }));
-    spendFloat(cell, cost);
-    if (cell.treasure) {
-      const g = (cell.r + cell.c) % 3;
-      if (g === 0) startTap(cell);
-      else if (g === 1) startMath(cell);
-      else startSequence(cell);
-    } else {
-      startMemory(cell);
-    }
-  }, [state.huntPreview, set, spendFloat]);
-
-  // ---- rivals ----
-  const startRivals = useCallback((cell) => {
-    const pool = [['@maya','#FF3D3D'],['@deji','#29E6E6'],['@ama','#B7FF3B'],['@kofi','#2F6BFF'],['@zara','#FF7A1A']];
-    const shuffled = pool.slice().sort(() => Math.random() - 0.5);
-    const n = Math.min(3, Math.max(2, Math.round((cell.beat || 10) / 14) + 2));
-    const rivals = shuffled.slice(0, n).map(([handle, color]) => ({
-      handle, color, pct: Math.floor(Math.random() * 30),
-    }));
-    set({ rivals, showRivals: true });
-
-    const rivalTimer = setInterval(() => {
-      set(s => {
-        if (!s.showRivals) { clearInterval(rivalTimer); return null; }
-        const updated = s.rivals.map(r => ({ ...r, pct: Math.min(100, r.pct + Math.floor(Math.random() * 8) + 2) }));
-        const winner = updated.find(r => r.pct >= 100);
-        if (winner) {
-          clearInterval(rivalTimer);
-          return { rivals: updated, showRivals: false, lostTo: winner.handle, showMinigame: false };
-        }
-        return { rivals: updated };
-      });
-    }, 280);
-  }, [set]);
-
-  // ---- tap minigame ----
-  function startTap(cell) {
-    set({ showMinigame: true, mgType: 'tap', mgCell: cell, mgTaps: 0, mgTarget: 14, mgTime: 6.0, mgFail: false });
-    startRivals(cell);
-    let time = 6.0;
-    mgTimerRef.current = setInterval(() => {
-      time -= 0.1;
-      if (time <= 0) {
-        clearInterval(mgTimerRef.current);
-        set({ mgTime: 0, mgFail: true });
-        return;
-      }
-      set({ mgTime: parseFloat(time.toFixed(1)) });
-    }, 100);
-  }
-
-  const onMgTap = useCallback(() => {
-    set(s => {
-      if (s.mgFail || !s.showMinigame) return null;
-      const newTaps = s.mgTaps + 1;
-      if (newTaps >= s.mgTarget) {
-        clearInterval(mgTimerRef.current);
-        const cell = s.mgCell;
-        const winData = { kind: 'cash', prize: cell?.prize || '$0.00', beat: cell?.beat || 0, creator: cell?.creator || '@anon', tx: '0x' + Math.random().toString(16).slice(2, 8) + '…' };
-        if (cell) {
-          setGridCells(prev => prev.map(c => c.id === cell.id ? { ...c, opened: true, type: 'found' } : c));
-        }
-        return { mgTaps: newTaps, showMinigame: false, showWin: true, winData, showRivals: false };
-      }
-      return { mgTaps: newTaps };
-    });
-  }, [set]);
-
-  // ---- memory minigame ----
-  const clearMem = useCallback(() => {
-    memTimers.current.forEach(t => clearTimeout(t));
+  const clearMemTimers = useCallback(() => {
+    memTimers.current.forEach(clearTimeout);
     memTimers.current = [];
   }, []);
 
-  function startMemory(cell) {
-    clearMem();
-    const n = 4;
-    const seq = Array.from({ length: n }, () => Math.floor(Math.random() * n));
-    set({ showMinigame: true, mgType: 'memory', mgCell: cell, memSeq: seq, memInput: 0, memPhase: 'watch', memLit: -1, mgFail: false });
-    startRivals(cell);
-    seq.forEach((pad, i) => {
-      const t1 = setTimeout(() => set({ memLit: pad }), i * 700 + 400);
-      const t2 = setTimeout(() => set({ memLit: -1 }), i * 700 + 700);
-      memTimers.current.push(t1, t2);
-    });
-    const done = setTimeout(() => set({ memPhase: 'input', memLit: -1 }), seq.length * 700 + 900);
-    memTimers.current.push(done);
-  }
+  // ---------------------------------------------------------------- boot
 
-  const onMemPad = useCallback((idx) => {
-    set(s => {
-      if (s.memPhase !== 'input' || s.mgFail) return null;
-      if (idx !== s.memSeq[s.memInput]) {
-        return { mgFail: true };
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const [me, zones] = await Promise.all([get('/me'), get('/zones')]);
+        if (cancelled) return;
+        set({ player: { playerId: me.playerId, handle: me.handle }, energy: me.energy, zones: zones.zones });
+        socket.connect();
+      } catch (err) {
+        if (cancelled) return;
+        // No offline fallback, on purpose. Falling back to fake local state is
+        // precisely how you end up unable to tell whether the server is working.
+        set({
+          fatal: {
+            code: err instanceof ApiError ? err.code : 'unknown',
+            message: 'Cannot reach the LOOTGRID server.',
+          },
+        });
       }
-      const next = s.memInput + 1;
-      if (next >= s.memSeq.length) {
-        const cell = s.mgCell;
-        const winData = { kind: 'puzzle', prize: '+' + (cell?.xp || 80) + ' XP', steps: s.memSeq.length, creator: cell?.creator || '@anon' };
-        if (cell) {
-          setGridCells(prev => prev.map(c => c.id === cell.id ? { ...c, opened: true, type: 'found' } : c));
-        }
-        return { memInput: next, showMinigame: false, showWin: true, winData, showRivals: false };
-      }
-      return { memInput: next, memLit: idx };
-    });
+    })();
+
+    const offStatus = socket.onStatus(status => set({ status }));
+    return () => {
+      cancelled = true;
+      offStatus();
+      socket.disconnect();
+    };
   }, [set]);
 
-  // ---- math minigame ----
-  function startMath(cell) {
-    const q = generateMath();
-    set({ showMinigame: true, mgType: 'math', mgCell: cell, ...q, mathStreak: 0, mathPick: -1, mgFail: false });
-    startRivals(cell);
-  }
+  // ---------------------------------------------------------------- socket events
 
-  function generateMath() {
-    const ops = ['+', '-', '×'];
-    const op = ops[Math.floor(Math.random() * ops.length)];
-    let a = Math.floor(Math.random() * 12) + 1;
-    let b = Math.floor(Math.random() * 12) + 1;
-    let ans;
-    if (op === '+') ans = a + b;
-    else if (op === '-') { ans = a - b; }
-    else { a = Math.floor(Math.random() * 9) + 1; b = Math.floor(Math.random() * 9) + 1; ans = a * b; }
-    const mathQ = `${a} ${op} ${b}`;
-    const wrong = new Set([ans]);
-    while (wrong.size < 4) wrong.add(ans + (Math.floor(Math.random() * 10) - 5));
-    const mathOpts = [...wrong].sort(() => Math.random() - 0.5);
-    return { mathQ, mathOpts, mathAns: ans, mathPick: -1 };
-  }
+  useEffect(() => {
+    const off = socket.onMessage(msg => {
+      switch (msg.t) {
+        case 'energy':
+          return set({ energy: { value: msg.value, max: msg.max, nextRegenMs: msg.nextRegenMs } });
 
-  const onMathPick = useCallback((val) => {
-    set(s => {
-      const correct = val === s.mathAns;
-      if (!correct) return { mathPick: val, mgFail: true };
-      const streak = s.mathStreak + 1;
-      if (streak >= 3) {
-        const cell = s.mgCell;
-        const winData = { kind: 'cash', prize: cell?.prize || '$0.00', beat: cell?.beat || 0, creator: cell?.creator || '@anon', tx: '0x' + Math.random().toString(16).slice(2, 8) + '…' };
-        if (cell) {
-          setGridCells(prev => prev.map(c => c.id === cell.id ? { ...c, opened: true, type: 'found' } : c));
+        case 'tile:revealed':
+          return set(s =>
+            s.grid
+              ? {
+                  grid: {
+                    ...s.grid,
+                    reveals: { ...s.grid.reveals, [cellKey(msg.r, msg.c)]: msg },
+                  },
+                }
+              : null,
+          );
+
+        case 'zone:hunts':
+          return set(s => (s.grid ? { grid: { ...s.grid, hunts: msg.hunts } } : null));
+
+        case 'hunt:closed':
+        case 'hunt:expired':
+          return set(s =>
+            s.grid
+              ? { grid: { ...s.grid, hunts: s.grid.hunts.filter(h => h.id !== msg.huntId) } }
+              : null,
+          );
+
+        case 'hunt:chasers':
+          return set({ chasers: msg.count });
+
+        // Real rivals. `startRivals()` used to invent these on a timer, which
+        // meant losing a race to a simulation.
+        case 'progress':
+          return set(s => ({
+            rivals: msg.players
+              .filter(p => p.h !== s.player?.handle)
+              .map(p => ({ handle: p.h, pct: p.pct })),
+          }));
+
+        case 'game:update':
+          // Math Dash issues question N+1 only once N is answered correctly.
+          return set(s =>
+            s.game ? { game: { ...s.game, index: msg.data.index, question: msg.data.question, picked: null } } : null,
+          );
+
+        case 'attempt:complete':
+          return set({ outcome: 'pending' });
+
+        case 'attempt:failed':
+          return set({ outcome: 'failed', failReason: msg.reason, rivals: [] });
+
+        case 'attempt:lost':
+          return set({ outcome: 'lost', lostTo: msg.winner });
+
+        case 'hunt:resolved': {
+          const s = stateRef.current;
+          if (!s.attempt) return;
+          if (msg.winner === s.player?.handle) {
+            return set({
+              outcome: 'won',
+              winData: {
+                prize: s.huntPrize || '',
+                elapsedMs: msg.elapsedMs,
+                beat: Math.max(0, (s.rivals?.length ?? 0)),
+                reveal: msg.reveal,
+              },
+            });
+          }
+          return set({ outcome: 'lost', lostTo: msg.winner });
         }
-        return { mathPick: val, showMinigame: false, showWin: true, winData, showRivals: false };
+
+        default:
+          return undefined;
       }
-      const next = generateMath();
-      return { mathPick: val, mathStreak: streak, ...next };
     });
+    return off;
   }, [set]);
 
-  // ---- sequence minigame ----
-  function startSequence(cell) {
-    const n = 5;
-    const tiles = Array.from({ length: n }, (_, i) => ({
-      id: i + 1,
-      color: ['#FF3D3D','#FF7A1A','#FFD51F','#2CE66A','#29E6E6'][i],
-      tapped: false,
-    })).sort(() => Math.random() - 0.5);
-    set({ showMinigame: true, mgType: 'sequence', mgCell: cell, seqTiles: tiles, seqNext: 1, seqN: n, seqWrong: -1, mgFail: false });
-    startRivals(cell);
-  }
+  // ---------------------------------------------------------------- local energy tick (display only)
 
-  const onSeqTap = useCallback((tile) => {
-    set(s => {
-      if (s.mgFail || tile.tapped) return null;
-      if (tile.id !== s.seqNext) {
-        return { seqWrong: tile.id, mgFail: true };
-      }
-      const updated = s.seqTiles.map(t => t.id === tile.id ? { ...t, tapped: true } : t);
-      const next = s.seqNext + 1;
-      if (next > s.seqN) {
-        const cell = s.mgCell;
-        const winData = { kind: 'cash', prize: cell?.prize || '$0.00', beat: cell?.beat || 0, creator: cell?.creator || '@anon', tx: '0x' + Math.random().toString(16).slice(2, 8) + '…' };
-        if (cell) {
-          setGridCells(prev => prev.map(c => c.id === cell.id ? { ...c, opened: true, type: 'found' } : c));
-        }
-        return { seqTiles: updated, showMinigame: false, showWin: true, winData, showRivals: false };
-      }
-      return { seqTiles: updated, seqNext: next };
-    });
+  useEffect(() => {
+    const id = setInterval(() => {
+      set(s => {
+        if (s.energy.value >= s.energy.max) return null;
+        const next = s.energy.nextRegenMs - 1000;
+        if (next > 0) return { energy: { ...s.energy, nextRegenMs: next } };
+        return { energy: { ...s.energy, value: Math.min(s.energy.max, s.energy.value + 1), nextRegenMs: REGEN_MS } };
+      });
+    }, 1000);
+    return () => clearInterval(id);
   }, [set]);
 
-  // ---- create hunt ----
-  const depositEscrow = useCallback(() => set({ chDeposited: true }), [set]);
-  const newHunt = useCallback(() => {
-    set({ chDeposited: false });
-    toast('HUNT PUBLISHED TO THE GRID');
+  // ---------------------------------------------------------------- tap countdown (display only)
+
+  useEffect(() => {
+    if (state.attempt?.gameType !== 'tap' || state.outcome) return undefined;
+    const id = setInterval(() => {
+      set(s => (s.game ? { game: { ...s.game, remainingMs: Math.max(0, s.game.remainingMs - 100) } } : null));
+    }, 100);
+    return () => clearInterval(id);
+  }, [state.attempt?.gameType, state.outcome, set]);
+
+  // ---------------------------------------------------------------- memory playback
+
+  useEffect(() => {
+    if (state.attempt?.gameType !== 'memory' || state.game?.phase !== 'watch') return undefined;
+    clearMemTimers();
+
+    const { sequence } = state.attempt.spec;
+    const { stepMs, leadMs, playbackMs } = state.attempt.spec;
+
+    sequence.forEach((pad, i) => {
+      memTimers.current.push(setTimeout(() => set(s => ({ game: { ...s.game, lit: pad } })), leadMs + i * stepMs));
+      memTimers.current.push(
+        setTimeout(() => set(s => ({ game: { ...s.game, lit: -1 } })), leadMs + i * stepMs + stepMs * 0.55),
+      );
+    });
+    memTimers.current.push(
+      setTimeout(() => set(s => ({ game: { ...s.game, phase: 'input', lit: -1 } })), playbackMs),
+    );
+
+    return clearMemTimers;
+  }, [state.attempt, state.game?.phase, set, clearMemTimers]);
+
+  // ---------------------------------------------------------------- navigation
+
+  const setView = useCallback(v => set({ view: v }), [set]);
+  const nextOnb = useCallback(
+    () => set(s => (s.onbStep >= ONB_CARDS.length - 1 ? { view: 'map' } : { onbStep: s.onbStep + 1 })),
+    [set],
+  );
+  const skipOnb = useCallback(() => set({ view: 'map' }), [set]);
+  const setField = useCallback((k, v) => set({ [k]: v }), [set]);
+
+  const enterZone = useCallback(
+    async zoneId => {
+      try {
+        const grid = await get(`/zones/${zoneId}/grid`);
+        const reveals = {};
+        for (const cell of grid.reveals) reveals[cellKey(cell.r, cell.c)] = cell;
+        set({ mapZone: zoneId, grid: { ...grid, reveals } });
+        socket.join(`zone:${zoneId}`);
+      } catch {
+        toast('COULD NOT LOAD ZONE');
+      }
+    },
+    [set, toast],
+  );
+
+  const backZones = useCallback(() => {
+    const zoneId = stateRef.current.mapZone;
+    if (zoneId) socket.leave(`zone:${zoneId}`);
+    set({ mapZone: null, grid: null });
+  }, [set]);
+
+  // ---------------------------------------------------------------- tiles
+
+  const onTile = useCallback(
+    async cell => {
+      const s = stateRef.current;
+      if (!s.grid || cell.opened) return;
+
+      if (cell.hunt) {
+        const cost = cell.hunt.kind === 'cash' ? 3 : 2;
+        if (s.energy.value < cost) return toast(`NEED ${cost} ENERGY TO HUNT`);
+        return set({ huntPreview: cell.hunt });
+      }
+
+      if (s.energy.value < 1) return toast('OUT OF ENERGY — REGENERATING');
+
+      try {
+        const res = await post(`/zones/${s.mapZone}/tiles/${cell.r}/${cell.c}/open`);
+        set(prev => ({
+          energy: res.energy,
+          grid: prev.grid
+            ? { ...prev.grid, reveals: { ...prev.grid.reveals, [cellKey(cell.r, cell.c)]: res.cell } }
+            : null,
+        }));
+        if (res.alreadyOpen) toast('SOMEONE BEAT YOU TO IT');
+      } catch (err) {
+        if (err.code === 'insufficient_energy') {
+          if (err.body?.details) set({ energy: err.body.details });
+          return toast('OUT OF ENERGY — REGENERATING');
+        }
+        toast('COULD NOT OPEN TILE');
+      }
+    },
+    [set, toast],
+  );
+
+  const closeHunt = useCallback(() => set({ huntPreview: null }), [set]);
+
+  // ---------------------------------------------------------------- hunts
+
+  const confirmHunt = useCallback(async () => {
+    const hunt = stateRef.current.huntPreview;
+    if (!hunt) return;
+
+    try {
+      const res = await post(`/hunts/${hunt.id}/attempts`);
+      senderRef.current?.dispose();
+      senderRef.current = createSender(res.attemptId);
+      socket.join(`hunt:${hunt.id}`);
+
+      set({
+        huntPreview: null,
+        energy: res.energy,
+        huntId: hunt.id,
+        huntPrize: hunt.prizeLabel,
+        attempt: { attemptId: res.attemptId, gameType: res.gameType, spec: res.spec, limitMs: res.limitMs },
+        game: initGame(res.gameType, res.spec),
+        rivals: [],
+        outcome: null,
+        failReason: null,
+        lostTo: null,
+        winData: null,
+        shared: false,
+      });
+    } catch (err) {
+      set({ huntPreview: null });
+      if (err.code === 'insufficient_energy') return toast('NOT ENOUGH ENERGY');
+      if (err.code === 'already_attempted') return toast('YOU ALREADY TRIED THIS ONE');
+      if (err.code === 'hunt_not_live') return toast('ALREADY CRACKED');
+      toast('COULD NOT ENTER HUNT');
+    }
   }, [set, toast]);
 
-  const setField = useCallback((key, val) => set({ [key]: val }), [set]);
+  const exitMinigame = useCallback(() => {
+    const s = stateRef.current;
+    if (s.huntId) socket.leave(`hunt:${s.huntId}`);
+    senderRef.current?.dispose();
+    senderRef.current = null;
+    clearMemTimers();
+    set({
+      attempt: null,
+      game: null,
+      rivals: [],
+      chasers: 0,
+      outcome: null,
+      failReason: null,
+      lostTo: null,
+      huntId: null,
+    });
+  }, [set, clearMemTimers]);
+
+  const backToMap = useCallback(() => {
+    exitMinigame();
+    set({ view: 'map', winData: null, shared: false });
+  }, [exitMinigame, set]);
+
+  // ---------------------------------------------------------------- game inputs
+  // Local state moves optimistically so the UI feels instant; the server decides
+  // pass and fail, and its verdict arrives over the socket.
+
+  const onMgTap = useCallback(() => {
+    const s = stateRef.current;
+    if (!s.game || s.outcome) return;
+    const taps = s.game.taps + 1;
+    senderRef.current?.add('tap', undefined, taps >= s.game.target);
+    set({ game: { ...s.game, taps } });
+  }, [set]);
+
+  const onSeqTap = useCallback(
+    tile => {
+      const s = stateRef.current;
+      if (!s.game || s.outcome || s.game.tapped.includes(tile.id)) return;
+      senderRef.current?.add('tap', tile.id, tile.id === s.game.n);
+      set({
+        game:
+          tile.id === s.game.next
+            ? { ...s.game, next: s.game.next + 1, tapped: [...s.game.tapped, tile.id] }
+            : s.game,
+      });
+    },
+    [set],
+  );
+
+  const onMemPad = useCallback(
+    pad => {
+      const s = stateRef.current;
+      if (!s.game || s.outcome || s.game.phase !== 'input') return;
+      const index = s.game.index + 1;
+      senderRef.current?.add('pad', pad, index >= s.game.sequence.length);
+      set({ game: { ...s.game, index, lit: pad } });
+      setTimeout(() => set(st => (st.game ? { game: { ...st.game, lit: -1 } } : null)), 140);
+    },
+    [set],
+  );
+
+  const onMathPick = useCallback(
+    value => {
+      const s = stateRef.current;
+      if (!s.game || s.outcome || s.game.picked !== null) return;
+      senderRef.current?.add('answer', value, true);
+      set({ game: { ...s.game, picked: value } });
+    },
+    [set],
+  );
 
   const doShare = useCallback(() => set({ shared: true }), [set]);
 
   return {
     state,
-    gridCells,
-    // actions
     setView,
-    nextOnb, skipOnb,
-    enterZone, backZones, backToMap,
-    onTile, openHunt, closeHunt, confirmHunt,
-    onMgTap, onMemPad, onMathPick, onSeqTap,
-    depositEscrow, newHunt,
+    nextOnb,
+    skipOnb,
+    enterZone,
+    backZones,
+    backToMap,
+    onTile,
+    closeHunt,
+    confirmHunt,
+    exitMinigame,
+    onMgTap,
+    onSeqTap,
+    onMemPad,
+    onMathPick,
     setField,
     doShare,
     toast,

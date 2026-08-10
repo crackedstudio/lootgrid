@@ -1,8 +1,9 @@
 import Mascot from './Mascot';
 
-export default function HuntPreview({ cell, onConfirm, onClose }) {
-  if (!cell) return null;
-  const isCash = cell.treasure;
+export default function HuntPreview({ hunt, onConfirm, onClose }) {
+  if (!hunt) return null;
+  const isCash = hunt.kind === 'cash';
+  const cost = isCash ? 3 : 2;
 
   return (
     <div style={{
@@ -14,7 +15,6 @@ export default function HuntPreview({ cell, onConfirm, onClose }) {
         borderBottom: 'none', padding: '26px 22px 28px',
         animation: 'lg-rise .25s ease-out',
       }}>
-        {/* creator tag */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
           <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.16em', color: 'var(--cream)', opacity: .55 }}>
             {isCash ? 'TREASURE HUNT' : 'PUZZLE HUNT'}
@@ -28,7 +28,7 @@ export default function HuntPreview({ cell, onConfirm, onClose }) {
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 28, lineHeight: 1, color: isCash ? '#FFD51F' : '#8A3DFF' }}>
-              {isCash ? cell.prize : `+${cell.xp} XP`}
+              {hunt.prizeLabel}
             </div>
             <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.12em', color: 'var(--cream)', opacity: .55, marginTop: 6 }}>
               {isCash ? 'PRE-FUNDED PRIZE' : 'PUZZLE REWARD'}
@@ -36,20 +36,22 @@ export default function HuntPreview({ cell, onConfirm, onClose }) {
           </div>
         </div>
 
-        {/* stats */}
-        <div style={{ display: 'flex', gap: 10, marginBottom: 22 }}>
+        <div style={{ display: 'flex', gap: 10, marginBottom: 18 }}>
           <div style={{ flex: 1, border: '2px solid rgba(245,239,227,.15)', padding: '10px 12px' }}>
-            <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 15, color: 'var(--cream)' }}>{cell.creator}</div>
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, color: 'var(--cream)', opacity: .45, marginTop: 4 }}>CREATOR</div>
+            {/* Real, from the server — how many people have a live attempt open. */}
+            <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 15, color: 'var(--cream)' }}>{hunt.chasers ?? 0}</div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, color: 'var(--cream)', opacity: .45, marginTop: 4 }}>CHASING NOW</div>
           </div>
           <div style={{ flex: 1, border: '2px solid rgba(245,239,227,.15)', padding: '10px 12px' }}>
-            <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 15, color: 'var(--cream)' }}>{cell.beat} players</div>
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, color: 'var(--cream)', opacity: .45, marginTop: 4 }}>CHASING</div>
-          </div>
-          <div style={{ flex: 1, border: '2px solid rgba(245,239,227,.15)', padding: '10px 12px' }}>
-            <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 15, color: '#FF3D3D' }}>{isCash ? 3 : 2}⚡</div>
+            <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 15, color: '#FF3D3D' }}>{cost}⚡</div>
             <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, color: 'var(--cream)', opacity: .45, marginTop: 4 }}>COST</div>
           </div>
+        </div>
+
+        {/* You don't learn which game it is until you commit — knowing in advance
+            would let you warm up for one and skip the others. */}
+        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: 'var(--cream)', opacity: .4, marginBottom: 18, lineHeight: 1.5 }}>
+          The challenge is fixed to this block — everyone racing it plays the same game.
         </div>
 
         <div onClick={onConfirm} style={{

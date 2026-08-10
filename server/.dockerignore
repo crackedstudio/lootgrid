@@ -1,0 +1,16 @@
+node_modules
+dist
+data
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+!.env.example
+**/*.test.ts
+src/testing
+scripts
+coverage
+.git
+.DS_Store
+README.md
