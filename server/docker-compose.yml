@@ -1,0 +1,56 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Overrides whatever .env says — inside the container the database always
+      # lives on the mounted volume, never in the image's writable layer.
+      DATABASE_PATH: /data/lootgrid.db
+      HOST: 0.0.0.0
+      PORT: "8787"
+    volumes:
+      - lootgrid-data:/data
+    # `expose`, not `ports`: the app is reachable only through Caddy, so the
+    # plaintext port is never published on the VPS's public interface.
+    expose:
+      - "8787"
+    networks: [web]
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    networks: [web]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  # Back this up by snapshotting it — see DEPLOY.md for the WAL-safe method.
+  lootgrid-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  web:

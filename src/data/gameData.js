@@ -1,75 +1,20 @@
 export const SPEC9 = ['#FF3D3D','#FF7A1A','#FFD51F','#B7FF3B','#2CE66A','#29E6E6','#2F6BFF','#8A3DFF','#FF3BBD'];
 
-export const ZONES = [
-  { id:'ridge',  name:'EASTERN RIDGE', tag:'WARM',   accent:'#FF7A1A', hunters:312, hunts:4, loot:'$44.50',  diff:'BEGINNER', blurb:'Where the clue points. Gentle hunts, friendly crowd.' },
-  { id:'flats',  name:'GOLDEN FLATS',  tag:'BUSY',   accent:'#FFD51F', hunters:540, hunts:7, loot:'$128.00', diff:'OPEN',      blurb:'The busiest board. Big prizes, big competition.' },
-  { id:'tide',   name:'NEON TIDE',     tag:'NEW',    accent:'#29E6E6', hunters:171, hunts:5, loot:'$67.00',  diff:'OPEN',      blurb:'Fresh grid, just dropped. Clues still cooling.' },
-  { id:'hollow', name:'DEEP HOLLOW',   tag:'EXPERT', accent:'#8A3DFF', hunters:96,  hunts:3, loot:'$310.00', diff:'EXPERT',    blurb:'High-stakes vault grid. Hardest games, richest loot.' },
-];
-
-export const COLS = 12;
-export const ROWS = 18;
-
-const HUNTS = {
-  '2,9':  { prize:'$12.00', beat:38, creator:'@maya' },
-  '8,1':  { prize:'$5.50',  beat:12, creator:'@deji' },
-  '14,8': { prize:'$24.00', beat:71, creator:'@ama'  },
-  '5,11': { prize:'$3.00',  beat:6,  creator:'@kofi' },
+/**
+ * Presentation copy only, keyed by the zone ids the server owns. Names, accents,
+ * epochs and live hunt counts all come from GET /zones.
+ *
+ * NOTE: `buildGrid`, `hiddenType`, HUNTS, PUZZLES and SEEDS used to live here.
+ * They are gone on purpose — the grid was computable from the bundle, so every
+ * treasure location was readable from devtools. The map now exists only on the
+ * server, and the client is told about a cell once somebody uncovers it.
+ */
+export const ZONE_COPY = {
+  ridge:  { tag: 'WARM',   diff: 'BEGINNER', blurb: 'Where the clue points. Gentle hunts, friendly crowd.' },
+  flats:  { tag: 'BUSY',   diff: 'OPEN',     blurb: 'The busiest board. Big prizes, big competition.' },
+  tide:   { tag: 'NEW',    diff: 'OPEN',     blurb: 'Fresh grid, just dropped. Clues still cooling.' },
+  hollow: { tag: 'EXPERT', diff: 'EXPERT',   blurb: 'High-stakes vault grid. Hardest games, richest loot.' },
 };
-const PUZZLES = {
-  '4,6':  { xp:120, beat:9,  creator:'@deji' },
-  '10,2': { xp:80,  beat:4,  creator:'@ama'  },
-  '13,9': { xp:150, beat:17, creator:'@zara' },
-};
-const SEEDS = {
-  '1,2':  { type:'clue'  },
-  '2,6':  { type:'empty' },
-  '3,3':  { type:'found', prize:'$4.20' },
-  '4,9':  { type:'trap'  },
-  '5,1':  { type:'empty' },
-  '6,7':  { type:'mystery' },
-  '7,10': { type:'clue'  },
-  '8,4':  { type:'empty' },
-  '9,8':  { type:'puzzle' },
-  '11,2': { type:'found', prize:'$8.00' },
-  '12,9': { type:'empty' },
-  '13,5': { type:'trap'  },
-  '15,7': { type:'clue'  },
-  '16,3': { type:'empty' },
-  '10,5': { type:'mystery' },
-  '14,2': { type:'empty' },
-};
-
-function hiddenType(r, c) {
-  const h = (r * 31 + c * 17 + 5) % 100;
-  if (h < 56) return 'empty';
-  if (h < 73) return 'clue';
-  if (h < 85) return 'trap';
-  if (h < 94) return 'mystery';
-  return 'puzzle';
-}
-
-export function buildGrid() {
-  const cells = [];
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      const k = `${r},${c}`;
-      const cell = { id: k, r, c, opened: false, treasure: false, seedOpened: false, runtimeOpened: false, type: hiddenType(r, c) };
-      if (HUNTS[k]) {
-        Object.assign(cell, { treasure: true, type: 'treasure', ...HUNTS[k] });
-      } else if (PUZZLES[k]) {
-        Object.assign(cell, { puzzle: true, type: 'puzzleHunt', ...PUZZLES[k] });
-      } else if (SEEDS[k]) {
-        cell.opened = true;
-        cell.seedOpened = true;
-        cell.type = SEEDS[k].type;
-        if (SEEDS[k].prize) cell.prize = SEEDS[k].prize;
-      }
-      cells.push(cell);
-    }
-  }
-  return cells;
-}
 
 export const BOARD_DATA = {
   daily: [

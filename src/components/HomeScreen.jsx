@@ -2,7 +2,10 @@ import Mascot, { Coin } from './Mascot';
 import { HOME_COINS, SPEC9 } from '../data/gameData';
 
 export default function HomeScreen({ state, onEnter, onSkipIntro }) {
-  const { liveLoot, liveHunters } = state;
+  // Real figures from the referee, not decorative counters ticking upward.
+  const { zones, status } = state;
+  const liveHunts = zones.reduce((n, z) => n + (z.hunts ?? 0), 0);
+  const online = status === 'online';
 
   return (
     <div style={{
@@ -48,10 +51,12 @@ export default function HomeScreen({ state, onEnter, onSkipIntro }) {
         </div>
         <div style={{
           display: 'flex', alignItems: 'center', gap: 6,
-          border: '2px solid #07955F', padding: '3px 8px',
+          border: `2px solid ${online ? '#07955F' : '#FF7A1A'}`, padding: '3px 8px',
         }}>
-          <div style={{ width: 7, height: 7, background: '#07955F', animation: 'lg-bob 1s ease-in-out infinite' }} />
-          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.12em', color: '#07955F' }}>LIVE</div>
+          <div style={{ width: 7, height: 7, background: online ? '#07955F' : '#FF7A1A', animation: 'lg-bob 1s ease-in-out infinite' }} />
+          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.12em', color: online ? '#07955F' : '#FF7A1A' }}>
+            {online ? 'LIVE' : 'CONNECTING'}
+          </div>
         </div>
       </div>
 
@@ -96,16 +101,16 @@ export default function HomeScreen({ state, onEnter, onSkipIntro }) {
         padding: '13px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', zIndex: 2,
       }}>
         <div>
-          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, letterSpacing: '.14em', color: '#FFD51F' }}>LIVE LOOT ON THE GRID</div>
+          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, letterSpacing: '.14em', color: '#FFD51F' }}>HUNTS LIVE ON THE GRID</div>
           <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 29, lineHeight: 1, color: 'var(--cream)', marginTop: 4 }}>
-            ${liveLoot.toLocaleString('en-US')}
+            {liveHunts}
           </div>
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 22, lineHeight: 1, color: '#2CE66A' }}>
-            {liveHunters.toLocaleString('en-US')}
+            {zones.length}
           </div>
-          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, letterSpacing: '.1em', color: 'var(--cream)', opacity: .5, marginTop: 4 }}>HUNTERS ONLINE</div>
+          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, letterSpacing: '.1em', color: 'var(--cream)', opacity: .5, marginTop: 4 }}>ZONES OPEN</div>
         </div>
       </div>
 

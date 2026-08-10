@@ -1,0 +1,29 @@
+# MiniPay will not load a Mini App over plain HTTP, so TLS is mandatory rather
+# than nice to have. Caddy provisions and renews a Let's Encrypt certificate
+# automatically — point DOMAIN's A/AAAA record at this VPS and it just works.
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# reverse_proxy handles the WebSocket upgrade on /ws with no extra config.
+	reverse_proxy app:8787 {
+		header_up X-Real-IP {remote_host}
+		# The race clock is server-side, but a proxy read timeout shorter than a
+		# game would cut sockets mid-round.
+		transport http {
+			read_timeout 300s
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
