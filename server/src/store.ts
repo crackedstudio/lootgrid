@@ -242,6 +242,19 @@ export function chaserCount(huntId: string): number {
   return attemptsFor(huntId).filter(a => a.status === 'active').length;
 }
 
+/**
+ * Total entrants in a hunt — memory for a live race, disk once it is over.
+ *
+ * `attemptsFor` is live-only, so it reports 0 the moment `evictHunt` runs, which
+ * is immediately on resolution. A win attestation is requested *after* that
+ * point, so it has to read through to the table or it would sign `racers: 0`.
+ */
+export function racerCount(huntId: string): number {
+  const live = liveAttempts.get(huntId);
+  if (live) return live.size;
+  return attemptRepo.forHunt(huntId).length;
+}
+
 export const liveAttemptCount = () => attemptIndex.size;
 
 /** Test-only: drops every module-level cache so a fresh database starts clean. */

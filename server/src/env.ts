@@ -25,18 +25,85 @@ const schema = z
     CHAIN: z.enum(['celo', 'celoSepolia']).default('celoSepolia'),
     RPC_URL: z.string().url().optional(),
     PLAYER_REGISTRY_ADDRESS: hexAddress.optional(),
-    /** How long a registry lookup is cached before re-reading the chain. */
-    REGISTRY_CACHE_MS: z.coerce.number().int().positive().default(60_000),
+    /**
+     * How long a registry lookup is cached before re-reading the chain.
+     *
+     * Hard-capped: this is the worst-case window in which a revoked session key
+     * still authenticates if the event subscription is down. An operator must
+     * not be able to widen it to an hour by accident.
+     */
+    REGISTRY_CACHE_MS: z.coerce.number().int().positive().max(60_000).default(60_000),
+    /** Shorter TTL for "this player has no binding" — see registry.ts. */
+    REGISTRY_NEGATIVE_CACHE_MS: z.coerce.number().int().positive().max(10_000).default(2_000),
 
     /** Signed requests older than this are rejected as replays. */
     REQUEST_MAX_SKEW_MS: z.coerce.number().int().positive().default(30_000),
 
     RATE_GLOBAL_PER_MIN: z.coerce.number().int().positive().default(600),
+    /** Per-IP ceiling applied before authentication does any expensive work. */
+    RATE_PREAUTH_PER_MIN: z.coerce.number().int().positive().default(60),
+    /**
+     * Number of reverse-proxy hops in front of the app.
+     *
+     * MUST match reality. `trustProxy: true` would take the leftmost
+     * X-Forwarded-For entry — which the client writes — so any per-IP limit
+     * becomes attacker-controlled and unbounded. Trusting a fixed hop count
+     * means only the proxy's own appended entry is believed. Default 1 = the
+     * Caddy container in docker-compose. Set 0 if nothing fronts the app.
+     */
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(1),
     RATE_TILE_PER_MIN: z.coerce.number().int().positive().default(120),
     RATE_ATTEMPT_PER_MIN: z.coerce.number().int().positive().default(30),
     WS_MAX_CONNECTIONS_PER_PLAYER: z.coerce.number().int().positive().default(3),
     WS_MAX_MESSAGE_BYTES: z.coerce.number().int().positive().default(8_192),
     WS_HEARTBEAT_MS: z.coerce.number().int().positive().default(30_000),
+
+    /**
+     * Publish gameplay to LootGridActions as one transaction per action.
+     *
+     * Off by default, and off is a perfectly good production configuration —
+     * the chain records nothing the server does not already own. Turning it on
+     * buys a public, timestamped audit trail and costs relayer gas per action.
+     */
+    RELAY_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform(v => v === 'true'),
+    LOOTGRID_ACTIONS_ADDRESS: hexAddress.optional(),
+    /** Hot key. Funded with a small float, rotatable via LootGridActions.setRelayer. */
+    RELAY_PRIVATE_KEY: z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{64}$/, 'must be a 0x-prefixed 32-byte key')
+      .optional(),
+    /** How often the worker drains the outbox. */
+    RELAY_POLL_MS: z.coerce.number().int().min(200).max(60_000).default(1_000),
+    /** Transactions dispatched per poll, bounded so one tick cannot exhaust the RPC. */
+    RELAY_MAX_IN_FLIGHT: z.coerce.number().int().min(1).max(200).default(25),
+    /**
+     * Reveals per transaction. 1 = one transaction per action, which is the
+     * point of relaying at all. Raise it only if relayer gas becomes the binding
+     * constraint — it trades transaction count for cost, roughly linearly.
+     */
+    RELAY_BATCH_SIZE: z.coerce.number().int().min(1).max(128).default(1),
+    /** Give up after this many failures and park the row as `dead` for inspection. */
+    RELAY_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(8),
+
+    /**
+     * The referee's EIP-712 attestation signing key.
+     *
+     * Set it to let players publish their own hunt entries and wins, paying
+     * their own gas in a Celo fee currency. Leave it unset and the feature is
+     * simply off — the relayer keeps publishing everything as before.
+     *
+     * This key never sends a transaction, so it needs no balance and can sit
+     * colder than RELAY_PRIVATE_KEY. It is also the more dangerous of the two:
+     * a leak mints entries and winning resolutions that anyone can submit.
+     * Its address goes in the contract's ACTIONS_ATTESTOR at deploy time.
+     */
+    ATTESTOR_PRIVATE_KEY: z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{64}$/, 'must be a 0x-prefixed 32-byte key')
+      .optional(),
 
     METRICS_ENABLED: z
       .enum(['true', 'false'])
@@ -59,6 +126,63 @@ const schema = z
           code: z.ZodIssueCode.custom,
           path: ['RPC_URL'],
           message: 'required when AUTH_MODE=chain',
+        });
+      }
+    }
+
+    // Player self-submission needs the contract address to build the EIP-712
+    // domain — without it the signature would verify against nothing.
+    if (v.ATTESTOR_PRIVATE_KEY && !v.LOOTGRID_ACTIONS_ADDRESS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['LOOTGRID_ACTIONS_ADDRESS'],
+        message: 'required when ATTESTOR_PRIVATE_KEY is set',
+      });
+    }
+
+    // Sharing one key would hand the exposed hot wallet the power to mint
+    // attestations, collapsing the split that makes a separate attestor useful.
+    if (
+      v.ATTESTOR_PRIVATE_KEY &&
+      v.RELAY_PRIVATE_KEY &&
+      v.ATTESTOR_PRIVATE_KEY.toLowerCase() === v.RELAY_PRIVATE_KEY.toLowerCase()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ATTESTOR_PRIVATE_KEY'],
+        message: 'must differ from RELAY_PRIVATE_KEY',
+      });
+    }
+
+    if (v.RELAY_ENABLED) {
+      if (!v.LOOTGRID_ACTIONS_ADDRESS) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['LOOTGRID_ACTIONS_ADDRESS'],
+          message: 'required when RELAY_ENABLED=true',
+        });
+      }
+      if (!v.RELAY_PRIVATE_KEY) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['RELAY_PRIVATE_KEY'],
+          message: 'required when RELAY_ENABLED=true',
+        });
+      }
+      if (!v.RPC_URL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['RPC_URL'],
+          message: 'required when RELAY_ENABLED=true',
+        });
+      }
+      // Under AUTH_MODE=dev a player id is a made-up string, not an address.
+      // Publishing those would write junk to a permanent public log.
+      if (v.AUTH_MODE !== 'chain') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['RELAY_ENABLED'],
+          message: 'requires AUTH_MODE=chain — dev player ids are not addresses',
         });
       }
     }

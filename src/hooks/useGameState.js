@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { get, post, ApiError } from '../api/http';
+import { publishEntry, publishWin } from '../api/records';
 import { createSender, socket } from '../api/socket';
 import { ONB_CARDS } from '../data/gameData';
 
@@ -184,6 +185,11 @@ export function useGameState() {
           const s = stateRef.current;
           if (!s.attempt) return;
           if (msg.winner === s.player?.handle) {
+            // Publish the win to the chain, paid for by the winner. Deliberately
+            // not awaited: the prize screen must render now, and a record that
+            // never lands costs nothing but the public log entry.
+            void publishWin(s.huntId);
+
             return set({
               outcome: 'won',
               winData: {
@@ -329,6 +335,10 @@ export function useGameState() {
       senderRef.current?.dispose();
       senderRef.current = createSender(res.attemptId);
       socket.join(`hunt:${hunt.id}`);
+
+      // Same rule as the win: fire it off and start the game. The referee has
+      // already accepted the entry; this only makes it public.
+      void publishEntry(hunt.id);
 
       set({
         huntPreview: null,
