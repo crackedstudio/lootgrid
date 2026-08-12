@@ -4,6 +4,8 @@ import type { App } from './appTypes';
 import { canonicalHttp } from './auth/canonical';
 import * as registry from './auth/registry';
 import { verifyHttp, type Credentials } from './auth/verify';
+import * as attestor from './chain/attestor';
+import * as relayer from './chain/relayer';
 import { GRID } from './config';
 import { getDb } from './db/index';
 import * as energy from './energy';
@@ -60,8 +62,20 @@ function credentialsFrom(req: FastifyRequest): Credentials {
 
 async function requirePlayer(req: FastifyRequest): Promise<Player> {
   const creds = credentialsFrom(req);
+
+  // Per-IP gate BEFORE any verification work. Signature recovery succeeds for
+  // any well-formed signature over junk, and the chain read follows it, so
+  // without this an unauthenticated peer can drive one RPC call per request.
+  // The global bucket below is keyed on player.id, which does not exist until
+  // auth succeeds — it can never rate-limit a failed attempt. ws.ts has carried
+  // the equivalent throttle since it was written; HTTP did not.
+  // Key is length-clamped: even with a correct trustProxy hop count, the bucket
+  // key must never be an unbounded attacker-supplied string.
+  limit(`preauth:${String(req.ip).slice(0, 45)}`, env.RATE_PREAUTH_PER_MIN, 60_000, 'preauth');
+
   try {
     const player = await verifyHttp(creds, {
+      player: creds.player,
       method: req.method,
       // Sign the path including the query string — otherwise a captured
       // signature could be replayed with different filters.
@@ -242,6 +256,19 @@ export function registerRoutes(app: App): void {
     }
 
     metrics.tilesRevealed.inc({ type: cell.type });
+
+    // Published after the reveal is committed, never before: the chain records
+    // what happened, and a relay failure must not undo a tile the player has
+    // already paid energy for. The dedupe key is the reveal's own primary key.
+    relayer.enqueue('reveal', `reveal:${zone.id}:${zone.epoch}:${r}:${c}`, {
+      player: player.id as `0x${string}`,
+      zoneId: relayer.toBytes32Id(zone.id),
+      epoch: zone.epoch,
+      r,
+      c,
+      tileType: relayer.tileTypeCode(cell.type),
+    });
+
     rooms.broadcast(rooms.zoneRoom(zone.id), { t: 'tile:revealed', ...cell });
     return { cell, energy: spent.energy };
   });
@@ -307,6 +334,66 @@ export function registerRoutes(app: App): void {
       remainingMs: Math.max(0, attempt.deadlineAt - Date.now()),
       failReason: attempt.failReason,
     };
+  });
+
+  // ---- self-published records ----
+  //
+  // These hand the caller a referee-signed EIP-712 attestation which they submit
+  // themselves, paying their own gas. Nothing here writes game state: an
+  // attestation only restates a decision the referee already made, so a player
+  // who never calls these — or whose transaction never lands — has lost nothing
+  // but a public record.
+
+  /**
+   * Attestation for the caller's own entry in a hunt.
+   *
+   * Scoped to the authenticated player: the referee will not sign a claim that
+   * someone else entered, even though the contract would accept whoever pays.
+   */
+  app.post('/hunts/:id/attestations/entry', async req => {
+    if (!attestor.enabled()) throw notFound('attestations_disabled');
+
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+
+    const hunt = store.getHunt(id);
+    if (!hunt) throw notFound('no_such_hunt');
+
+    const attempt = store.attemptOf(hunt.id, player.id);
+    if (!attempt) throw forbidden('not_in_this_hunt');
+
+    return attestor.signEntry(
+      player.id as `0x${string}`,
+      attestor.toBytes32Id(hunt.id),
+      relayer.gameTypeCode(attempt.gameType),
+    );
+  });
+
+  /**
+   * Attestation for a win. Only the winner of a resolved hunt gets one, and the
+   * numbers come from the referee's record rather than from the request.
+   */
+  app.post('/hunts/:id/attestations/resolution', async req => {
+    if (!attestor.enabled()) throw notFound('attestations_disabled');
+
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+
+    const hunt = store.getHunt(id);
+    if (!hunt) throw notFound('no_such_hunt');
+    if (hunt.status !== 'resolved' || !hunt.winnerId) throw conflict('hunt_not_resolved');
+    if (hunt.winnerId !== player.id) throw forbidden('not_the_winner');
+
+    const attempt = store.attemptOf(hunt.id, player.id);
+    if (!attempt) throw conflict('no_winning_attempt');
+
+    return attestor.signResolution(
+      player.id as `0x${string}`,
+      attestor.toBytes32Id(hunt.id),
+      attempt.elapsedMs ?? 0,
+      // Total entrants, not live chasers — the race is over by now.
+      store.racerCount(hunt.id),
+    );
   });
 
   // ---- audit ----

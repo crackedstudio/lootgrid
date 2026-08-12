@@ -3,6 +3,8 @@ import helmet from '@fastify/helmet';
 import Fastify, { LogController } from 'fastify';
 import * as registry from './auth/registry';
 import { startNoncePruner, stopNoncePruner } from './auth/verify';
+import * as attestor from './chain/attestor';
+import * as relayer from './chain/relayer';
 import { closeDb, openDb } from './db/index';
 import { corsOrigins, env, isProd } from './env';
 import { registerRoutes } from './http';
@@ -16,7 +18,10 @@ import { attachWs } from './ws';
 
 const app = Fastify({
   loggerInstance: logger,
-  trustProxy: true, // behind Caddy — needed for correct client IPs
+  // A hop COUNT, never `true`. With `true`, Fastify takes the leftmost
+  // X-Forwarded-For entry, which is written by the client — every per-IP rate
+  // limit would then be keyed on a value the attacker rotates at will.
+  trustProxy: env.TRUST_PROXY_HOPS === 0 ? false : env.TRUST_PROXY_HOPS,
   bodyLimit: 64 * 1024,
   // Per-request logging is noise in production (metrics cover it) but useful
   // locally. The top-level `disableRequestLogging` is deprecated in Fastify 5.
@@ -39,17 +44,46 @@ await app.register(cors, {
 
 registerRoutes(app);
 
-// ---- metrics wiring (kept out of the referee so it stays dependency-light) ----
+// ---- observer wiring (kept out of the referee so it stays dependency-light) ----
+referee.observers.onAttemptOpened = (attempt, hunt) => {
+  // When players publish their own entries, relaying it too would emit the
+  // record twice and put the operator back on the hook for the gas this change
+  // moved to the player. The player's transaction may of course never land —
+  // that costs a public record, nothing more.
+  if (attestor.enabled()) return;
+
+  // One entry per player per hunt, which the UNIQUE (hunt_id, player_id)
+  // constraint already guarantees — so the dedupe key cannot collide.
+  relayer.enqueue('entry', `entry:${hunt.id}:${attempt.playerId}`, {
+    player: attempt.playerId as `0x${string}`,
+    huntId: relayer.toBytes32Id(hunt.id),
+    gameType: relayer.gameTypeCode(attempt.gameType),
+  });
+};
+
 referee.observers.onAttemptFinished = (attempt, outcome) => {
   metrics.attemptsFinished.inc({ game_type: attempt.gameType, outcome });
   if (outcome === 'failed' && attempt.failReason) {
     metrics.attemptFailures.inc({ game_type: attempt.gameType, reason: attempt.failReason });
   }
 };
-referee.observers.onHuntResolved = (_huntId, elapsedMs, racers) => {
+
+referee.observers.onHuntResolved = (hunt, winner, racers) => {
   metrics.raceResolutions.inc();
-  metrics.winnerElapsed.observe(elapsedMs);
+  metrics.winnerElapsed.observe(winner.elapsedMs ?? 0);
   metrics.raceRacers.observe(racers);
+
+  // As above: the winner publishes their own result when attestations are on.
+  if (attestor.enabled()) return;
+
+  relayer.enqueue('resolution', `resolution:${hunt.id}`, {
+    winner: winner.playerId as `0x${string}`,
+    huntId: relayer.toBytes32Id(hunt.id),
+    elapsedMs: winner.elapsedMs ?? 0,
+    // uint16 on chain. A race with 65k entrants is impossible under the energy
+    // cost, but clamping is cheaper than a silently truncated record.
+    racers: Math.min(racers, 65_535),
+  });
 };
 
 // ---- boot ----
@@ -57,6 +91,11 @@ openDb();
 store.bootstrap();
 referee.start();
 ratelimit.start();
+// Sweeps the binding cache and subscribes to on-chain key rotations, so a
+// revocation takes effect on the next request rather than the next minute.
+registry.start();
+// Drains the on-chain outbox. A no-op unless RELAY_ENABLED=true.
+relayer.start();
 startNoncePruner();
 
 if (env.AUTH_MODE === 'chain') {
@@ -98,6 +137,8 @@ async function shutdown(signal: string): Promise<void> {
   try {
     referee.stop();
     ratelimit.stop();
+    registry.stop();
+    relayer.stop();
     stopNoncePruner();
     // Tell clients to reconnect rather than dropping them silently.
     for (const client of [...rooms.allClients()]) client.ws.close(1001, 'server shutting down');
