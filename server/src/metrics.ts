@@ -107,6 +107,55 @@ export const pendingDeadlines = new Gauge({
   registers: [registry],
 });
 
+// ---- on-chain relay ----
+//
+// The one to alert on is `relay_dead_total`. Everything else can lag without
+// consequence — a dead row is a game event that will never reach the chain.
+
+export const relayEnqueued = new Counter({
+  name: 'lootgrid_relay_enqueued_total',
+  help: 'Actions queued for on-chain publication',
+  labelNames: ['kind'] as const,
+  registers: [registry],
+});
+
+/** Idempotency working as designed. A steady low rate is healthy; a spike is not. */
+export const relayDeduped = new Counter({
+  name: 'lootgrid_relay_deduped_total',
+  help: 'Enqueues rejected as duplicates',
+  labelNames: ['kind'] as const,
+  registers: [registry],
+});
+
+export const relayConfirmed = new Counter({
+  name: 'lootgrid_relay_confirmed_total',
+  help: 'Actions confirmed on chain',
+  labelNames: ['kind'] as const,
+  registers: [registry],
+});
+
+export const relayFailed = new Counter({
+  name: 'lootgrid_relay_failed_total',
+  help: 'Relay attempts that failed, by stage',
+  labelNames: ['kind', 'reason'] as const,
+  registers: [registry],
+});
+
+export const relayDead = new Counter({
+  name: 'lootgrid_relay_dead_total',
+  help: 'Actions abandoned after exhausting retries — alert on this',
+  labelNames: ['kind'] as const,
+  registers: [registry],
+});
+
+/** Sustained growth in `pending` means the relayer cannot keep up with play. */
+export const relayQueueDepth = new Gauge({
+  name: 'lootgrid_relay_queue_depth',
+  help: 'Relay outbox rows by status',
+  labelNames: ['status'] as const,
+  registers: [registry],
+});
+
 export async function render(): Promise<string> {
   return registry.metrics();
 }
