@@ -24,10 +24,15 @@ const resolveTimers = new Map<string, NodeJS.Timeout>();
 
 export type AttemptOutcome = 'won' | 'lost' | 'failed' | 'abandoned';
 
-/** Hooks for metrics; wired in observability so this module stays dependency-light. */
+/**
+ * Hooks for metrics and on-chain publication; wired in index.ts so this module
+ * stays dependency-light. Implementations must not throw and must not block —
+ * they run inline on the race's critical path.
+ */
 export const observers: {
+  onAttemptOpened?: (a: Attempt, hunt: Hunt) => void;
   onAttemptFinished?: (a: Attempt, outcome: AttemptOutcome) => void;
-  onHuntResolved?: (huntId: string, elapsedMs: number, racers: number) => void;
+  onHuntResolved?: (hunt: Hunt, winner: Attempt, racers: number) => void;
 } = {};
 
 // ---------------------------------------------------------------- attempts
@@ -86,6 +91,9 @@ export function openAttempt(player: Player, hunt: Hunt, now = Date.now()): OpenR
   }
 
   wheel.push(attempt.id, attempt.deadlineAt);
+  // After the UNIQUE constraint has settled, so a lost race never publishes an
+  // entry that did not happen.
+  observers.onAttemptOpened?.(attempt, hunt);
   rooms.toPlayer(player.id, { t: 'energy', ...spent.energy });
   broadcastChasers(hunt.id);
 
@@ -253,7 +261,7 @@ function resolve(huntId: string, now = Date.now()): void {
     winner: winner.handle,
   });
 
-  observers.onHuntResolved?.(huntId, winner.elapsedMs ?? 0, racers);
+  observers.onHuntResolved?.(hunt, winner, racers);
 
   store.evictHunt(huntId);
   // Keep the grid stocked — a treasure map with no treasure left is a dead app.

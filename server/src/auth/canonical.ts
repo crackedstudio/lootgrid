@@ -18,6 +18,8 @@ export function bodyHash(body: string | Buffer | undefined | null): string {
 }
 
 export interface HttpParts {
+  /** The acting identity. MUST be signed — see below. */
+  player: string;
   method: string;
   path: string;
   timestamp: number;
@@ -28,6 +30,13 @@ export interface HttpParts {
 export function canonicalHttp(p: HttpParts): string {
   return [
     HTTP_DOMAIN,
+    // The acting identity is inside the signature, not just the x-player header.
+    // Without this a signature proves an action but not who performed it, so a
+    // captured request could be replayed under a different claimed player — and
+    // the replay nonce is namespaced by that same claimed player, so it would
+    // not collide. canonicalWs has always signed the identity; this omission on
+    // the HTTP side was the asymmetry.
+    p.player.toLowerCase(),
     p.method.toUpperCase(),
     p.path,
     String(p.timestamp),
