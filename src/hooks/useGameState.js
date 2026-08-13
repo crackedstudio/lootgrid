@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { get, post, ApiError } from '../api/http';
+import { fetchHints } from '../api/hints';
 import { publishEntry, publishWin } from '../api/records';
 import { createSender, socket } from '../api/socket';
 import { ONB_CARDS } from '../data/gameData';
@@ -11,6 +12,8 @@ const INITIAL = {
   view: 'home',
   onbStep: 0,
   mapZone: null,
+  /** Hints the player holds. Directions toward a hunt — some of them lie. */
+  hints: [],
 
   // session
   status: 'connecting', // connecting | online | offline
@@ -274,6 +277,8 @@ export function useGameState() {
         for (const cell of grid.reveals) reveals[cellKey(cell.r, cell.c)] = cell;
         set({ mapZone: zoneId, grid: { ...grid, reveals } });
         socket.join(`zone:${zoneId}`);
+        // Best-effort: an empty hint strip is a worse map, never a broken one.
+        fetchHints().then(hints => set({ hints })).catch(() => {});
       } catch {
         toast('COULD NOT LOAD ZONE');
       }
@@ -310,6 +315,16 @@ export function useGameState() {
             ? { ...prev.grid, reveals: { ...prev.grid.reveals, [cellKey(cell.r, cell.c)]: res.cell } }
             : null,
         }));
+        // A reveal can pay out a hint. Prepend so the newest is first, and
+        // guard against a duplicate if the same grant arrives twice.
+        if (res.hint) {
+          set(prev => ({
+            hints: prev.hints.some(h => h.id === res.hint.id)
+              ? prev.hints
+              : [res.hint, ...prev.hints],
+          }));
+          toast('HINT FOUND');
+        }
         if (res.alreadyOpen) toast('SOMEONE BEAT YOU TO IT');
       } catch (err) {
         if (err.code === 'insufficient_energy') {

@@ -81,6 +81,28 @@ export const tilesRevealed = new Counter({
   registers: [registry],
 });
 
+// ---- hints ----
+//
+// Phase 1 exists to answer one question — is hint-driven discovery fun? — and
+// these are how it gets answered with data rather than opinion. Watch the ratio
+// of hunts found by hint-holders to hunts found without: if holding hints does
+// not visibly change where players dig, the loop is not working.
+
+export const hintsAwarded = new Counter({
+  name: 'lootgrid_hints_awarded_total',
+  help: 'Hints granted to players',
+  labelNames: ['tier'] as const,
+  registers: [registry],
+});
+
+/** Split by whether the finder held any live hint for that hunt. */
+export const huntsFound = new Counter({
+  name: 'lootgrid_hunts_found_total',
+  help: 'Hunts discovered, by whether the finder held a hint for them',
+  labelNames: ['hinted'] as const,
+  registers: [registry],
+});
+
 export const authFailures = new Counter({
   name: 'lootgrid_auth_failures_total',
   help: 'Rejected authentication attempts by reason',

@@ -9,6 +9,7 @@ import { closeDb, openDb } from './db/index';
 import { corsOrigins, env, isProd } from './env';
 import { registerRoutes } from './http';
 import { logger } from './logger';
+import * as hints from './hints';
 import * as metrics from './metrics';
 import * as ratelimit from './ratelimit';
 import * as referee from './referee';
@@ -46,6 +47,13 @@ registerRoutes(app);
 
 // ---- observer wiring (kept out of the referee so it stays dependency-light) ----
 referee.observers.onAttemptOpened = (attempt, hunt) => {
+  // Phase 1's gate metric: did this player hold a hint for the hunt they just
+  // entered? If the hinted and unhinted rates never diverge, hints are not
+  // changing where people dig and the loop has not earned its next phase.
+  metrics.huntsFound.inc({
+    hinted: hints.heldForHunt(attempt.playerId, hunt.id) ? 'yes' : 'no',
+  });
+
   // When players publish their own entries, relaying it too would emit the
   // record twice and put the operator back on the hook for the gas this change
   // moved to the player. The player's transaction may of course never land —

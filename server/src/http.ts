@@ -11,6 +11,7 @@ import { getDb } from './db/index';
 import * as energy from './energy';
 import { stdev } from './games/tap';
 import { inBounds, tileType } from './grid';
+import * as hints from './hints';
 import { badRequest, conflict, forbidden, isAppError, notFound, toWireError, tooManyRequests, unauthorized } from './errors';
 import { env, isProd } from './env';
 import { logger } from './logger';
@@ -272,8 +273,34 @@ export function registerRoutes(app: App): void {
       tileType: relayer.tileTypeCode(cell.type),
     });
 
+    // Awarded after the reveal is committed, and never allowed to throw: the
+    // player has already paid energy for this tile, so a hint that fails to
+    // generate is a missing bonus rather than a failed request.
+    const hint = hints.awardForReveal(
+      zone.seedSecret,
+      player.id,
+      r,
+      c,
+      store.liveHuntsIn(zone),
+      now,
+    );
+
     rooms.broadcast(rooms.zoneRoom(zone.id), { t: 'tile:revealed', ...cell });
-    return { cell, energy: spent.energy };
+    return { cell, energy: spent.energy, hint };
+  });
+
+  /**
+   * The player's unexpired hints.
+   *
+   * There is deliberately no `POST /hints/:id/apply`: applying a hint is a
+   * client-side view filter over `cellMatches`, and an endpoint that mutates
+   * nothing would be noise. What phase 1 actually needs to learn — whether hints
+   * change where people dig — is answered by the `hints_awarded` and
+   * `hunts_found{hinted=}` counters instead.
+   */
+  app.get('/hints', async req => {
+    const player = await requirePlayer(req);
+    return { hints: hints.forPlayer(player.id) };
   });
 
   // ---- hunts ----
