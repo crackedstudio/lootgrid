@@ -123,6 +123,35 @@ export const escrowQueueDepth = new Gauge({
   registers: [registry],
 });
 
+// ---- entry fees ----
+
+export const entryFeesCollected = new Counter({
+  name: 'lootgrid_entry_fees_total',
+  help: 'Entry payment outcomes',
+  labelNames: ['result'] as const,
+  registers: [registry],
+});
+
+export const entriesFree = new Counter({
+  name: 'lootgrid_entries_free_total',
+  help: 'Entries admitted without payment (energy path)',
+  registers: [registry],
+});
+
+/**
+ * Fee as a fraction of one entrant's expected prize share, per zone.
+ *
+ * THE metric for this phase. A rational agent refuses a hunt where this reaches
+ * 1.0, so crossing it does not slow participation — it stops it. Alert well
+ * below, at 0.6, because by the time it is observed at 1.0 the agents are gone.
+ */
+export const entryEvRatio = new Gauge({
+  name: 'lootgrid_entry_ev_ratio',
+  help: 'Entry fee divided by expected prize share per entrant',
+  labelNames: ['zone', 'difficulty'] as const,
+  registers: [registry],
+});
+
 // ---- hints ----
 //
 // Phase 1 exists to answer one question — is hint-driven discovery fun? — and

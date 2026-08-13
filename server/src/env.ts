@@ -142,6 +142,22 @@ const schema = z
     ESCROW_MAX_IN_FLIGHT: z.coerce.number().int().min(1).max(100).default(10),
     ESCROW_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(6),
 
+    /**
+     * Charge an entry fee for rewarded hunts.
+     *
+     * DEFAULT FALSE AND MUST STAY FALSE IN PRODUCTION until the legal review
+     * returns. Pay-to-enter for a cash prize is the gambling definition in many
+     * jurisdictions, and this build compounds it: the house charges admission,
+     * issues the hints, and may deliberately falsify them. See
+     * docs/AGENTIC_ARCHITECTURE.md §10.
+     */
+    ENTRY_FEES_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform(v => v === 'true'),
+    /** Where entry fees are collected. */
+    ENTRY_FEE_PAY_TO: hexAddress.optional(),
+
     METRICS_ENABLED: z
       .enum(['true', 'false'])
       .default('true')
@@ -240,6 +256,14 @@ const schema = z
         code: z.ZodIssueCode.custom,
         path: ['ESCROW_TREASURY_PRIVATE_KEY'],
         message: 'must differ from ESCROW_PRIVATE_KEY — the float and its signer are separate roles',
+      });
+    }
+
+    if (v.ENTRY_FEES_ENABLED && !v.ENTRY_FEE_PAY_TO) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ENTRY_FEE_PAY_TO'],
+        message: 'required when ENTRY_FEES_ENABLED=true',
       });
     }
 

@@ -13,6 +13,8 @@ import { stdev } from './games/tap';
 import { inBounds, tileType } from './grid';
 import * as hints from './hints';
 import * as hintStats from './hints/stats';
+import { quoteEntry } from './payments/fees';
+import * as x402 from './payments/x402';
 import { badRequest, conflict, forbidden, isAppError, notFound, toWireError, tooManyRequests, unauthorized } from './errors';
 import { env, isProd } from './env';
 import { logger } from './logger';
@@ -47,6 +49,12 @@ function parse<T extends z.ZodTypeAny>(schema: T, value: unknown): z.infer<T> {
 }
 
 // ---------------------------------------------------------------- auth
+
+/** A single header value, or null. Headers may arrive as arrays. */
+function headerOrNull(req: FastifyRequest, name: string): string | null {
+  const v = req.headers[name];
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
 
 function credentialsFrom(req: FastifyRequest): Credentials {
   const h = req.headers;
@@ -324,13 +332,42 @@ export function registerRoutes(app: App): void {
     };
   });
 
-  app.post('/hunts/:id/attempts', async req => {
+  app.post('/hunts/:id/attempts', async (req, reply) => {
     const player = await requirePlayer(req);
     const { id } = parse(idParams, req.params);
     limit(`attempt:${player.id}`, env.RATE_ATTEMPT_PER_MIN, 60_000, 'attempt');
 
     const hunt = store.getHunt(id);
     if (!hunt) throw notFound('no_such_hunt');
+
+    // Entry gate. Energy is the free route and is tried first: a player who has
+    // it never sees a payment prompt, which keeps a no-cost path to every prize.
+    // Only when energy is exhausted does a fee apply, and only if fees are on at
+    // all — ENTRY_FEES_ENABLED is false by default and legally gated.
+    const zone = store.getZone(hunt.zoneId);
+    const quote = quoteEntry(
+      hunt.difficulty,
+      zone?.kind ?? 'human',
+      store.chaserCount(hunt.id),
+      energy.currentEnergy(player, Date.now()) > 0,
+    );
+
+    metrics.entryEvRatio.set(
+      { zone: hunt.zoneId, difficulty: hunt.difficulty },
+      Number.isFinite(quote.evRatio) ? quote.evRatio : 0,
+    );
+
+    if (x402.enabled() && quote.feeCents > 0 && !quote.freeEntryAvailable) {
+      const terms = x402.termsFor(hunt.id, quote.feeCents);
+      const settled = await x402.settleEntry(terms, headerOrNull(req, 'x-payment'));
+      if (!settled.ok) {
+        // 402 with the terms attached is what the protocol expects; the client
+        // signs and retries against the same URL.
+        return reply.code(402).send(x402.paymentRequiredBody(terms));
+      }
+    } else if (quote.freeEntryAvailable) {
+      metrics.entriesFree.inc();
+    }
 
     const result = referee.openAttempt(player, hunt);
     if (!result.ok) throw conflict(result.error);
