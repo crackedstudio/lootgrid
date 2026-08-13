@@ -29,21 +29,30 @@ const KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
 const ACTIONS = '0x00000000000000000000000000000000000000ac' as const;
 const ALICE = '0x00000000000000000000000000000000000000a1' as const;
 
+const ESCROW = '0x00000000000000000000000000000000000000e5' as const;
+const ESCROW_KEY = '0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba' as const;
+
 const mut = env as {
   ATTESTOR_PRIVATE_KEY?: string;
   LOOTGRID_ACTIONS_ADDRESS?: string;
+  ESCROW_PRIVATE_KEY?: string;
+  LOOTGRID_ESCROW_ADDRESS?: string;
   CHAIN: 'celo' | 'celoSepolia';
 };
 
 const original = {
   key: mut.ATTESTOR_PRIVATE_KEY,
   address: mut.LOOTGRID_ACTIONS_ADDRESS,
+  escrowKey: mut.ESCROW_PRIVATE_KEY,
+  escrowAddress: mut.LOOTGRID_ESCROW_ADDRESS,
   chain: mut.CHAIN,
 };
 
 beforeEach(() => {
   mut.ATTESTOR_PRIVATE_KEY = KEY;
   mut.LOOTGRID_ACTIONS_ADDRESS = ACTIONS;
+  mut.ESCROW_PRIVATE_KEY = ESCROW_KEY;
+  mut.LOOTGRID_ESCROW_ADDRESS = ESCROW;
   mut.CHAIN = 'celoSepolia';
   attestor.reset();
 });
@@ -51,6 +60,8 @@ beforeEach(() => {
 afterEach(() => {
   mut.ATTESTOR_PRIVATE_KEY = original.key;
   mut.LOOTGRID_ACTIONS_ADDRESS = original.address;
+  mut.ESCROW_PRIVATE_KEY = original.escrowKey;
+  mut.LOOTGRID_ESCROW_ADDRESS = original.escrowAddress;
   mut.CHAIN = original.chain;
   attestor.reset();
 });
@@ -228,4 +239,62 @@ describe('signing', () => {
       expect(attestor.toBytes32Id(id)).toBe(relayer.toBytes32Id(id));
     },
   );
+});
+
+describe('payout attestations are separated from record attestations', () => {
+  it('is disabled without an escrow key or address', () => {
+    mut.ESCROW_PRIVATE_KEY = undefined;
+    expect(attestor.escrowEnabled()).toBe(false);
+    mut.ESCROW_PRIVATE_KEY = ESCROW_KEY;
+    mut.LOOTGRID_ESCROW_ADDRESS = undefined;
+    expect(attestor.escrowEnabled()).toBe(false);
+  });
+
+  it('signs a payout that recovers to the escrow key', async () => {
+    const a = await attestor.signPayout(ALICE, attestor.toBytes32Id('hunt-1'), 2105, 4);
+
+    const recovered = await recoverTypedDataAddress({
+      domain: {
+        name: 'LootGridEscrow',
+        version: '1',
+        chainId: a.chainId,
+        verifyingContract: a.contract,
+      },
+      types: attestor.TYPES,
+      primaryType: 'Resolution',
+      message: {
+        winner: a.winner,
+        huntId: a.huntId,
+        elapsedMs: a.elapsedMs,
+        racers: a.racers,
+        deadline: BigInt(a.deadline),
+      },
+      signature: a.signature,
+    });
+
+    expect(recovered).toBe(privateKeyToAccount(ESCROW_KEY).address);
+    expect(a.contract).toBe(ESCROW);
+  });
+
+  it('produces a different signature from the record attestation', async () => {
+    // The whole point of the separate domain: a signature minted to write a
+    // public record must not also be able to move money, and vice versa.
+    const huntId = attestor.toBytes32Id('hunt-1');
+    const record = await attestor.signResolution(ALICE, huntId, 2105, 4, 1_700_000_000_000);
+    const payout = await attestor.signPayout(ALICE, huntId, 2105, 4, 1_700_000_000_000);
+
+    expect(record.deadline).toBe(payout.deadline);
+    expect(payout.signature).not.toBe(record.signature);
+    expect(payout.contract).not.toBe(record.contract);
+  });
+
+  it('uses a key that can be rotated independently', () => {
+    expect(attestor.escrowAddress()).not.toBe(privateKeyToAccount(KEY).address);
+  });
+
+  it('clamps the same fields the record path does', async () => {
+    const a = await attestor.signPayout(ALICE, attestor.toBytes32Id('h'), 2 ** 33, 70_000);
+    expect(a.elapsedMs).toBe(4_294_967_295);
+    expect(a.racers).toBe(65_535);
+  });
 });

@@ -39,6 +39,20 @@ const DOMAIN_NAME = 'LootGridActions';
 const DOMAIN_VERSION = '1';
 
 /**
+ * The escrow verifies the identical `Resolution` struct under its OWN domain,
+ * with its own on-chain attestor. So the same message is signed twice: once for
+ * the public record, once for the money.
+ *
+ * That is deliberate. Sharing one signature would tie the key that writes
+ * cosmetic game logs to the key that moves funds, and they need different
+ * protection — records can stay on a hot key, payouts should not. Point
+ * ESCROW_PRIVATE_KEY at the same value as ATTESTOR_PRIVATE_KEY on day one if you
+ * like; the separation exists so you can stop.
+ */
+const ESCROW_DOMAIN_NAME = 'LootGridEscrow';
+const ESCROW_DOMAIN_VERSION = '1';
+
+/**
  * How long an attestation stays valid. Long enough to survive a slow wallet
  * round trip and a congested block or two; short enough that a leaked one is
  * near-worthless. The contract compares against `block.timestamp`, so this is
@@ -143,6 +157,97 @@ function signer() {
 /** The attestor's public address, for wiring `ACTIONS_ATTESTOR` at deploy time. */
 export function address(): Address {
   return signer().address;
+}
+
+// ─────────────────────────── escrow (payouts) ───────────────────────────
+
+let escrowAccount: ReturnType<typeof privateKeyToAccount> | null = null;
+
+/** Whether payout signing is configured. Absent key => escrow claims are off. */
+export function escrowEnabled(): boolean {
+  return Boolean(env.ESCROW_PRIVATE_KEY && env.LOOTGRID_ESCROW_ADDRESS);
+}
+
+function escrowSigner() {
+  if (!escrowAccount) {
+    if (!env.ESCROW_PRIVATE_KEY) {
+      throw new Error('escrow attestor misconfigured — check escrowEnabled() before signing');
+    }
+    escrowAccount = privateKeyToAccount(env.ESCROW_PRIVATE_KEY as Hex);
+    logger.info({ escrowAttestor: escrowAccount.address }, 'escrow payout key loaded');
+  }
+  return escrowAccount;
+}
+
+/** The payout signer's address, for wiring ESCROW_ATTESTOR at deploy time. */
+export function escrowAddress(): Address {
+  return escrowSigner().address;
+}
+
+function escrowDomain() {
+  return {
+    name: ESCROW_DOMAIN_NAME,
+    version: ESCROW_DOMAIN_VERSION,
+    chainId: CHAIN_IDS[env.CHAIN],
+    verifyingContract: env.LOOTGRID_ESCROW_ADDRESS as Address,
+  } as const;
+}
+
+export interface PayoutAttestation {
+  kind: 'payout';
+  winner: Address;
+  huntId: Hex;
+  elapsedMs: number;
+  racers: number;
+  deadline: number;
+  signature: Hex;
+  contract: Address;
+  chainId: number;
+}
+
+/**
+ * Sign a payout claim against LootGridEscrow.
+ *
+ * Same fields as {@link signResolution} — the escrow deliberately verifies the
+ * identical struct — but under the escrow's domain and with the escrow's key.
+ * The amount is NOT signed: it comes from the pot the treasury funded, so the
+ * referee never has to know or agree about how much a hunt is worth.
+ */
+export async function signPayout(
+  winner: Address,
+  huntId: Hex,
+  elapsedMs: number,
+  racers: number,
+  now: number = Date.now(),
+): Promise<PayoutAttestation> {
+  const deadline = deadlineFrom(now);
+  const clampedElapsed = Math.max(0, Math.min(Math.trunc(elapsedMs), 4_294_967_295));
+  const clampedRacers = Math.max(0, Math.min(Math.trunc(racers), 65_535));
+
+  const signature = await escrowSigner().signTypedData({
+    domain: escrowDomain(),
+    types: TYPES,
+    primaryType: 'Resolution',
+    message: {
+      winner,
+      huntId,
+      elapsedMs: clampedElapsed,
+      racers: clampedRacers,
+      deadline: BigInt(deadline),
+    },
+  });
+
+  return {
+    kind: 'payout',
+    winner,
+    huntId,
+    elapsedMs: clampedElapsed,
+    racers: clampedRacers,
+    deadline,
+    signature,
+    contract: env.LOOTGRID_ESCROW_ADDRESS as Address,
+    chainId: CHAIN_IDS[env.CHAIN],
+  };
 }
 
 function domain() {
@@ -260,7 +365,8 @@ export async function signResolution(
   };
 }
 
-/** Clears the cached account. Tests only. */
+/** Clears the cached accounts. Tests only. */
 export function reset(): void {
   account = null;
+  escrowAccount = null;
 }

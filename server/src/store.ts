@@ -10,6 +10,7 @@ import { cellKey } from './grid';
 import * as hints from './hints';
 import { hash, randomHex } from './hash';
 import { logger } from './logger';
+import { prizeLabelFor } from './prizes';
 import type { Attempt, BlockGame, Hunt, Player, Reveal, Zone } from './types';
 
 /**
@@ -43,7 +44,6 @@ const ZONE_SEED: Array<Pick<Zone, 'id' | 'name' | 'accent' | 'kind'>> = [
   { id: 'hollow', name: 'DEEP HOLLOW', accent: '#8A3DFF', kind: 'human' },
 ];
 
-const PRIZE_LABELS = ['$3.00', '$5.50', '$12.00', '$24.00'];
 const HUNT_TTL_MS = 24 * 60 * 60 * 1000;
 
 export function bootstrap(): void {
@@ -204,7 +204,9 @@ export function replenish(zoneId: string, now = Date.now()): number {
       cellCommit: hash(id, zone.id, r, c, salt).toString('hex'),
       kind: 'cash',
       difficulty: 'med',
-      prizeLabel: PRIZE_LABELS[open % PRIZE_LABELS.length]!,
+      // Derived from difficulty rather than cycled through a fixed array, so a
+      // prize now means something about the hunt. See prizes.ts.
+      prizeLabel: prizeLabelFor('med'),
       status: 'live',
       winnerId: null,
       game: null,

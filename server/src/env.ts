@@ -105,6 +105,20 @@ const schema = z
       .regex(/^0x[a-fA-F0-9]{64}$/, 'must be a 0x-prefixed 32-byte key')
       .optional(),
 
+    /** LootGridEscrow, which holds the prize pots. */
+    LOOTGRID_ESCROW_ADDRESS: hexAddress.optional(),
+    /**
+     * Signs payout claims against LootGridEscrow.
+     *
+     * Deliberately separate from ATTESTOR_PRIVATE_KEY: that one writes cosmetic
+     * game records, this one moves money, and they should not share protection.
+     * This is the key to put behind a multisig or threshold signer first.
+     */
+    ESCROW_PRIVATE_KEY: z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{64}$/, 'must be a 0x-prefixed 32-byte key')
+      .optional(),
+
     METRICS_ENABLED: z
       .enum(['true', 'false'])
       .default('true')
@@ -151,6 +165,28 @@ const schema = z
         code: z.ZodIssueCode.custom,
         path: ['ATTESTOR_PRIVATE_KEY'],
         message: 'must differ from RELAY_PRIVATE_KEY',
+      });
+    }
+
+    if (v.ESCROW_PRIVATE_KEY && !v.LOOTGRID_ESCROW_ADDRESS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['LOOTGRID_ESCROW_ADDRESS'],
+        message: 'required when ESCROW_PRIVATE_KEY is set',
+      });
+    }
+
+    // Sharing the key would defeat the separation the escrow's own EIP-712
+    // domain exists to provide: one leak would then be worth both.
+    if (
+      v.ESCROW_PRIVATE_KEY &&
+      v.ATTESTOR_PRIVATE_KEY &&
+      v.ESCROW_PRIVATE_KEY.toLowerCase() === v.ATTESTOR_PRIVATE_KEY.toLowerCase()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ESCROW_PRIVATE_KEY'],
+        message: 'must differ from ATTESTOR_PRIVATE_KEY — payouts and records need separate keys',
       });
     }
 
