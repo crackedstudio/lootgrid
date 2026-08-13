@@ -32,11 +32,13 @@ const playerCache = new Map<string, Player>();
  */
 const huntCache = new Map<string, Hunt>();
 
-const ZONE_SEED: Array<Pick<Zone, 'id' | 'name' | 'accent'>> = [
-  { id: 'ridge', name: 'EASTERN RIDGE', accent: '#FF7A1A' },
-  { id: 'flats', name: 'GOLDEN FLATS', accent: '#FFD51F' },
-  { id: 'tide', name: 'NEON TIDE', accent: '#29E6E6' },
-  { id: 'hollow', name: 'DEEP HOLLOW', accent: '#8A3DFF' },
+// Every seeded zone is human-played. Agent zones arrive with their modules in
+// phase 6; seeding one now would create a zone that cannot host a cash hunt.
+const ZONE_SEED: Array<Pick<Zone, 'id' | 'name' | 'accent' | 'kind'>> = [
+  { id: 'ridge', name: 'EASTERN RIDGE', accent: '#FF7A1A', kind: 'human' },
+  { id: 'flats', name: 'GOLDEN FLATS', accent: '#FFD51F', kind: 'human' },
+  { id: 'tide', name: 'NEON TIDE', accent: '#29E6E6', kind: 'human' },
+  { id: 'hollow', name: 'DEEP HOLLOW', accent: '#8A3DFF', kind: 'human' },
 ];
 
 const PRIZE_LABELS = ['$3.00', '$5.50', '$12.00', '$24.00'];
@@ -145,7 +147,11 @@ export function setHuntStatus(
 export function blockGame(hunt: Hunt): BlockGame {
   if (hunt.game) return hunt.game;
 
-  const type = gameTypeForBlock(hunt.salt, hunt.id, hunt.kind);
+  // The zone decides which module pool the block may draw from — reflex games
+  // for human zones, agent-native ones for agent zones. A missing zone falls
+  // back to 'human', the stricter branch.
+  const zoneKind = getZone(hunt.zoneId)?.kind ?? 'human';
+  const type = gameTypeForBlock(hunt.salt, hunt.id, hunt.kind, zoneKind);
   const mod = moduleFor(type);
   const { spec, secret, limitMs } = mod.generate(hunt.salt, hunt.difficulty);
   const game: BlockGame = { type, spec, secret, limitMs };

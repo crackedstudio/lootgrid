@@ -19,10 +19,22 @@ export interface Player {
   createdAt: number;
 }
 
+/**
+ * Who plays a zone. Decides which game modules are eligible, and therefore
+ * whether anti-automation applies — see `games/index.ts`.
+ *
+ * Distinct from {@link HuntKind} ('cash' | 'puzzle'), which describes a hunt's
+ * stakes rather than its players. Both are called `kind` on their own type; read
+ * the owner, not the field name.
+ */
+export type ZoneKind = 'human' | 'agent';
+
 export interface Zone {
   id: string;
   name: string;
   accent: string;
+  /** Defaults to 'human'. See {@link ZoneKind}. */
+  kind: ZoneKind;
   /**
    * Secret for the life of the epoch — this is the whole fog. Published when the
    * epoch rotates so players can audit that the map was fixed in advance.

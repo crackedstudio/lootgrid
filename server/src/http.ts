@@ -193,6 +193,9 @@ export function registerRoutes(app: App): void {
       id: z.id,
       name: z.name,
       accent: z.accent,
+      // Who plays here. The client uses it to route between the reflex UI and
+      // the agent UI; it is not a secret.
+      kind: z.kind,
       epoch: z.epoch,
       // Published up front; the secret is revealed when the epoch rotates, so
       // the map can be proved to have been fixed in advance.
