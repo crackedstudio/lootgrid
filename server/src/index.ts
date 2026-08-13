@@ -4,6 +4,7 @@ import Fastify, { LogController } from 'fastify';
 import * as registry from './auth/registry';
 import { startNoncePruner, stopNoncePruner } from './auth/verify';
 import * as attestor from './chain/attestor';
+import * as escrowWorker from './chain/escrow';
 import * as relayer from './chain/relayer';
 import { closeDb, openDb } from './db/index';
 import { corsOrigins, env, isProd } from './env';
@@ -104,6 +105,9 @@ ratelimit.start();
 registry.start();
 // Drains the on-chain outbox. A no-op unless RELAY_ENABLED=true.
 relayer.start();
+// Funds prize pots. A no-op unless ESCROW_FUNDING_ENABLED=true; hunts open
+// either way, they simply carry no money until a pot lands.
+escrowWorker.start();
 startNoncePruner();
 
 if (env.AUTH_MODE === 'chain') {
@@ -147,6 +151,7 @@ async function shutdown(signal: string): Promise<void> {
     ratelimit.stop();
     registry.stop();
     relayer.stop();
+    escrowWorker.stop();
     stopNoncePruner();
     // Tell clients to reconnect rather than dropping them silently.
     for (const client of [...rooms.allClients()]) client.ws.close(1001, 'server shutting down');

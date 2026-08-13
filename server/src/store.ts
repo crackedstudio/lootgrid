@@ -5,12 +5,14 @@ import * as attemptRepo from './db/repos/attempts';
 import * as huntRepo from './db/repos/hunts';
 import * as playerRepo from './db/repos/players';
 import * as zoneRepo from './db/repos/zones';
+import * as escrow from './chain/escrow';
 import { gameTypeForBlock, moduleFor } from './games';
 import { cellKey } from './grid';
 import * as hints from './hints';
 import { hash, randomHex } from './hash';
+import { env } from './env';
 import { logger } from './logger';
-import { prizeLabelFor } from './prizes';
+import { prizeCentsFor, prizeLabelFor, toTokenUnits } from './prizes';
 import type { Attempt, BlockGame, Hunt, Player, Reveal, Zone } from './types';
 
 /**
@@ -220,6 +222,14 @@ export function replenish(zoneId: string, now = Date.now()): number {
     tx(() => {
       huntRepo.insert(hunt);
       hints.commitAtCreation(hunt, now);
+      // Queue the prize alongside the hunt, so a created hunt and its funding
+      // intent are recorded together or not at all. The worker funds it out of
+      // band — an unfunded hunt still plays, it just carries no money yet.
+      escrow.enqueue(
+        hunt.id,
+        toTokenUnits(prizeCentsFor(hunt.difficulty), env.ESCROW_TOKEN_DECIMALS),
+        hunt.expiresAt ?? now + HUNT_TTL_MS,
+      );
     });
 
     open += 1;

@@ -119,6 +119,29 @@ const schema = z
       .regex(/^0x[a-fA-F0-9]{64}$/, 'must be a 0x-prefixed 32-byte key')
       .optional(),
 
+    /**
+     * Fund hunt prizes on chain. Off by default — a hunt with no pot still
+     * plays, it simply carries no money.
+     */
+    ESCROW_FUNDING_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform(v => v === 'true'),
+    /**
+     * Sends fundHunt. This is the only server key that holds SPENDABLE money —
+     * a leak costs whatever balance it carries, and no contract cap can bound
+     * that. Keep the float small and top it up on a schedule.
+     */
+    ESCROW_TREASURY_PRIVATE_KEY: z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{64}$/, 'must be a 0x-prefixed 32-byte key')
+      .optional(),
+    /** Prize token decimals. cUSD/USDm are 18, USDC/USDT are 6. */
+    ESCROW_TOKEN_DECIMALS: z.coerce.number().int().min(2).max(24).default(18),
+    ESCROW_POLL_MS: z.coerce.number().int().min(200).max(60_000).default(2_000),
+    ESCROW_MAX_IN_FLIGHT: z.coerce.number().int().min(1).max(100).default(10),
+    ESCROW_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(6),
+
     METRICS_ENABLED: z
       .enum(['true', 'false'])
       .default('true')
@@ -187,6 +210,36 @@ const schema = z
         code: z.ZodIssueCode.custom,
         path: ['ESCROW_PRIVATE_KEY'],
         message: 'must differ from ATTESTOR_PRIVATE_KEY — payouts and records need separate keys',
+      });
+    }
+
+    if (v.ESCROW_FUNDING_ENABLED) {
+      for (const [key, val] of [
+        ['LOOTGRID_ESCROW_ADDRESS', v.LOOTGRID_ESCROW_ADDRESS],
+        ['ESCROW_TREASURY_PRIVATE_KEY', v.ESCROW_TREASURY_PRIVATE_KEY],
+        ['RPC_URL', v.RPC_URL],
+      ] as const) {
+        if (!val) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: 'required when ESCROW_FUNDING_ENABLED=true',
+          });
+        }
+      }
+    }
+
+    // The treasury holds the float; the payout signer authorises spending it.
+    // One key doing both means a single leak drains everything at once.
+    if (
+      v.ESCROW_TREASURY_PRIVATE_KEY &&
+      v.ESCROW_PRIVATE_KEY &&
+      v.ESCROW_TREASURY_PRIVATE_KEY.toLowerCase() === v.ESCROW_PRIVATE_KEY.toLowerCase()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ESCROW_TREASURY_PRIVATE_KEY'],
+        message: 'must differ from ESCROW_PRIVATE_KEY — the float and its signer are separate roles',
       });
     }
 

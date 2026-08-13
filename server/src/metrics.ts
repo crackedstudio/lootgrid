@@ -81,6 +81,48 @@ export const tilesRevealed = new Counter({
   registers: [registry],
 });
 
+// ---- escrow funding ----
+//
+// A dead row here is a hunt that will never carry a prize. Alert on it.
+
+export const escrowEnqueued = new Counter({
+  name: 'lootgrid_escrow_enqueued_total',
+  help: 'Prize pots queued for funding',
+  registers: [registry],
+});
+
+export const escrowDeduped = new Counter({
+  name: 'lootgrid_escrow_deduped_total',
+  help: 'Funding enqueues rejected as duplicates',
+  registers: [registry],
+});
+
+export const escrowFunded = new Counter({
+  name: 'lootgrid_escrow_funded_total',
+  help: 'Prize pots confirmed on chain',
+  registers: [registry],
+});
+
+export const escrowFailed = new Counter({
+  name: 'lootgrid_escrow_failed_total',
+  help: 'Funding attempts that failed',
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
+export const escrowDead = new Counter({
+  name: 'lootgrid_escrow_dead_total',
+  help: 'Pots abandoned after exhausting retries — alert on this',
+  registers: [registry],
+});
+
+export const escrowQueueDepth = new Gauge({
+  name: 'lootgrid_escrow_queue_depth',
+  help: 'Rows in the escrow outbox by status',
+  labelNames: ['status'] as const,
+  registers: [registry],
+});
+
 // ---- hints ----
 //
 // Phase 1 exists to answer one question — is hint-driven discovery fun? — and

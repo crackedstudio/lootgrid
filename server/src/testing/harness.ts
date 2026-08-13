@@ -6,6 +6,7 @@ import * as huntRepo from '../db/repos/hunts';
 import * as nonceRepo from '../db/repos/nonces';
 import * as playerRepo from '../db/repos/players';
 import * as zoneRepo from '../db/repos/zones';
+import * as escrowWorker from '../chain/escrow';
 import * as ratelimit from '../ratelimit';
 import * as store from '../store';
 import type { GameType } from '../types';
@@ -27,6 +28,7 @@ export function freshWorld(): void {
   }
   store.resetForTests();
   ratelimit.reset();
+  escrowWorker.reset();
 
   openDb(':memory:');
   migrate();
