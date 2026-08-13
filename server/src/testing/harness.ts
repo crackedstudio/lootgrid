@@ -1,6 +1,7 @@
 import { closeDb, openDb } from '../db/index';
 import { migrate } from '../db/migrate';
 import * as attemptRepo from '../db/repos/attempts';
+import * as hintRepo from '../db/repos/hints';
 import * as huntRepo from '../db/repos/hunts';
 import * as nonceRepo from '../db/repos/nonces';
 import * as playerRepo from '../db/repos/players';
@@ -18,7 +19,10 @@ import type { GameType } from '../types';
  */
 export function freshWorld(): void {
   closeDb();
-  for (const repo of [playerRepo, zoneRepo, huntRepo, attemptRepo, nonceRepo]) {
+  // Every repo with a statement cache must be listed here. Forgetting one does
+  // not fail loudly at the seam — it surfaces as "database connection is not
+  // open" from whichever query happens to run first in the next test.
+  for (const repo of [playerRepo, zoneRepo, huntRepo, attemptRepo, nonceRepo, hintRepo]) {
     repo.resetStatements();
   }
   store.resetForTests();
@@ -45,15 +49,23 @@ export function anyHunt() {
 /**
  * Game type is derived from each block's salt, so seeded hunts get a mix.
  * Tests that exercise one game have to go and find a block running it.
+ *
+ * Salts are random, so a given world is not guaranteed to contain every game
+ * type — roughly one run in a hundred used to seed no `tap` block and fail the
+ * test for it. Reseeding until the type appears keeps the randomness (which is
+ * the point — tests should not depend on one fixed salt) without the flake.
  */
 export function huntOfType(type: GameType) {
-  for (const zone of store.listZones()) {
-    for (const h of store.liveHuntsIn(zone)) {
-      const full = store.getHunt(h.id)!;
-      if (store.blockGame(full).type === type) return full;
+  for (let attempt = 0; attempt < 25; attempt++) {
+    for (const zone of store.listZones()) {
+      for (const h of store.liveHuntsIn(zone)) {
+        const full = store.getHunt(h.id)!;
+        if (store.blockGame(full).type === type) return full;
+      }
     }
+    freshWorld();
   }
-  throw new Error(`no seeded hunt is running "${type}"`);
+  throw new Error(`no seeded hunt is running "${type}" after 25 worlds`);
 }
 
 export function makePlayer(id: string, handle = `@${id}`) {

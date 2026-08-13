@@ -1,11 +1,13 @@
 import { GRID, HUNTS_PER_ZONE } from './config';
 import { migrate } from './db/migrate';
+import { tx } from './db/index';
 import * as attemptRepo from './db/repos/attempts';
 import * as huntRepo from './db/repos/hunts';
 import * as playerRepo from './db/repos/players';
 import * as zoneRepo from './db/repos/zones';
 import { gameTypeForBlock, moduleFor } from './games';
 import { cellKey } from './grid';
+import * as hints from './hints';
 import { hash, randomHex } from './hash';
 import { logger } from './logger';
 import type { Attempt, BlockGame, Hunt, Player, Reveal, Zone } from './types';
@@ -138,6 +140,14 @@ export function setHuntStatus(
   hunt.status = status;
   hunt.winnerId = winnerId;
   huntRepo.setStatus(hunt.id, status, winnerId, now);
+
+  // A hunt that can no longer be played has nothing left to protect, so its
+  // hint set — truth flags included — becomes publicly checkable. This is the
+  // same moment the salt is disclosed, and doing it here rather than at the two
+  // call sites means no future terminal status can forget to open the books.
+  if (status === 'resolved' || status === 'expired') {
+    hints.revealForHunt(hunt.id, now ?? Date.now());
+  }
 }
 
 /**
@@ -201,7 +211,15 @@ export function replenish(zoneId: string, now = Date.now()): number {
       expiresAt: now + HUNT_TTL_MS,
       createdAt: now,
     };
-    huntRepo.insert(hunt);
+    // The hint set and its commitment are written in the same transaction as the
+    // hunt, so a hunt can never become playable without a published commitment.
+    // That ordering IS the guarantee — a commitment made after play has begun
+    // proves nothing about what the house decided beforehand.
+    tx(() => {
+      huntRepo.insert(hunt);
+      hints.commitAtCreation(hunt, now);
+    });
+
     open += 1;
     created += 1;
   }

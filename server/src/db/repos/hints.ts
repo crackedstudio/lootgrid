@@ -70,8 +70,61 @@ function build() {
     countOfPlayer: db.prepare(
       'SELECT COUNT(*) AS n FROM player_hints ph JOIN hints h ON h.id = ph.hint_id WHERE ph.player_id = ? AND (h.expires_at IS NULL OR h.expires_at > ?)',
     ),
+
+    // ---- commitments ----
+    putCommitment: db.prepare(`
+      INSERT INTO hint_commitments (hunt_id, zone_id, epoch, commitment, version, committed_at)
+      VALUES (@huntId, @zoneId, @epoch, @commitment, @version, @committedAt)
+      ON CONFLICT (hunt_id) DO NOTHING
+    `),
+    getCommitment: db.prepare('SELECT * FROM hint_commitments WHERE hunt_id = ?'),
+    // Idempotent, and never moves an existing timestamp: the first reveal is the
+    // one that counts, and a later write must not appear to backdate it.
+    reveal: db.prepare(
+      'UPDATE hint_commitments SET revealed_at = ? WHERE hunt_id = ? AND revealed_at IS NULL',
+    ),
+    liveInZone: db.prepare(`
+      SELECT * FROM hint_commitments
+      WHERE zone_id = ? AND revealed_at IS NULL
+      ORDER BY committed_at DESC LIMIT ?
+    `),
+    revealedInZone: db.prepare(`
+      SELECT * FROM hint_commitments
+      WHERE zone_id = ? AND revealed_at IS NOT NULL
+      ORDER BY revealed_at DESC LIMIT ?
+    `),
   };
 }
+
+export interface CommitmentRow {
+  huntId: string;
+  zoneId: string;
+  epoch: number;
+  commitment: string;
+  version: string;
+  committedAt: number;
+  revealedAt: number | null;
+}
+
+interface RawCommitment {
+  hunt_id: string;
+  zone_id: string;
+  epoch: number;
+  commitment: string;
+  version: string;
+  committed_at: number;
+  revealed_at: number | null;
+}
+
+const toCommitment = (r: RawCommitment): CommitmentRow => ({
+  huntId: r.hunt_id,
+  zoneId: r.zone_id,
+  epoch: r.epoch,
+  commitment: r.commitment,
+  version: r.version,
+  committedAt: r.committed_at,
+  revealedAt: r.revealed_at,
+});
 const s = () => (cache ??= build());
 
 export function resetStatements(): void {
@@ -131,4 +184,36 @@ export function holds(playerId: string, hintId: string): boolean {
 
 export function countOfPlayer(playerId: string, now = Date.now()): number {
   return (s().countOfPlayer.get(playerId, now) as { n: number }).n;
+}
+
+// ─────────────────────────── commitments ───────────────────────────
+
+export function putCommitment(
+  huntId: string,
+  zoneId: string,
+  epoch: number,
+  commitment: string,
+  version: string,
+  now = Date.now(),
+): void {
+  s().putCommitment.run({ huntId, zoneId, epoch, commitment, version, committedAt: now });
+}
+
+export function getCommitment(huntId: string): CommitmentRow | null {
+  const row = s().getCommitment.get(huntId) as RawCommitment | undefined;
+  return row ? toCommitment(row) : null;
+}
+
+/** Marks a hunt's hint set publicly checkable. Returns false if already revealed. */
+export function reveal(huntId: string, now = Date.now()): boolean {
+  return s().reveal.run(now, huntId).changes > 0;
+}
+
+/** Live hunts: the commitment is public, the contents are not. */
+export function liveCommitments(zoneId: string, limit = 100): CommitmentRow[] {
+  return (s().liveInZone.all(zoneId, limit) as RawCommitment[]).map(toCommitment);
+}
+
+export function revealedCommitments(zoneId: string, limit = 100): CommitmentRow[] {
+  return (s().revealedInZone.all(zoneId, limit) as RawCommitment[]).map(toCommitment);
 }

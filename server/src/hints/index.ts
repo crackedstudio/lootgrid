@@ -2,6 +2,7 @@ import * as hintRepo from '../db/repos/hints';
 import { logger } from '../logger';
 import * as metrics from '../metrics';
 import type { Hunt } from '../types';
+import { COMMIT_VERSION, commitmentFor } from './commit';
 import { hintDrop, hintsForHunt } from './generate';
 import type { Hint, HintRecord } from './types';
 
@@ -23,6 +24,36 @@ export function forHunt(hunt: Hunt, now = Date.now()): HintRecord[] {
   const generated = hintsForHunt(hunt);
   hintRepo.insertMany(generated, now);
   return generated;
+}
+
+/**
+ * Generate the hint set and publish its commitment, at hunt creation.
+ *
+ * The caller runs this inside the same transaction as the hunt insert. Doing it
+ * eagerly rather than on first read is the point: the commitment has to exist
+ * before anyone can play, or it proves nothing about what was decided in
+ * advance.
+ */
+export function commitAtCreation(hunt: Hunt, now = Date.now()): string {
+  const set = forHunt(hunt, now);
+  const commitment = commitmentFor(hunt.id, hunt.salt, set);
+  hintRepo.putCommitment(hunt.id, hunt.zoneId, hunt.epoch, commitment, COMMIT_VERSION, now);
+  return commitment;
+}
+
+/**
+ * Open a hunt's hint set to public inspection, once it can no longer be played.
+ *
+ * Called when a hunt resolves or expires — the same moment the salt is revealed.
+ * Never throws: settlement has already happened, and a bookkeeping failure here
+ * must not disturb it.
+ */
+export function revealForHunt(huntId: string, now = Date.now()): void {
+  try {
+    hintRepo.reveal(huntId, now);
+  } catch (err) {
+    logger.warn({ err, huntId }, 'hint reveal failed — settlement stands');
+  }
 }
 
 /**

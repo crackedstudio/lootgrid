@@ -12,6 +12,7 @@ import * as energy from './energy';
 import { stdev } from './games/tap';
 import { inBounds, tileType } from './grid';
 import * as hints from './hints';
+import * as hintStats from './hints/stats';
 import { badRequest, conflict, forbidden, isAppError, notFound, toWireError, tooManyRequests, unauthorized } from './errors';
 import { env, isProd } from './env';
 import { logger } from './logger';
@@ -429,6 +430,23 @@ export function registerRoutes(app: App): void {
   // ---- audit ----
 
   /** Revealed seeds for finished epochs: anyone can recompute the old map. */
+  /**
+   * Hint honesty, in public.
+   *
+   * Live hunts show a commitment and nothing else. Finished ones show the whole
+   * set — truth flags included — plus the salt, so anyone can regenerate it and
+   * confirm it matches what was published before the hunt opened.
+   *
+   * Unauthenticated on purpose, exactly like `/audit/zones/:id`. A guarantee only
+   * players can check is a weaker guarantee than one anybody can.
+   */
+  app.get('/audit/hints/:id', async req => {
+    const { id } = parse(zoneParams, req.params);
+    const zone = store.getZone(id);
+    if (!zone) throw notFound('no_such_zone');
+    return hintStats.auditZone(zone.id);
+  });
+
   app.get('/audit/zones/:id', async req => {
     const { id } = parse(zoneParams, req.params);
     const zone = store.getZone(id);
