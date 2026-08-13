@@ -79,6 +79,29 @@ export const TYPES = {
     {name: 'racers', type: 'uint16'},
     {name: 'deadline', type: 'uint256'},
   ],
+  /**
+   * Vouches for a hint being offered for sale.
+   *
+   * What it asserts: this hash is a hint the GAME issued, for this zone, at this
+   * precision tier, drawn from a pool advertised at this reliability.
+   *
+   * What it deliberately does NOT assert: that the hint is correct. Hints lie on
+   * purpose and the referee cannot certify accuracy without handing over the
+   * answer. A buyer learns the odds, never the outcome — which is exactly what
+   * makes the market work, because it prices information rather than truth.
+   *
+   * This is the fix for the lemon market: without it a seller can offer
+   * fabricated hints and a buyer cannot tell, so bad hints drive out good and
+   * the market dies. With it, the worst a seller can do is sell you a genuine
+   * hint that happens to be one of the false ones — which is the game.
+   */
+  Hint: [
+    {name: 'hintHash', type: 'bytes32'},
+    {name: 'zoneId', type: 'bytes32'},
+    {name: 'tier', type: 'uint8'},
+    {name: 'reliabilityBps', type: 'uint16'},
+    {name: 'deadline', type: 'uint256'},
+  ],
 } as const;
 
 const CHAIN_IDS = {celo: 42_220, celoSepolia: 11_142_220} as const;
@@ -362,6 +385,64 @@ export async function signResolution(
       }),
       gas: toHex(SUBMIT_GAS),
     },
+  };
+}
+
+export interface HintAttestation {
+  kind: 'hint';
+  hintHash: Hex;
+  zoneId: Hex;
+  tier: number;
+  reliabilityBps: number;
+  deadline: number;
+  signature: Hex;
+  contract: Address;
+  chainId: number;
+}
+
+/**
+ * Vouch for a hint a seller is listing.
+ *
+ * Signed with the records key rather than the payout key: this authorises
+ * nothing financial by itself, it only certifies provenance. The escrow that
+ * releases a buyer's money is a separate authority.
+ *
+ * `hintHash` binds the attestation to one specific hint without disclosing it —
+ * the buyer can check afterwards that what they received hashes to what they
+ * were promised.
+ */
+export async function signHint(
+  hintHash: Hex,
+  zoneId: Hex,
+  tier: number,
+  reliabilityBps: number,
+  now: number = Date.now(),
+): Promise<HintAttestation> {
+  const deadline = deadlineFrom(now);
+
+  const signature = await signer().signTypedData({
+    domain: domain(),
+    types: TYPES,
+    primaryType: 'Hint',
+    message: {
+      hintHash,
+      zoneId,
+      tier,
+      reliabilityBps,
+      deadline: BigInt(deadline),
+    },
+  });
+
+  return {
+    kind: 'hint',
+    hintHash,
+    zoneId,
+    tier,
+    reliabilityBps,
+    deadline,
+    signature,
+    contract: env.LOOTGRID_ACTIONS_ADDRESS as Address,
+    chainId: CHAIN_IDS[env.CHAIN],
   };
 }
 

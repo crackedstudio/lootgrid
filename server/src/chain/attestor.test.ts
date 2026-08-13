@@ -298,3 +298,64 @@ describe('payout attestations are separated from record attestations', () => {
     expect(a.racers).toBe(65_535);
   });
 });
+
+describe('hint attestations vouch for provenance, never accuracy', () => {
+  const HINT_HASH = '0x' + 'ab'.repeat(32);
+
+  it('recovers to the records key, not the payout key', async () => {
+    // A hint vouch authorises nothing financial — it only certifies that the
+    // game issued this hint. Money is a separate authority.
+    const a = await attestor.signHint(
+      HINT_HASH as `0x${string}`,
+      attestor.toBytes32Id('ridge'),
+      2,
+      7_000,
+    );
+
+    const recovered = await recoverTypedDataAddress({
+      domain: {
+        name: 'LootGridActions',
+        version: '1',
+        chainId: a.chainId,
+        verifyingContract: a.contract,
+      },
+      types: attestor.TYPES,
+      primaryType: 'Hint',
+      message: {
+        hintHash: a.hintHash,
+        zoneId: a.zoneId,
+        tier: a.tier,
+        reliabilityBps: a.reliabilityBps,
+        deadline: BigInt(a.deadline),
+      },
+      signature: a.signature,
+    });
+
+    expect(recovered).toBe(privateKeyToAccount(KEY).address);
+    expect(recovered).not.toBe(privateKeyToAccount(ESCROW_KEY).address);
+  });
+
+  it('binds to one specific hint', async () => {
+    const other = '0x' + 'cd'.repeat(32);
+    const a = await attestor.signHint(HINT_HASH as `0x${string}`, attestor.toBytes32Id('ridge'), 2, 7_000);
+    const b = await attestor.signHint(other as `0x${string}`, attestor.toBytes32Id('ridge'), 2, 7_000);
+    expect(a.signature).not.toBe(b.signature);
+  });
+
+  it('carries the tier and its advertised reliability, and nothing about truth', async () => {
+    const a = await attestor.signHint(HINT_HASH as `0x${string}`, attestor.toBytes32Id('ridge'), 3, 5_000);
+    expect(a.tier).toBe(3);
+    expect(a.reliabilityBps).toBe(5_000);
+    // There is deliberately no field here that could disclose whether the hint
+    // is correct. Certifying accuracy would mean handing over the answer.
+    expect(Object.keys(a)).not.toContain('isTrue');
+  });
+
+  it('changes signature when the advertised reliability changes', async () => {
+    // Otherwise a seller could relabel a tier-3 coin flip as a tier-1 near
+    // certainty and the vouch would still verify.
+    const honest = await attestor.signHint(HINT_HASH as `0x${string}`, attestor.toBytes32Id('ridge'), 3, 5_000);
+    const inflated = await attestor.signHint(HINT_HASH as `0x${string}`, attestor.toBytes32Id('ridge'), 3, 9_000);
+    expect(honest.signature).not.toBe(inflated.signature);
+  });
+});
