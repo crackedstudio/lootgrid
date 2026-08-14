@@ -4,6 +4,7 @@ import type { App } from './appTypes';
 import { canonicalHttp } from './auth/canonical';
 import * as registry from './auth/registry';
 import { verifyHttp, type Credentials } from './auth/verify';
+import * as agents from './agents';
 import * as attestor from './chain/attestor';
 import * as escrowChain from './chain/escrow';
 import * as relayer from './chain/relayer';
@@ -41,6 +42,7 @@ const tileParams = zoneParams.extend({
   c: z.coerce.number().int().min(0).max(GRID.cols - 1),
 });
 const idParams = z.object({ id: z.string().min(1).max(128) });
+const hexAddress = z.string().regex(/^0x[a-fA-F0-9]{40}$/, 'must be a 0x-prefixed address');
 
 // Prices are whole cents, always. A float here would be a rounding error with a
 // wallet attached — see prizes.ts.
@@ -542,6 +544,91 @@ export function registerRoutes(app: App): void {
       withdrawable: balance.owed > 0n && nowSec >= balance.withdrawableAt,
       call: attestor.withdrawCall(player.id as `0x${string}`),
     };
+  });
+
+  // ---- player agents ----
+  //
+  // Every state change that matters is a transaction the PLAYER signs. The
+  // server derives the agent key, proves it consents, encodes calldata and reads
+  // results back — but binding, funding, capping and revoking are all theirs.
+  // That is what makes "the house cannot spend your money" a property rather
+  // than a promise.
+
+  app.get('/agent', async req => {
+    const player = await requirePlayer(req);
+    return { agent: agents.ensure(player) };
+  });
+
+  /**
+   * The two transactions that bring an agent to life: bind it as a session key,
+   * then create the vault naming it as spender. Returned together so the UI can
+   * show the whole commitment before any of it is made.
+   */
+  app.post('/agent/setup', async req => {
+    const player = await requirePlayer(req);
+    limit(`agent:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'agent');
+    return await agents.setupOffer(player);
+  });
+
+  /** Record the vault once the player's transaction has landed. */
+  app.post('/agent/vault', async req => {
+    const player = await requirePlayer(req);
+    const { vault } = parse(z.object({ vault: hexAddress }), req.body);
+    return { agent: agents.attachVault(player, vault as `0x${string}`) };
+  });
+
+  app.put('/agent/config', async req => {
+    const player = await requirePlayer(req);
+    limit(`agent:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'agent');
+    return { agent: agents.configure(player, req.body) };
+  });
+
+  /**
+   * Stop the agent.
+   *
+   * The server refuses its next turn immediately, but the row is NOT the kill
+   * switch — the returned call is, and until the player sends it the agent still
+   * holds on-chain spending rights the server cannot revoke.
+   */
+  app.post('/agent/kill', async req => {
+    const player = await requirePlayer(req);
+    return agents.killOffer(player);
+  });
+
+  app.post('/agent/resume', async req => {
+    const player = await requirePlayer(req);
+    return { agent: agents.resume(player) };
+  });
+
+  /** Owner-only vault transactions, encoded here and sent by the player. */
+  app.post('/agent/vault/:action', async req => {
+    const player = await requirePlayer(req);
+    const { action } = parse(
+      z.object({ action: z.enum(['withdrawAll', 'setCaps', 'setTarget']) }),
+      req.params,
+    );
+    const args = parse(
+      z
+        .object({
+          perTxCents: z.number().int().min(1).max(100_000).optional(),
+          perDayCents: z.number().int().min(1).max(1_000_000).optional(),
+          target: hexAddress.optional(),
+          allowed: z.boolean().optional(),
+        })
+        .optional(),
+      req.body ?? {},
+    );
+    return {
+      call: agents.vaultCallFor(player, action, {
+        ...args,
+        target: args?.target as `0x${string}` | undefined,
+      }),
+    };
+  });
+
+  app.get('/agent/ledger', async req => {
+    const player = await requirePlayer(req);
+    return agents.ledger(player);
   });
 
   // ---- the hint market ----

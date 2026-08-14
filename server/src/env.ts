@@ -208,6 +208,46 @@ const schema = z
      */
     X402_API_KEY: z.string().min(8).optional(),
 
+    // ─────────────────────────── player agents ───────────────────────────
+
+    /**
+     * Derives every agent's signing key. **The most dangerous secret on the box
+     * after the escrow treasury.**
+     *
+     * A leak is every agent's spending rights at once — bounded, per player, by
+     * their vault's per-transaction and daily caps, their allowlist, and their
+     * kill switch. It cannot withdraw, raise a limit, or block an owner leaving.
+     *
+     * Keep it out of the game database and out of backups. Rotating it re-derives
+     * every agent address, so every player must re-bind: their transaction, not
+     * ours. See agents/identity.ts.
+     */
+    AGENT_MASTER_KEY: z.string().min(32).optional(),
+    /** AgentVaultFactory. The only agent address the server needs to be told. */
+    AGENT_VAULT_FACTORY_ADDRESS: hexAddress.optional(),
+    /** The token vaults hold. Usually the same as the hint market's. */
+    AGENT_TOKEN_ADDRESS: hexAddress.optional(),
+    /**
+     * Run player agents. Off by default: this is the feature that puts a model
+     * in charge of a wallet, and it should never switch itself on.
+     */
+    AGENTS_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform(v => v === 'true'),
+
+    /**
+     * DeepSeek key for the hosted inference pool.
+     *
+     * Players do not bring their own, so the house pays and meters it per vault.
+     * It must never reach a client bundle or an agent's config — see
+     * agents/inference.ts.
+     */
+    DEEPSEEK_API_KEY: z.string().min(8).optional(),
+    DEEPSEEK_BASE_URL: z.string().url().default('https://api.deepseek.com'),
+    /** `deepseek-v4-flash` is ~3x cheaper than pro and ample for these games. */
+    DEEPSEEK_MODEL: z.string().default('deepseek-v4-flash'),
+
     METRICS_ENABLED: z
       .enum(['true', 'false'])
       .default('true')
@@ -335,6 +375,53 @@ const schema = z
           code: z.ZodIssueCode.custom,
           path: ['HINT_MARKET_ENABLED'],
           message: 'requires AUTH_MODE=chain — dev player ids are not addresses',
+        });
+      }
+    }
+
+    if (v.AGENTS_ENABLED) {
+      for (const [key, val] of [
+        ['AGENT_MASTER_KEY', v.AGENT_MASTER_KEY],
+        ['AGENT_VAULT_FACTORY_ADDRESS', v.AGENT_VAULT_FACTORY_ADDRESS],
+        ['AGENT_TOKEN_ADDRESS', v.AGENT_TOKEN_ADDRESS],
+        ['PLAYER_REGISTRY_ADDRESS', v.PLAYER_REGISTRY_ADDRESS],
+        ['DEEPSEEK_API_KEY', v.DEEPSEEK_API_KEY],
+        ['RPC_URL', v.RPC_URL],
+      ] as const) {
+        if (!val) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: 'required when AGENTS_ENABLED=true',
+          });
+        }
+      }
+
+      // Agent addresses are derived from wallet addresses and bound as session
+      // keys. Under AUTH_MODE=dev a player id is a made-up string, so there is
+      // nothing to derive from and nothing to bind against.
+      if (v.AUTH_MODE !== 'chain') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AGENTS_ENABLED'],
+          message: 'requires AUTH_MODE=chain — dev player ids are not addresses',
+        });
+      }
+    }
+
+    // One secret deriving every agent key must not also be a key that signs
+    // anything else: a leak would then cross two trust boundaries at once.
+    for (const [name, other] of [
+      ['ATTESTOR_PRIVATE_KEY', v.ATTESTOR_PRIVATE_KEY],
+      ['ESCROW_PRIVATE_KEY', v.ESCROW_PRIVATE_KEY],
+      ['ESCROW_TREASURY_PRIVATE_KEY', v.ESCROW_TREASURY_PRIVATE_KEY],
+      ['RELAY_PRIVATE_KEY', v.RELAY_PRIVATE_KEY],
+    ] as const) {
+      if (v.AGENT_MASTER_KEY && other && v.AGENT_MASTER_KEY.toLowerCase() === other.toLowerCase()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AGENT_MASTER_KEY'],
+          message: `must differ from ${name}`,
         });
       }
     }

@@ -1,5 +1,6 @@
 import { closeDb, openDb } from '../db/index';
 import { migrate } from '../db/migrate';
+import * as agentRepo from '../db/repos/agents';
 import * as attemptRepo from '../db/repos/attempts';
 import * as hintRepo from '../db/repos/hints';
 import * as huntRepo from '../db/repos/hunts';
@@ -24,7 +25,7 @@ export function freshWorld(): void {
   // Every repo with a statement cache must be listed here. Forgetting one does
   // not fail loudly at the seam — it surfaces as "database connection is not
   // open" from whichever query happens to run first in the next test.
-  for (const repo of [playerRepo, zoneRepo, huntRepo, attemptRepo, nonceRepo, hintRepo, marketRepo]) {
+  for (const repo of [playerRepo, zoneRepo, huntRepo, attemptRepo, nonceRepo, hintRepo, marketRepo, agentRepo]) {
     repo.resetStatements();
   }
   store.resetForTests();

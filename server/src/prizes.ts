@@ -1,5 +1,5 @@
 import { hashInt } from './hash';
-import type { Difficulty } from './types';
+import type { Difficulty, ZoneKind } from './types';
 
 /**
  * What a hunt is worth.
@@ -70,7 +70,27 @@ export const DIFFICULTY_WEIGHTS: ReadonlyArray<readonly [Difficulty, number]> = 
   ['hard', 8],
 ];
 
-const WEIGHT_TOTAL = DIFFICULTY_WEIGHTS.reduce((sum, [, weight]) => sum + weight, 0);
+/**
+ * The same table for agent zones, with `easy` removed.
+ *
+ * Not a balance choice — arithmetic. An easy hunt pays 1c, and a hunt's worth of
+ * agent thinking costs roughly 0.3c at measured DeepSeek pricing (agents/
+ * budget.ts). That is 27% of the prize on the cheap model and 83% on the
+ * expensive one, so at more than two entrants an agent that enters is paying to
+ * lose. A rational one refuses, and a house that keeps offering hunts no
+ * rational player will enter is just leaving dead squares on the grid.
+ *
+ * Weighted toward `med` rather than mirroring the human split: hard hunts are
+ * $5, and one agent zone drawing them a third of the time would cost more per
+ * day than the other four zones combined.
+ */
+export const AGENT_DIFFICULTY_WEIGHTS: ReadonlyArray<readonly [Difficulty, number]> = [
+  ['med', 88],
+  ['hard', 12],
+];
+
+const weightsFor = (kind: ZoneKind) =>
+  kind === 'agent' ? AGENT_DIFFICULTY_WEIGHTS : DIFFICULTY_WEIGHTS;
 
 /**
  * The difficulty of a block, drawn from its salt.
@@ -81,15 +101,22 @@ const WEIGHT_TOTAL = DIFFICULTY_WEIGHTS.reduce((sum, [, weight]) => sum + weight
  * the salt is revealed. A difficulty that could vary per player would mean the
  * house choosing who gets the cheap hunts.
  */
-export function difficultyForBlock(salt: string, huntId: string): Difficulty {
-  let roll = hashInt(salt, huntId, 'difficulty') % WEIGHT_TOTAL;
-  for (const [difficulty, weight] of DIFFICULTY_WEIGHTS) {
+export function difficultyForBlock(
+  salt: string,
+  huntId: string,
+  kind: ZoneKind = 'human',
+): Difficulty {
+  const weights = weightsFor(kind);
+  const total = weights.reduce((sum, [, weight]) => sum + weight, 0);
+
+  let roll = hashInt(salt, huntId, 'difficulty') % total;
+  for (const [difficulty, weight] of weights) {
     if (roll < weight) return difficulty;
     roll -= weight;
   }
-  // Unreachable while the weights sum to WEIGHT_TOTAL. Cheapest tier, not the
-  // dearest, so a future arithmetic slip costs nothing.
-  return 'easy';
+  // Unreachable while the weights sum to `total`. Cheapest tier in the table,
+  // not the dearest, so a future arithmetic slip costs nothing.
+  return weights[0]![0];
 }
 
 /** Display string. The only place a prize is ever formatted for a human. */

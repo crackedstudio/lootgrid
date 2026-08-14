@@ -229,6 +229,63 @@ export const marketRealisedRakeBps = new Gauge({
   registers: [registry],
 });
 
+// ---- player agents ----
+//
+// Phase 7 puts a model in charge of a wallet. These are how that stays
+// observable: what agents are doing, how often the model fails to produce a
+// legal move, and how much thinking is being billed.
+
+export const agentMoves = new Counter({
+  name: 'lootgrid_agent_moves_total',
+  help: 'Agent moves by game and where the move came from',
+  labelNames: ['game', 'source'] as const,
+  registers: [registry],
+});
+
+/**
+ * Responses that did not parse into a legal move, per model.
+ *
+ * **Architecture §7 asks for this specifically, and calls a regression an
+ * incident.** A model that starts failing the schema is a model about to cost
+ * money for nothing: every violation is a call that was billed and produced a
+ * fallback move the server could have computed for free.
+ */
+export const agentSchemaViolations = new Counter({
+  name: 'lootgrid_agent_schema_violations_total',
+  help: 'Model responses that were not a legal move',
+  labelNames: ['model', 'reason'] as const,
+  registers: [registry],
+});
+
+export const agentInferenceFailures = new Counter({
+  name: 'lootgrid_agent_inference_failures_total',
+  help: 'Inference calls that did not return usable text',
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
+/** Mills billed to agents. Cost of goods sold against the same deposits. */
+export const agentInferenceMills = new Counter({
+  name: 'lootgrid_agent_inference_mills_total',
+  help: 'Inference spend metered to agents, in mills',
+  registers: [registry],
+});
+
+/** Turns refused before a call was made — the budget doing its job. */
+export const agentBudgetRefusals = new Counter({
+  name: 'lootgrid_agent_budget_refusals_total',
+  help: 'Agent actions refused by a budget check',
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
+/** Queue depth in the shared runtime. One busy tenant must not starve a hunt. */
+export const agentQueueDepth = new Gauge({
+  name: 'lootgrid_agent_queue_depth',
+  help: 'Turns waiting in the multi-tenant inference pool',
+  registers: [registry],
+});
+
 export const authFailures = new Counter({
   name: 'lootgrid_auth_failures_total',
   help: 'Rejected authentication attempts by reason',

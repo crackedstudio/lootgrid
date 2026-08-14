@@ -7,6 +7,7 @@ import HuntPreview from './components/HuntPreview';
 import Minigame from './components/Minigame';
 import WinScreen from './components/WinScreen';
 import BoardScreen from './components/BoardScreen';
+import AgentScreen from './components/AgentScreen';
 import HuntsScreen from './components/HuntsScreen';
 import MarketScreen from './components/MarketScreen';
 import YouScreen from './components/YouScreen';
@@ -19,7 +20,7 @@ export default function App() {
 
   const showZones = state.view === 'map' && !state.mapZone;
   const showGrid = state.view === 'map' && !!state.mapZone;
-  const showNavBar = ['map', 'market', 'hunts', 'board', 'you'].includes(state.view);
+  const showNavBar = ['map', 'market', 'agent', 'hunts', 'board', 'you'].includes(state.view);
 
   return (
     <div
@@ -61,6 +62,8 @@ export default function App() {
       )}
 
       {state.view === 'market' && <MarketScreen state={state} />}
+
+      {state.view === 'agent' && <AgentScreen />}
 
       {state.view === 'hunts' && (
         <HuntsScreen state={state} setField={game.setField} />

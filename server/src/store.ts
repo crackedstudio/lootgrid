@@ -233,7 +233,7 @@ export function replenish(zoneId: string, now = Date.now()): number {
     // and how hard the block's game generates — every module has carried easy
     // and hard tables since phase 0, and a hardcoded 'med' here was the reason
     // two thirds of them never ran.
-    const difficulty = difficultyForBlock(salt, id);
+    const difficulty = difficultyForBlock(salt, id, zone.kind);
     const hunt: Hunt = {
       id,
       zoneId: zone.id,
