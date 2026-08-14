@@ -1,0 +1,12 @@
+-- The counterparty threshold: how trustworthy a seller must be before an agent
+-- will pay them.
+--
+-- Architecture §4 names this and phase 9 is where it becomes enforceable. It is
+-- checked against the WEIGHTED trust in agents/reputation.ts, never against the
+-- registry's raw number — a raw score is the first thing a wash farm produces,
+-- so acting on it directly turns a reputation system into a laundering service.
+--
+-- Defaults to zero, meaning "trade with anyone". That is the right default while
+-- the market is small: a threshold nobody can meet is indistinguishable from
+-- having no market, and a newcomer with no history has to be able to start.
+ALTER TABLE agent_config ADD COLUMN min_counterparty_trust INTEGER NOT NULL DEFAULT 0;

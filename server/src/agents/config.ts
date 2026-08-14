@@ -45,6 +45,19 @@ export const LIMITS = {
    * `budget.ts` for the arithmetic this number comes from.
    */
   inferenceMillsPerHunt: { min: 0, max: 20_000 },
+  /**
+   * Minimum weighted trust a counterparty must have, 0–100.
+   *
+   * Architecture §4 calls this the counterparty threshold. It is checked
+   * against `reputation.trustFor`, not against the registry's raw number — a
+   * raw score is what a wash farm produces first, and acting on it directly is
+   * how a reputation system becomes a laundering service.
+   *
+   * Zero means "trade with anyone", which is the right default while the market
+   * is small: a threshold that admits nobody is indistinguishable from having no
+   * market at all.
+   */
+  minCounterpartyTrust: { min: 0, max: 100 },
 } as const;
 
 export const DEFAULTS = {
@@ -54,6 +67,7 @@ export const DEFAULTS = {
   inferenceMillsPerHunt: 1_000,
   zones: [] as string[],
   minReliabilityBps: 5_000,
+  minCounterpartyTrust: 0,
 } as const;
 
 /**
@@ -84,6 +98,11 @@ export const configSchema = z
     /** Zone ids it may enter. Ids, not descriptions — a closed set by nature. */
     zones: z.array(z.string().min(1).max(64)).max(32),
     minReliabilityBps: z.number().int().min(0).max(10_000),
+    minCounterpartyTrust: z
+      .number()
+      .int()
+      .min(LIMITS.minCounterpartyTrust.min)
+      .max(LIMITS.minCounterpartyTrust.max),
   })
   .strict();
 

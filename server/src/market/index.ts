@@ -89,6 +89,14 @@ export interface ListingView {
   suggestedCents: number;
   /** False when no price for this hunt's hints leaves a buyer better off. */
   rational: boolean;
+  /**
+   * The seller's weighted trust, 0–100, or null when reputation is off.
+   *
+   * Deliberately the weighted number rather than the registry's raw score:
+   * showing a buyer a figure a wash farm can manufacture would be worse than
+   * showing them nothing, because it looks like diligence.
+   */
+  sellerTrust?: number | null;
 }
 
 /**

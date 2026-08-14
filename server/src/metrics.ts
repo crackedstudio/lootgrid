@@ -299,6 +299,32 @@ export const agentHintPurchases = new Counter({
   registers: [registry],
 });
 
+// ---- reputation ----
+//
+// Phase 9 asks whether trust scales past players who already know each other.
+// `reputationRefusals` against `agentHintPurchases` is the answer: refusals near
+// zero mean the threshold is decorative, refusals near everything mean the
+// market has closed to newcomers.
+
+export const reputationFeedback = new Counter({
+  name: 'lootgrid_reputation_feedback_total',
+  help: 'Feedback transactions prepared for players to send',
+  registers: [registry],
+});
+
+export const reputationRefusals = new Counter({
+  name: 'lootgrid_reputation_refusals_total',
+  help: 'Trades refused because a counterparty fell below the trust threshold',
+  registers: [registry],
+});
+
+/** A registry outage must read as "unrated", never as "untrusted". */
+export const reputationReadFailures = new Counter({
+  name: 'lootgrid_reputation_read_failures_total',
+  help: 'ERC-8004 summary reads that failed',
+  registers: [registry],
+});
+
 /** Queue depth in the shared runtime. One busy tenant must not starve a hunt. */
 export const agentQueueDepth = new Gauge({
   name: 'lootgrid_agent_queue_depth',

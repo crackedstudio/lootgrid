@@ -11,6 +11,7 @@ import type { Attempt, Hunt, Player } from '../types';
 import * as budget from './budget';
 import * as identity from './identity';
 import { model } from './inference';
+import * as reputation from './reputation';
 import * as runtime from './runtime';
 import { isAgentGame } from './validate';
 
@@ -259,6 +260,14 @@ async function considerHints(
     });
     if (!decision.ok) {
       metrics.agentBudgetRefusals.inc({ reason: decision.reason ?? 'unknown' });
+      continue;
+    }
+
+    // The counterparty threshold, checked before money moves. Against the
+    // WEIGHTED trust, never the registry's raw number — a raw score is the
+    // first thing a wash farm produces, so acting on it directly would turn
+    // reputation into a laundering service.
+    if (!(await reputation.acceptable(listing.sellerId, config.minCounterpartyTrust))) {
       continue;
     }
 

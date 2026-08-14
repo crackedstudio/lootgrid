@@ -5,6 +5,7 @@ import { canonicalHttp } from './auth/canonical';
 import * as registry from './auth/registry';
 import { verifyHttp, type Credentials } from './auth/verify';
 import * as agents from './agents';
+import * as reputation from './agents/reputation';
 import * as director from './director';
 import * as attestor from './chain/attestor';
 import * as escrowChain from './chain/escrow';
@@ -644,6 +645,18 @@ export function registerRoutes(app: App): void {
   // hint once HintEscrow says the payment settled. Every route below is either
   // a database write about intent or a read of the chain — none of them move
   // funds, which is what keeps a compromised server unable to steal a trade.
+
+  /**
+   * A seller's weighted trust, for a buyer deciding whether to pay them.
+   *
+   * The weighted number, never the registry's raw score — showing a figure a
+   * wash farm can manufacture would be worse than showing nothing, because it
+   * looks like diligence. Unauthenticated, like every other market surface.
+   */
+  app.get('/market/trust/:id', async req => {
+    const { id } = parse(idParams, req.params);
+    return await reputation.trustFor(id);
+  });
 
   app.get('/market/listings', async req => {
     const { zoneId, limit } = parse(browseQuery, req.query);

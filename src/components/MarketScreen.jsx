@@ -5,6 +5,7 @@ import {
   cancelListing,
   describeListing,
   fetchBids,
+  fetchTrust,
   fetchListings,
   fetchMyListings,
   fetchTrades,
@@ -16,6 +17,7 @@ import {
   submitRelease,
   syncTrade,
   tradeStatusLabel,
+  trustLabel,
 } from '../api/market';
 import { describe as describeHint, reliabilityPct, tierLabel } from '../api/hints';
 
@@ -86,8 +88,11 @@ function Tabs({ tab, onTab }) {
 }
 
 /** The claim, priced. Never the hint. */
-function ListingCard({ listing, onBuy, onBid, busy }) {
+const TRUST_TONE = { good: '#2CE66A', neutral: '#0C0C10', warn: '#FF7A1A', bad: '#FF3D3D' };
+
+function ListingCard({ listing, onBuy, onBid, busy, trust }) {
   const pct = Math.round((listing.reliabilityBps ?? 0) / 100);
+  const badge = trustLabel(trust);
 
   return (
     <div style={CARD}>
@@ -114,7 +119,15 @@ function ListingCard({ listing, onBuy, onBid, busy }) {
       {/* Both of these are warnings, and both are honest ones. A hint sold four
           times is a hint four rivals already have; an ask above the model is a
           seller betting you will not check. */}
-      <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        {/* Who you would be paying. Shown next to the warnings, not buried:
+            the seller is as much of the trade as the hint is. */}
+        <div style={{
+          fontFamily: MONO, fontSize: 9, fontWeight: 700,
+          color: TRUST_TONE[badge.tone], opacity: badge.tone === 'neutral' ? .55 : 1,
+        }}>
+          SELLER {badge.text}
+        </div>
         {listing.sold > 0 && (
           <div style={{ fontFamily: MONO, fontSize: 9, fontWeight: 700, color: '#FF3D3D' }}>
             {listing.sold} ALREADY SOLD
@@ -195,6 +208,7 @@ export default function MarketScreen({ state }) {
   const [mine, setMine] = useState([]);
   const [trades, setTrades] = useState([]);
   const [bids, setBids] = useState({});
+  const [trust, setTrust] = useState({});
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null);
 
@@ -212,6 +226,12 @@ export default function MarketScreen({ state }) {
     setListings(open);
     setMine(own);
     setTrades(mytrades);
+
+    // One lookup per distinct seller, not per listing.
+    const sellers = [...new Set(open.map(l => l.sellerId))];
+    Promise.all(sellers.map(id => fetchTrust(id).then(r => [id, r]))).then(pairs =>
+      setTrust(Object.fromEntries(pairs)),
+    );
   }, []);
 
   const onLoadError = useCallback(err => {
@@ -361,7 +381,14 @@ export default function MarketScreen({ state }) {
           listings.length === 0
             ? <Empty>Nothing for sale here yet.</Empty>
             : listings.map(l => (
-              <ListingCard key={l.id} listing={l} onBuy={onBuy} onBid={onBid} busy={busy} />
+              <ListingCard
+                key={l.id}
+                listing={l}
+                onBuy={onBuy}
+                onBid={onBid}
+                busy={busy}
+                trust={trust[l.sellerId]}
+              />
             ))
         )}
 

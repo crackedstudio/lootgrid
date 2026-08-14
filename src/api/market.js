@@ -37,6 +37,30 @@ export const fetchMyListings = () => get('/market/listings/mine').then(r => r.li
 export const fetchTrades = () => get('/market/trades').then(r => r.trades ?? []);
 export const fetchStats = () => get('/market/stats').then(r => r.zones ?? []);
 
+/**
+ * A seller's weighted trust.
+ *
+ * The weighted figure, not the registry's raw score. Showing a buyer a number a
+ * wash farm can manufacture would be worse than showing them nothing — it looks
+ * like diligence while being exactly what the attacker produced for you.
+ */
+export const fetchTrust = sellerId =>
+  get(`/market/trust/${encodeURIComponent(sellerId)}`).catch(() => null);
+
+/**
+ * How to describe a counterparty in one phrase.
+ *
+ * "Unrated" is not a warning. Everyone starts there, and a market that treats a
+ * newcomer as a suspect never gets a second trader.
+ */
+export function trustLabel(report) {
+  if (!report || report.verifiedTrades === 0) return { text: 'UNRATED', tone: 'neutral' };
+  if (report.washRiskBps > 6_000) return { text: 'CIRCULAR TRADING', tone: 'bad' };
+  if (report.trust >= 70) return { text: `TRUSTED ${report.trust}`, tone: 'good' };
+  if (report.trust >= 30) return { text: `MIXED ${report.trust}`, tone: 'neutral' };
+  return { text: `THIN ${report.trust}`, tone: 'warn' };
+}
+
 export const listHint = (hintId, askCents) =>
   post('/market/listings', { hintId, askCents }).then(r => r.listing);
 

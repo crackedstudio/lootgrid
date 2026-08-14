@@ -56,6 +56,7 @@ interface ConfigRaw {
   inference_mills_per_hunt: number;
   zones: string;
   min_reliability_bps: number;
+  min_counterparty_trust: number;
   updated_at: number;
 }
 
@@ -90,6 +91,7 @@ function toConfig(r: ConfigRaw): AgentConfig {
     inferenceMillsPerHunt: r.inference_mills_per_hunt,
     zones,
     minReliabilityBps: r.min_reliability_bps,
+    minCounterpartyTrust: r.min_counterparty_trust,
   });
   return parsed.success ? parsed.data : defaultConfig();
 }
@@ -116,9 +118,10 @@ function build() {
 
     putConfig: db.prepare(`
       INSERT INTO agent_config (agent_id, aggression, max_hint_price_cents, daily_budget_cents,
-                                inference_mills_per_hunt, zones, min_reliability_bps, updated_at)
+                                inference_mills_per_hunt, zones, min_reliability_bps,
+                                min_counterparty_trust, updated_at)
       VALUES (@agentId, @aggression, @maxHintPriceCents, @dailyBudgetCents,
-              @inferenceMillsPerHunt, @zones, @minReliabilityBps, @now)
+              @inferenceMillsPerHunt, @zones, @minReliabilityBps, @minCounterpartyTrust, @now)
       ON CONFLICT (agent_id) DO UPDATE SET
         aggression = @aggression,
         max_hint_price_cents = @maxHintPriceCents,
@@ -126,6 +129,7 @@ function build() {
         inference_mills_per_hunt = @inferenceMillsPerHunt,
         zones = @zones,
         min_reliability_bps = @minReliabilityBps,
+        min_counterparty_trust = @minCounterpartyTrust,
         updated_at = @now
     `),
     getConfig: db.prepare('SELECT * FROM agent_config WHERE agent_id = ?'),
@@ -194,6 +198,7 @@ export function putConfig(agentId: string, config: AgentConfig, now = Date.now()
     inferenceMillsPerHunt: config.inferenceMillsPerHunt,
     zones: JSON.stringify(config.zones),
     minReliabilityBps: config.minReliabilityBps,
+    minCounterpartyTrust: config.minCounterpartyTrust,
     now,
   });
 }
