@@ -247,6 +247,14 @@ function escrowDomain() {
   } as const;
 }
 
+export const ESCROW_ABI = parseAbi([
+  'function claim(address winner, bytes32 huntId, uint32 elapsedMs, uint16 racers, uint256 deadline, bytes signature)',
+  'function withdraw(address winner)',
+]);
+
+/** Headroom over the ~120k `claim` measures at, which is the heavier of the two. */
+const ESCROW_GAS = 250_000n;
+
 export interface PayoutAttestation {
   kind: 'payout';
   winner: Address;
@@ -257,6 +265,30 @@ export interface PayoutAttestation {
   signature: Hex;
   contract: Address;
   chainId: number;
+  /** Credits the pot to the winner. Anyone may send it; it always pays them. */
+  call: SubmitCall;
+  /**
+   * Moves the credited balance to the winner's wallet.
+   *
+   * A second transaction because the escrow pays by pull, not push: `claim`
+   * credits, and the challenge window has to elapse before `withdraw` succeeds.
+   * That gap is the guardian's chance to stop a payout signed by a leaked key,
+   * so it is a feature of the contract rather than an inconvenience to route
+   * around — the client sends this one later, and it reverts if sent too early.
+   */
+  withdraw: SubmitCall;
+}
+
+/**
+ * The pull half of a payout. Permissionless and always pays the named winner,
+ * so the house can send it on behalf of a player with an empty wallet.
+ */
+export function withdrawCall(winner: Address): SubmitCall {
+  return {
+    to: env.LOOTGRID_ESCROW_ADDRESS as Address,
+    data: encodeFunctionData({ abi: ESCROW_ABI, functionName: 'withdraw', args: [winner] }),
+    gas: toHex(ESCROW_GAS),
+  };
 }
 
 /**
@@ -301,6 +333,23 @@ export async function signPayout(
     signature,
     contract: env.LOOTGRID_ESCROW_ADDRESS as Address,
     chainId: CHAIN_IDS[env.CHAIN],
+    call: {
+      to: env.LOOTGRID_ESCROW_ADDRESS as Address,
+      data: encodeFunctionData({
+        abi: ESCROW_ABI,
+        functionName: 'claim',
+        args: [
+          winner,
+          huntId,
+          clampedElapsed,
+          clampedRacers,
+          BigInt(deadline),
+          signature,
+        ],
+      }),
+      gas: toHex(ESCROW_GAS),
+    },
+    withdraw: withdrawCall(winner),
   };
 }
 

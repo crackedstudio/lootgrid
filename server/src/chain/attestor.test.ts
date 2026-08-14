@@ -311,6 +311,42 @@ describe('payout attestations are separated from record attestations', () => {
     expect(a.elapsedMs).toBe(4_294_967_295);
     expect(a.racers).toBe(65_535);
   });
+
+  it('encodes claim calldata the escrow can decode', async () => {
+    // Without this the attestation is unspendable: the winner holds a signature
+    // and no way to present it, which is where phase 3 actually stood.
+    const a = await attestor.signPayout(ALICE, attestor.toBytes32Id('hunt-1'), 2105, 4);
+    const decoded = decodeFunctionData({ abi: attestor.ESCROW_ABI, data: a.call.data });
+
+    expect(decoded.functionName).toBe('claim');
+    expect(decoded.args).toEqual([
+      getAddress(ALICE),
+      a.huntId,
+      2105,
+      4,
+      BigInt(a.deadline),
+      a.signature,
+    ]);
+    expect(a.call.to).toBe(ESCROW);
+  });
+
+  it('encodes a withdraw the winner sends afterwards', async () => {
+    // Two transactions because the escrow pays by pull: claim credits, the
+    // challenge window elapses, withdraw pays. Collapsing them would remove the
+    // guardian's only chance to stop a payout signed by a leaked key.
+    const a = await attestor.signPayout(ALICE, attestor.toBytes32Id('hunt-1'), 2105, 4);
+    const decoded = decodeFunctionData({ abi: attestor.ESCROW_ABI, data: a.withdraw.data });
+
+    expect(decoded.functionName).toBe('withdraw');
+    expect(decoded.args).toEqual([getAddress(ALICE)]);
+  });
+
+  it('points both calls at the escrow, never at the records contract', async () => {
+    const a = await attestor.signPayout(ALICE, attestor.toBytes32Id('hunt-1'), 2105, 4);
+    expect(a.call.to).toBe(ESCROW);
+    expect(a.withdraw.to).toBe(ESCROW);
+    expect(a.call.to).not.toBe(ACTIONS);
+  });
 });
 
 describe('hint attestations vouch for provenance, never accuracy', () => {

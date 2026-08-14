@@ -5,6 +5,7 @@ import { canonicalHttp } from './auth/canonical';
 import * as registry from './auth/registry';
 import { verifyHttp, type Credentials } from './auth/verify';
 import * as attestor from './chain/attestor';
+import * as escrowChain from './chain/escrow';
 import * as relayer from './chain/relayer';
 import { GRID } from './config';
 import { getDb } from './db/index';
@@ -473,6 +474,66 @@ export function registerRoutes(app: App): void {
       // Total entrants, not live chasers — the race is over by now.
       store.racerCount(hunt.id),
     );
+  });
+
+  /**
+   * Attestation for a prize, against LootGridEscrow.
+   *
+   * The same `Resolution` fields as the record above, signed under the escrow's
+   * own domain with the payout key — so a signature minted to write a public log
+   * cannot move money, and the two keys can be protected differently.
+   *
+   * Nothing is paid here. The response carries `claim` calldata the winner sends
+   * themselves, and `withdraw` calldata for afterwards: the escrow credits on
+   * claim and pays on withdraw, with the challenge window in between. Both are
+   * permissionless and both always pay the winner the referee named, so a player
+   * with an empty wallet can have either sent for them.
+   */
+  app.post('/hunts/:id/attestations/payout', async req => {
+    if (!attestor.escrowEnabled()) throw notFound('payouts_disabled');
+
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+
+    const hunt = store.getHunt(id);
+    if (!hunt) throw notFound('no_such_hunt');
+    if (hunt.status !== 'resolved' || !hunt.winnerId) throw conflict('hunt_not_resolved');
+    // Scoped to the winner even though the contract would accept whoever pays
+    // the gas. The referee will not sign a claim it did not decide.
+    if (hunt.winnerId !== player.id) throw forbidden('not_the_winner');
+
+    const attempt = store.attemptOf(hunt.id, player.id);
+    if (!attempt) throw conflict('no_winning_attempt');
+
+    return attestor.signPayout(
+      player.id as `0x${string}`,
+      attestor.toBytes32Id(hunt.id),
+      attempt.elapsedMs ?? 0,
+      store.racerCount(hunt.id),
+    );
+  });
+
+  /**
+   * What the escrow owes the caller, read from the chain.
+   *
+   * The server issued the attestation but never saw the transaction, so only the
+   * contract knows whether a claim actually landed. A UI that assumed would tell
+   * a player their prize was ready when it was not.
+   */
+  app.get('/escrow/balance', async req => {
+    const player = await requirePlayer(req);
+    if (!escrowChain.readable()) throw notFound('payouts_disabled');
+
+    const balance = await escrowChain.readBalance(player.id as `0x${string}`);
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    return {
+      // A decimal string: base units of an 18dp token exceed Number's safe range.
+      owed: balance.owed.toString(),
+      withdrawableAt: balance.withdrawableAt,
+      withdrawable: balance.owed > 0n && nowSec >= balance.withdrawableAt,
+      call: attestor.withdrawCall(player.id as `0x${string}`),
+    };
   });
 
   // ---- the hint market ----

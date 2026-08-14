@@ -38,6 +38,8 @@ import * as metrics from '../metrics';
 
 export const ESCROW_ABI = parseAbi([
   'function fundHunt(bytes32 huntId, uint256 amount, uint64 expiresAt)',
+  'function owed(address) view returns (uint256)',
+  'function withdrawableAt(address) view returns (uint64)',
 ]);
 
 interface Row {
@@ -122,18 +124,34 @@ let wallet: ReturnType<typeof createWalletClient> | null = null;
 let publicClient: ReturnType<typeof createPublicClient> | null = null;
 let treasury: Address | null = null;
 
+/**
+ * Reading takes no key.
+ *
+ * Kept separate from {@link clients} on purpose: balances are readable whenever
+ * an escrow address and an RPC exist, and requiring the treasury key for a
+ * `view` call would mean a deployment that funds pots elsewhere could not tell
+ * a winner whether their prize had landed.
+ */
+function readClient() {
+  if (!publicClient) {
+    if (!env.RPC_URL) {
+      throw new Error('escrow reads misconfigured — check readable() first');
+    }
+    publicClient = createPublicClient({ transport: http(env.RPC_URL) });
+  }
+  return publicClient;
+}
+
 function clients() {
-  if (!wallet || !publicClient || !treasury) {
+  if (!wallet || !treasury) {
     if (!env.RPC_URL || !env.ESCROW_TREASURY_PRIVATE_KEY) {
       throw new Error('escrow funding misconfigured — env validation should have caught this');
     }
     const account = privateKeyToAccount(env.ESCROW_TREASURY_PRIVATE_KEY as Hex);
-    const transport = http(env.RPC_URL);
-    publicClient = createPublicClient({ transport });
-    wallet = createWalletClient({ account, transport });
+    wallet = createWalletClient({ account, transport: http(env.RPC_URL) });
     treasury = account.address;
   }
-  return { wallet, pub: publicClient, from: treasury };
+  return { wallet, pub: readClient(), from: treasury };
 }
 
 const chainSend: SendFn = async job => {
@@ -164,6 +182,50 @@ confirmFn = chainConfirm;
 export function setTransportForTests(send: SendFn | null, confirm: ConfirmFn | null): void {
   sendFn = send ?? chainSend;
   confirmFn = confirm ?? chainConfirm;
+}
+
+// ------------------------------------------------------------------ balances
+
+/**
+ * What a winner is owed, and when they may take it.
+ *
+ * Read rather than remembered. The contract is the only thing that knows
+ * whether a claim transaction actually landed — the server issued the
+ * attestation but never saw the submission, and a UI that guessed would tell a
+ * player their prize was ready when it was not.
+ */
+export interface Balance {
+  /** Token base units. Zero once withdrawn, and zero before a claim lands. */
+  owed: bigint;
+  /** Seconds epoch. `withdraw` reverts until this passes. */
+  withdrawableAt: number;
+}
+
+export type ReadBalanceFn = (winner: Address) => Promise<Balance>;
+
+const chainReadBalance: ReadBalanceFn = async winner => {
+  const pub = readClient();
+  const contract = { address: env.LOOTGRID_ESCROW_ADDRESS as Address, abi: ESCROW_ABI } as const;
+  const [owed, withdrawableAt] = await Promise.all([
+    pub.readContract({ ...contract, functionName: 'owed', args: [winner] }),
+    pub.readContract({ ...contract, functionName: 'withdrawableAt', args: [winner] }),
+  ]);
+  return { owed, withdrawableAt: Number(withdrawableAt) };
+};
+
+let readBalanceFn: ReadBalanceFn = chainReadBalance;
+
+export function setBalanceReaderForTests(fn: ReadBalanceFn | null): void {
+  readBalanceFn = fn ?? chainReadBalance;
+}
+
+/** Whether balances can be read. Needs an address and an RPC, but no key. */
+export function readable(): boolean {
+  return Boolean(env.LOOTGRID_ESCROW_ADDRESS && env.RPC_URL);
+}
+
+export function readBalance(winner: Address): Promise<Balance> {
+  return readBalanceFn(winner);
 }
 
 // ------------------------------------------------------------------ queue

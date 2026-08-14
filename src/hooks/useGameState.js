@@ -196,6 +196,11 @@ export function useGameState() {
             return set({
               outcome: 'won',
               winData: {
+                // Carried so the win screen can claim against it. The prize is
+                // held in escrow per hunt, so without the id there is nothing to
+                // claim — which is exactly how the payout path came to be
+                // unreachable from the UI.
+                huntId: s.huntId,
                 prize: s.huntPrize || '',
                 elapsedMs: msg.elapsedMs,
                 beat: Math.max(0, (s.rivals?.length ?? 0)),
