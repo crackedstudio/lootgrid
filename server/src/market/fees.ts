@@ -52,6 +52,20 @@ export const MIN_TRADE_CENTS = 1;
  */
 export const SETTLE_THRESHOLD_MILLS = MILLS_PER_CENT;
 
+/**
+ * Trades below this pay no rake at all.
+ *
+ * The fee waiver from architecture §5, and it is about liquidity rather than
+ * generosity: at 5¢ the rake is a tenth of a cent, which is worth less than the
+ * gas to move and less than the thought a seller spends deciding whether it is
+ * worth listing at all. Taxing the bottom of the book thins the book.
+ *
+ * **Must match `HintEscrow.rakeWaiverAmount`**, converted to the settlement
+ * token's decimals. The contract is what actually waives; this constant only
+ * predicts it, and a disagreement shows up as a ledger that never reconciles.
+ */
+export const RAKE_WAIVER_CENTS = 5;
+
 /** Rake on a trade, in mills. Exact — no rounding, nothing discarded. */
 export function rakeMillsFor(priceCents: number): number {
   if (!Number.isInteger(priceCents) || priceCents < 0) {
@@ -59,6 +73,26 @@ export function rakeMillsFor(priceCents: number): number {
   }
   // priceCents * 1000 mills * bps / 10000 — integer throughout.
   return Math.floor((priceCents * MILLS_PER_CENT * RAKE_BPS) / 10_000);
+}
+
+export interface Charge {
+  /** Rake actually taken, in mills. Zero under the waiver. */
+  chargedMills: number;
+  /** Rake the waiver gave back. Zero above it. */
+  waivedMills: number;
+}
+
+/**
+ * What a trade of this size actually pays, after the waiver.
+ *
+ * Both halves are returned rather than just the charge, so "what did the waiver
+ * cost us" stays an answerable question instead of an invisible one.
+ */
+export function chargeFor(priceCents: number): Charge {
+  const full = rakeMillsFor(priceCents);
+  return priceCents < RAKE_WAIVER_CENTS
+    ? { chargedMills: 0, waivedMills: full }
+    : { chargedMills: full, waivedMills: 0 };
 }
 
 /** What the seller is owed, in mills, before any accrual is settled. */

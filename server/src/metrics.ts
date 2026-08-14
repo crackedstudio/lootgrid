@@ -174,6 +174,48 @@ export const huntsFound = new Counter({
   registers: [registry],
 });
 
+// ---- the hint market ----
+//
+// Phase 5 asks whether a market forms and whether deduction creates value.
+// These are how that gets answered with data. The one to watch is
+// `marketRealisedRakeBps`: stuck near zero means every trade is under the
+// waiver, which means the market is all dust and the rake is not worth taking.
+
+export const marketListings = new Counter({
+  name: 'lootgrid_market_listings_total',
+  help: 'Hints offered for sale, by tier',
+  labelNames: ['tier'] as const,
+  registers: [registry],
+});
+
+export const marketBids = new Counter({
+  name: 'lootgrid_market_bids_total',
+  help: 'Bids placed below an ask',
+  registers: [registry],
+});
+
+/** `delivered` is a completed trade; `mismatch` is money escrowed for something we did not quote. */
+export const marketTrades = new Counter({
+  name: 'lootgrid_market_trades_total',
+  help: 'Trade outcomes',
+  labelNames: ['result'] as const,
+  registers: [registry],
+});
+
+export const marketTradePriceCents = new Histogram({
+  name: 'lootgrid_market_trade_price_cents',
+  help: 'What hints actually sell for',
+  buckets: [1, 2, 5, 10, 25, 50, 100, 250, 500],
+  registers: [registry],
+});
+
+export const marketRealisedRakeBps = new Gauge({
+  name: 'lootgrid_market_realised_rake_bps',
+  help: 'Rake actually collected as a fraction of volume, per zone',
+  labelNames: ['zone'] as const,
+  registers: [registry],
+});
+
 export const authFailures = new Counter({
   name: 'lootgrid_auth_failures_total',
   help: 'Rejected authentication attempts by reason',

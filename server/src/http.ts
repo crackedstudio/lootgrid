@@ -13,6 +13,7 @@ import { stdev } from './games/tap';
 import { inBounds, tileType } from './grid';
 import * as hints from './hints';
 import * as hintStats from './hints/stats';
+import * as market from './market';
 import { quoteEntry } from './payments/fees';
 import * as x402 from './payments/x402';
 import { badRequest, conflict, forbidden, isAppError, notFound, toWireError, tooManyRequests, unauthorized } from './errors';
@@ -39,6 +40,16 @@ const tileParams = zoneParams.extend({
   c: z.coerce.number().int().min(0).max(GRID.cols - 1),
 });
 const idParams = z.object({ id: z.string().min(1).max(128) });
+
+// Prices are whole cents, always. A float here would be a rounding error with a
+// wallet attached — see prizes.ts.
+const centsField = z.number().int().min(1).max(100_000);
+const listingBody = z.object({ hintId: z.string().min(1).max(128), askCents: centsField });
+const priceBody = z.object({ priceCents: centsField });
+const browseQuery = z.object({
+  zoneId: z.string().min(1).max(64).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
 
 function parse<T extends z.ZodTypeAny>(schema: T, value: unknown): z.infer<T> {
   const result = schema.safeParse(value);
@@ -463,6 +474,111 @@ export function registerRoutes(app: App): void {
       store.racerCount(hunt.id),
     );
   });
+
+  // ---- the hint market ----
+  //
+  // The server never holds a buyer's money here. It vouches for what is being
+  // sold, hands back the transaction the buyer sends themselves, and grants the
+  // hint once HintEscrow says the payment settled. Every route below is either
+  // a database write about intent or a read of the chain — none of them move
+  // funds, which is what keeps a compromised server unable to steal a trade.
+
+  app.get('/market/listings', async req => {
+    const { zoneId, limit } = parse(browseQuery, req.query);
+    // Public: an order book only participants can read is not a market, and the
+    // listing view deliberately cannot carry a hint's payload.
+    return { listings: market.browse(zoneId ?? null, limit) };
+  });
+
+  app.post('/market/listings', async req => {
+    const player = await requirePlayer(req);
+    const { hintId, askCents } = parse(listingBody, req.body);
+    limit(`market:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'market');
+    return { listing: market.list(player, hintId, askCents) };
+  });
+
+  app.get('/market/listings/mine', async req => {
+    const player = await requirePlayer(req);
+    return { listings: market.myListings(player) };
+  });
+
+  app.delete('/market/listings/:id', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    market.cancel(player, id);
+    return { ok: true };
+  });
+
+  /** The book for one listing. Seller only — see `market.bidsFor`. */
+  app.get('/market/listings/:id/bids', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    return { bids: market.bidsFor(player, id) };
+  });
+
+  app.post('/market/listings/:id/bids', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    const { priceCents } = parse(priceBody, req.body);
+    limit(`market:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'market');
+    return { bid: market.bid(player, id, priceCents) };
+  });
+
+  app.delete('/market/bids/:id', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    market.withdrawBid(player, id);
+    return { ok: true };
+  });
+
+  /** Seller accepts a bid, which quotes the *bidder* — it does not move money. */
+  app.post('/market/bids/:id/accept', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    limit(`market:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'market');
+    return { quote: await market.acceptBid(player, id) };
+  });
+
+  /**
+   * Take a listing at its ask.
+   *
+   * Returns a quote, not a purchase: the buyer still has to escrow the money
+   * themselves with the calldata attached. Nothing is owed until they do, and
+   * nothing is delivered until the contract says it settled.
+   */
+  app.post('/market/listings/:id/buy', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    limit(`market:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'market');
+    return { quote: await market.buy(player, id) };
+  });
+
+  app.get('/market/trades', async req => {
+    const player = await requirePlayer(req);
+    return { trades: market.myTrades(player) };
+  });
+
+  /**
+   * Bring a trade up to date with the chain.
+   *
+   * The buyer polls this after funding: it reads HintEscrow, hands back a
+   * release attestation once the money is there, and delivers the hint once the
+   * release has actually settled. Idempotent — the hint is granted once however
+   * often either party asks.
+   */
+  app.post('/market/trades/:id/sync', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    limit(`market:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'market');
+    return { trade: await market.sync(player, id) };
+  });
+
+  /**
+   * Rake as it actually landed, per zone. Unauthenticated, like the other audit
+   * surfaces: a fee whose size players have to take on trust is worse than one
+   * they can check.
+   */
+  app.get('/market/stats', async () => ({ zones: market.rakeStats() }));
 
   // ---- audit ----
 

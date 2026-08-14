@@ -64,7 +64,17 @@ async function payer() {
   }
 }
 
-async function send(call) {
+/**
+ * Send a server-encoded call. Resolves to a transaction hash, or `null` when
+ * there is no wallet to send it with.
+ *
+ * Exported because the hint market needs the same wallet plumbing for a very
+ * different purpose. Note the difference in how the two use it: publishing a
+ * record swallows every failure, because a missing log costs nothing. Funding a
+ * trade must not — a payment that silently fails to send is a player staring at
+ * a hint they think they bought. Callers there surface the error.
+ */
+export async function sendCall(call) {
   const eth = provider();
   const from = await payer();
   if (!eth || !from) return null;
@@ -79,6 +89,8 @@ async function send(call) {
 
   return eth.request({ method: 'eth_sendTransaction', params: [tx] });
 }
+
+const send = sendCall;
 
 /**
  * Fetch an attestation and submit it.

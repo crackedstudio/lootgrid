@@ -45,3 +45,4 @@ export async function api(path, { method = 'GET', body } = {}) {
 
 export const get = path => api(path);
 export const post = (path, body) => api(path, { method: 'POST', body });
+export const del = path => api(path, { method: 'DELETE' });

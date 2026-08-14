@@ -24,6 +24,7 @@ import * as relayer from './relayer';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SOLIDITY = join(here, '../../../contracts/src/LootGridActions.sol');
+const HINT_SOLIDITY = join(here, '../../../contracts/src/HintEscrow.sol');
 
 const KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d' as const;
 const ACTIONS = '0x00000000000000000000000000000000000000ac' as const;
@@ -32,11 +33,14 @@ const ALICE = '0x00000000000000000000000000000000000000a1' as const;
 const ESCROW = '0x00000000000000000000000000000000000000e5' as const;
 const ESCROW_KEY = '0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba' as const;
 
+const HINT_ESCROW = '0x00000000000000000000000000000000000000e7' as const;
+
 const mut = env as {
   ATTESTOR_PRIVATE_KEY?: string;
   LOOTGRID_ACTIONS_ADDRESS?: string;
   ESCROW_PRIVATE_KEY?: string;
   LOOTGRID_ESCROW_ADDRESS?: string;
+  HINT_ESCROW_ADDRESS?: string;
   CHAIN: 'celo' | 'celoSepolia';
 };
 
@@ -45,6 +49,7 @@ const original = {
   address: mut.LOOTGRID_ACTIONS_ADDRESS,
   escrowKey: mut.ESCROW_PRIVATE_KEY,
   escrowAddress: mut.LOOTGRID_ESCROW_ADDRESS,
+  hintEscrowAddress: mut.HINT_ESCROW_ADDRESS,
   chain: mut.CHAIN,
 };
 
@@ -53,6 +58,7 @@ beforeEach(() => {
   mut.LOOTGRID_ACTIONS_ADDRESS = ACTIONS;
   mut.ESCROW_PRIVATE_KEY = ESCROW_KEY;
   mut.LOOTGRID_ESCROW_ADDRESS = ESCROW;
+  mut.HINT_ESCROW_ADDRESS = HINT_ESCROW;
   mut.CHAIN = 'celoSepolia';
   attestor.reset();
 });
@@ -62,6 +68,7 @@ afterEach(() => {
   mut.LOOTGRID_ACTIONS_ADDRESS = original.address;
   mut.ESCROW_PRIVATE_KEY = original.escrowKey;
   mut.LOOTGRID_ESCROW_ADDRESS = original.escrowAddress;
+  mut.HINT_ESCROW_ADDRESS = original.hintEscrowAddress;
   mut.CHAIN = original.chain;
   attestor.reset();
 });
@@ -72,29 +79,36 @@ function encodeType(name: keyof typeof attestor.TYPES): string {
   return `${name}(${fields})`;
 }
 
-/** The strings inside the contract's `keccak256("…")` type-hash constants. */
-function contractTypeStrings(): string[] {
-  const source = readFileSync(SOLIDITY, 'utf8');
+/** The strings inside a contract's `keccak256("…")` type-hash constants. */
+function contractTypeStrings(path: string): string[] {
+  const source = readFileSync(path, 'utf8');
   // Tolerates the constant being wrapped across lines by the formatter.
   return [...source.matchAll(/keccak256\(\s*"([A-Z]\w*\([^"]*\))"\s*\)/g)].map(m => m[1]);
 }
 
 describe('EIP-712 types match the contract', () => {
-  const onChain = contractTypeStrings();
+  // Each struct is checked against the contract that actually verifies it.
+  // `Hint` and `Release` live in HintEscrow — LootGridActions has never heard
+  // of them, so checking them there would pass by silently finding nothing.
+  const sources = [
+    { file: 'LootGridActions.sol', types: ['Entry', 'Resolution'] as const, path: SOLIDITY },
+    { file: 'HintEscrow.sol', types: ['Hint', 'Release'] as const, path: HINT_SOLIDITY },
+  ];
 
-  it('parses type hashes from the Solidity source', () => {
-    // Guards the vacuous-pass failure mode: comparing against an empty set.
-    expect(onChain.length, 'no type hashes parsed from LootGridActions.sol').toBeGreaterThan(0);
-  });
+  for (const { file, types, path } of sources) {
+    const onChain = contractTypeStrings(path);
 
-  it.each(['Entry', 'Resolution'] as const)(
-    '%s encodes identically on both sides',
-    name => {
+    it(`parses type hashes from ${file}`, () => {
+      // Guards the vacuous-pass failure mode: comparing against an empty set.
+      expect(onChain.length, `no type hashes parsed from ${file}`).toBeGreaterThan(0);
+    });
+
+    it.each(types)('%s encodes identically on both sides', name => {
       // A mismatch here means every signature this server issues recovers to
-      // the wrong address, and every player submission reverts BadAttestation.
-      expect(onChain, `${name} type string drifted from the contract`).toContain(encodeType(name));
-    },
-  );
+      // the wrong address, and every submission reverts.
+      expect(onChain, `${name} type string drifted from ${file}`).toContain(encodeType(name));
+    });
+  }
 });
 
 describe('signing', () => {
@@ -314,7 +328,7 @@ describe('hint attestations vouch for provenance, never accuracy', () => {
 
     const recovered = await recoverTypedDataAddress({
       domain: {
-        name: 'LootGridActions',
+        name: 'HintEscrow',
         version: '1',
         chainId: a.chainId,
         verifyingContract: a.contract,
@@ -333,6 +347,15 @@ describe('hint attestations vouch for provenance, never accuracy', () => {
 
     expect(recovered).toBe(privateKeyToAccount(KEY).address);
     expect(recovered).not.toBe(privateKeyToAccount(ESCROW_KEY).address);
+    // Bound to the contract that verifies it, not to the records contract that
+    // never will — otherwise every vouch recovers to the wrong address on chain.
+    expect(a.contract).toBe(HINT_ESCROW);
+  });
+
+  it('is off without an escrow address to bind the domain to', () => {
+    mut.HINT_ESCROW_ADDRESS = undefined;
+    expect(attestor.hintEnabled()).toBe(false);
+    expect(attestor.releaseEnabled()).toBe(false);
   });
 
   it('binds to one specific hint', async () => {
@@ -357,5 +380,102 @@ describe('hint attestations vouch for provenance, never accuracy', () => {
     const honest = await attestor.signHint(HINT_HASH as `0x${string}`, attestor.toBytes32Id('ridge'), 3, 5_000);
     const inflated = await attestor.signHint(HINT_HASH as `0x${string}`, attestor.toBytes32Id('ridge'), 3, 9_000);
     expect(honest.signature).not.toBe(inflated.signature);
+  });
+
+  it('encodes a fund call the contract can decode', async () => {
+    // The buyer's wallet sends this verbatim. A bad encoding of the vouch tuple
+    // would only ever surface as a reverted transaction.
+    const vouch = await attestor.signHint(
+      HINT_HASH as `0x${string}`,
+      attestor.toBytes32Id('ridge'),
+      2,
+      7_000,
+    );
+    const tradeId = attestor.toBytes32Id('trade-1');
+    const call = attestor.fundCall(tradeId, ALICE, 10n ** 18n, 1_700_000_900, vouch);
+    const decoded = decodeFunctionData({ abi: attestor.HINT_ESCROW_ABI, data: call.data });
+
+    expect(decoded.functionName).toBe('fund');
+    expect(decoded.args).toEqual([
+      tradeId,
+      getAddress(ALICE),
+      10n ** 18n,
+      1_700_000_900n,
+      {
+        hintHash: vouch.hintHash,
+        zoneId: vouch.zoneId,
+        tier: 2,
+        reliabilityBps: 7_000,
+        deadline: BigInt(vouch.deadline),
+      },
+      vouch.signature,
+    ]);
+    expect(call.to).toBe(HINT_ESCROW);
+  });
+});
+
+describe('releases move money, and are a separate authority from vouches', () => {
+  const HINT_HASH = ('0x' + 'ab'.repeat(32)) as `0x${string}`;
+
+  const release = () =>
+    attestor.signRelease(attestor.toBytes32Id('trade-1'), HINT_HASH, ALICE);
+
+  it('recovers to the payout key, not the records key', async () => {
+    const a = await release();
+
+    const recovered = await recoverTypedDataAddress({
+      domain: {
+        name: 'HintEscrow',
+        version: '1',
+        chainId: a.chainId,
+        verifyingContract: a.contract,
+      },
+      types: attestor.TYPES,
+      primaryType: 'Release',
+      message: {
+        tradeId: a.tradeId,
+        hintHash: a.hintHash,
+        buyer: a.buyer,
+        deadline: BigInt(a.deadline),
+      },
+      signature: a.signature,
+    });
+
+    // The whole separation in one assertion: a leaked vouch key can say what is
+    // genuine but cannot pay for it.
+    expect(recovered).toBe(privateKeyToAccount(ESCROW_KEY).address);
+    expect(recovered).not.toBe(privateKeyToAccount(KEY).address);
+  });
+
+  it('binds to one trade and one buyer', async () => {
+    const mine = await attestor.signRelease(attestor.toBytes32Id('trade-1'), HINT_HASH, ALICE);
+    const other = await attestor.signRelease(attestor.toBytes32Id('trade-2'), HINT_HASH, ALICE);
+    const someoneElse = await attestor.signRelease(
+      attestor.toBytes32Id('trade-1'),
+      HINT_HASH,
+      '0x00000000000000000000000000000000000000b0',
+    );
+
+    expect(mine.signature).not.toBe(other.signature);
+    expect(mine.signature).not.toBe(someoneElse.signature);
+  });
+
+  it('carries no amount — the escrow already knows what was paid', async () => {
+    const a = await release();
+    expect(Object.keys(a)).not.toContain('amount');
+  });
+
+  it('encodes settle calldata the contract can decode', async () => {
+    const a = await release();
+    const decoded = decodeFunctionData({ abi: attestor.HINT_ESCROW_ABI, data: a.call.data });
+
+    expect(decoded.functionName).toBe('settle');
+    expect(decoded.args).toEqual([
+      a.tradeId,
+      a.hintHash,
+      getAddress(ALICE),
+      BigInt(a.deadline),
+      a.signature,
+    ]);
   });
 });

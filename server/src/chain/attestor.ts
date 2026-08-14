@@ -53,6 +53,18 @@ const ESCROW_DOMAIN_NAME = 'LootGridEscrow';
 const ESCROW_DOMAIN_VERSION = '1';
 
 /**
+ * The hint market's own escrow, and therefore its own domain.
+ *
+ * `Hint` and `Release` are verified by `HintEscrow.sol` and by nothing else, so
+ * they are signed against it. Both keys already in play are reused rather than
+ * multiplied — the records key vouches, the payout key releases — because the
+ * separation that matters is between *what may be sold* and *when money moves*,
+ * not between contracts.
+ */
+const HINT_DOMAIN_NAME = 'HintEscrow';
+const HINT_DOMAIN_VERSION = '1';
+
+/**
  * How long an attestation stays valid. Long enough to survive a slow wallet
  * round trip and a congested block or two; short enough that a leaked one is
  * near-worthless. The contract compares against `block.timestamp`, so this is
@@ -100,6 +112,25 @@ export const TYPES = {
     {name: 'zoneId', type: 'bytes32'},
     {name: 'tier', type: 'uint8'},
     {name: 'reliabilityBps', type: 'uint16'},
+    {name: 'deadline', type: 'uint256'},
+  ],
+  /**
+   * Authorises HintEscrow to move one buyer's escrowed money to their seller.
+   *
+   * Separate from {@link TYPES.Hint} and signed with a different key, because
+   * they decide different things: the vouch says what may be sold, the release
+   * says the sale went through. A leaked vouch key sells nothing on its own.
+   *
+   * The referee issues this only after checking the trade is real and the seller
+   * genuinely held the hint — and hands the hint to the buyer only once the
+   * release has actually settled on chain. Delivering first would let a buyer
+   * take the hint, sit on the attestation until the trade expired, refund, and
+   * keep it for nothing.
+   */
+  Release: [
+    {name: 'tradeId', type: 'bytes32'},
+    {name: 'hintHash', type: 'bytes32'},
+    {name: 'buyer', type: 'address'},
     {name: 'deadline', type: 'uint256'},
   ],
 } as const;
@@ -388,6 +419,35 @@ export async function signResolution(
   };
 }
 
+// ─────────────────────────── the hint market ───────────────────────────
+
+function hintDomain() {
+  return {
+    name: HINT_DOMAIN_NAME,
+    version: HINT_DOMAIN_VERSION,
+    chainId: CHAIN_IDS[env.CHAIN],
+    verifyingContract: env.HINT_ESCROW_ADDRESS as Address,
+  } as const;
+}
+
+/** Whether hint vouches can be issued. Absent address => the market is off. */
+export function hintEnabled(): boolean {
+  return Boolean(env.ATTESTOR_PRIVATE_KEY && env.HINT_ESCROW_ADDRESS);
+}
+
+/** Whether trades can be released. Needs the payout key as well as the vouch key. */
+export function releaseEnabled(): boolean {
+  return Boolean(env.ESCROW_PRIVATE_KEY && env.HINT_ESCROW_ADDRESS);
+}
+
+export const HINT_ESCROW_ABI = parseAbi([
+  'function fund(bytes32 tradeId, address seller, uint256 amount, uint64 expiresAt, (bytes32 hintHash, bytes32 zoneId, uint8 tier, uint16 reliabilityBps, uint256 deadline) vouch, bytes vouchSignature)',
+  'function settle(bytes32 tradeId, bytes32 hintHash, address buyer, uint256 deadline, bytes signature)',
+]);
+
+/** Headroom over the ~150k `fund` measures at, which is the heavier of the two. */
+const MARKET_GAS = 300_000n;
+
 export interface HintAttestation {
   kind: 'hint';
   hintHash: Hex;
@@ -405,11 +465,16 @@ export interface HintAttestation {
  *
  * Signed with the records key rather than the payout key: this authorises
  * nothing financial by itself, it only certifies provenance. The escrow that
- * releases a buyer's money is a separate authority.
+ * releases a buyer's money is a separate authority, and `HintEscrow` checks the
+ * two against different addresses.
  *
  * `hintHash` binds the attestation to one specific hint without disclosing it —
  * the buyer can check afterwards that what they received hashes to what they
  * were promised.
+ *
+ * Deliberately not single-use. Information copies rather than moves, so one
+ * vouch is expected to back many concurrent trades of the same hint; the trade
+ * id is what stops a *payment* being replayed.
  */
 export async function signHint(
   hintHash: Hex,
@@ -421,7 +486,7 @@ export async function signHint(
   const deadline = deadlineFrom(now);
 
   const signature = await signer().signTypedData({
-    domain: domain(),
+    domain: hintDomain(),
     types: TYPES,
     primaryType: 'Hint',
     message: {
@@ -441,8 +506,102 @@ export async function signHint(
     reliabilityBps,
     deadline,
     signature,
-    contract: env.LOOTGRID_ACTIONS_ADDRESS as Address,
+    contract: env.HINT_ESCROW_ADDRESS as Address,
     chainId: CHAIN_IDS[env.CHAIN],
+  };
+}
+
+export interface ReleaseAttestation {
+  kind: 'release';
+  tradeId: Hex;
+  hintHash: Hex;
+  buyer: Address;
+  deadline: number;
+  signature: Hex;
+  contract: Address;
+  chainId: number;
+  call: SubmitCall;
+}
+
+/**
+ * Authorise a funded trade to pay out.
+ *
+ * Signed with the payout key: unlike a vouch, this moves a buyer's money. The
+ * amount is not in the signature — it comes from what the buyer actually
+ * escrowed, so the referee never has to agree about the price.
+ */
+export async function signRelease(
+  tradeId: Hex,
+  hintHash: Hex,
+  buyer: Address,
+  now: number = Date.now(),
+): Promise<ReleaseAttestation> {
+  const deadline = deadlineFrom(now);
+
+  const signature = await escrowSigner().signTypedData({
+    domain: hintDomain(),
+    types: TYPES,
+    primaryType: 'Release',
+    message: {tradeId, hintHash, buyer, deadline: BigInt(deadline)},
+  });
+
+  return {
+    kind: 'release',
+    tradeId,
+    hintHash,
+    buyer,
+    deadline,
+    signature,
+    contract: env.HINT_ESCROW_ADDRESS as Address,
+    chainId: CHAIN_IDS[env.CHAIN],
+    call: {
+      to: env.HINT_ESCROW_ADDRESS as Address,
+      data: encodeFunctionData({
+        abi: HINT_ESCROW_ABI,
+        functionName: 'settle',
+        args: [tradeId, hintHash, buyer, BigInt(deadline), signature],
+      }),
+      gas: toHex(MARKET_GAS),
+    },
+  };
+}
+
+/**
+ * The transaction a buyer sends to escrow their payment.
+ *
+ * Encoded here for the same reason entries and resolutions are: the client
+ * holds no ABI, and hand-rolling a tuple plus a dynamic `bytes` argument inside
+ * a wallet webview fails silently. Nothing is trusted to the client by doing it
+ * — every field is either inside the vouch signature or checked by the contract.
+ */
+export function fundCall(
+  tradeId: Hex,
+  seller: Address,
+  amount: bigint,
+  expiresAt: number,
+  vouch: HintAttestation,
+): SubmitCall {
+  return {
+    to: env.HINT_ESCROW_ADDRESS as Address,
+    data: encodeFunctionData({
+      abi: HINT_ESCROW_ABI,
+      functionName: 'fund',
+      args: [
+        tradeId,
+        seller,
+        amount,
+        BigInt(expiresAt),
+        {
+          hintHash: vouch.hintHash,
+          zoneId: vouch.zoneId,
+          tier: vouch.tier,
+          reliabilityBps: vouch.reliabilityBps,
+          deadline: BigInt(vouch.deadline),
+        },
+        vouch.signature,
+      ],
+    }),
+    gas: toHex(MARKET_GAS),
   };
 }
 

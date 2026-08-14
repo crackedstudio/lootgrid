@@ -54,6 +54,13 @@ const schema = z
     TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(1),
     RATE_TILE_PER_MIN: z.coerce.number().int().positive().default(120),
     RATE_ATTEMPT_PER_MIN: z.coerce.number().int().positive().default(30),
+    /**
+     * Market writes per identity per minute.
+     *
+     * Tighter than gameplay: each one signs an attestation or reads the chain,
+     * and an order book is the cheapest surface on which to be noisy.
+     */
+    RATE_MARKET_PER_MIN: z.coerce.number().int().positive().default(60),
     WS_MAX_CONNECTIONS_PER_PLAYER: z.coerce.number().int().positive().default(3),
     WS_MAX_MESSAGE_BYTES: z.coerce.number().int().positive().default(8_192),
     WS_HEARTBEAT_MS: z.coerce.number().int().positive().default(30_000),
@@ -141,6 +148,41 @@ const schema = z
     ESCROW_POLL_MS: z.coerce.number().int().min(200).max(60_000).default(2_000),
     ESCROW_MAX_IN_FLIGHT: z.coerce.number().int().min(1).max(100).default(10),
     ESCROW_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(6),
+
+    /**
+     * HintEscrow, which holds a buyer's money while a hint changes hands.
+     *
+     * Also the EIP-712 verifying contract for the `Hint` vouch, so setting it is
+     * what makes vouches signable at all — a vouch bound to no address would
+     * verify against nothing.
+     */
+    HINT_ESCROW_ADDRESS: hexAddress.optional(),
+    /**
+     * Open the hint market.
+     *
+     * Off by default. Unlike entry fees this is not legally gated — players
+     * trading information with each other is not the house charging admission —
+     * but it moves real money between wallets, so it stays deliberate.
+     */
+    HINT_MARKET_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform(v => v === 'true'),
+    /**
+     * How long a funded trade waits for its release before the buyer may refund.
+     *
+     * Short on purpose: the money is idle for this long in the worst case, and a
+     * hint's value decays with its hunt. Must be under the contract's own
+     * `maxTradeTtl` or every `fund` reverts BadExpiry.
+     */
+    HINT_TRADE_TTL_SEC: z.coerce.number().int().min(60).max(86_400).default(900),
+    /**
+     * Settlement token for the market — must be the `token` HintEscrow was
+     * deployed against. Only ever used to build the buyer's `approve` call.
+     */
+    HINT_TOKEN_ADDRESS: hexAddress.optional(),
+    /** Settlement token decimals for the market. cUSD/USDm 18, USDC/USDT 6. */
+    HINT_TOKEN_DECIMALS: z.coerce.number().int().min(2).max(24).default(18),
 
     /**
      * Charge an entry fee for rewarded hunts.
@@ -257,6 +299,36 @@ const schema = z
         path: ['ESCROW_TREASURY_PRIVATE_KEY'],
         message: 'must differ from ESCROW_PRIVATE_KEY — the float and its signer are separate roles',
       });
+    }
+
+    if (v.HINT_MARKET_ENABLED) {
+      // The market needs both signers: one to say a hint is genuine, one to
+      // release the money. Neither alone completes a trade.
+      for (const [key, val] of [
+        ['HINT_ESCROW_ADDRESS', v.HINT_ESCROW_ADDRESS],
+        ['HINT_TOKEN_ADDRESS', v.HINT_TOKEN_ADDRESS],
+        ['ATTESTOR_PRIVATE_KEY', v.ATTESTOR_PRIVATE_KEY],
+        ['ESCROW_PRIVATE_KEY', v.ESCROW_PRIVATE_KEY],
+        ['RPC_URL', v.RPC_URL],
+      ] as const) {
+        if (!val) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: 'required when HINT_MARKET_ENABLED=true',
+          });
+        }
+      }
+
+      // Trades settle to wallet addresses. Under AUTH_MODE=dev a player id is a
+      // made-up string, so a "seller" would be paid at an address that is not one.
+      if (v.AUTH_MODE !== 'chain') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['HINT_MARKET_ENABLED'],
+          message: 'requires AUTH_MODE=chain — dev player ids are not addresses',
+        });
+      }
     }
 
     if (v.ENTRY_FEES_ENABLED && !v.ENTRY_FEE_PAY_TO) {
