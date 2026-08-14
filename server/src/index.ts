@@ -41,7 +41,11 @@ await app.register(cors, {
   origin: corsOrigins(),
   credentials: false,
   allowedHeaders: ['content-type', 'x-player', 'x-timestamp', 'x-nonce', 'x-signature', 'authorization'],
-  methods: ['GET', 'POST', 'OPTIONS'],
+  // DELETE is here for the market: cancelling a listing or withdrawing a bid.
+  // A method missing from this list fails at the browser's preflight, so it
+  // looks like a network error rather than a CORS one — and only in production,
+  // where CORS_ORIGINS is explicit.
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
 });
 
 registerRoutes(app);
