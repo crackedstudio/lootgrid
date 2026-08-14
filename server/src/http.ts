@@ -243,6 +243,10 @@ export function registerRoutes(app: App): void {
         r: h.r,
         c: h.c,
         kind: h.kind,
+        // Drawn from the salt at creation. Surfaced because it now decides the
+        // prize, the entry fee AND how hard the block's game generates — a
+        // player choosing between two hunts is choosing between those.
+        difficulty: h.difficulty,
         prizeLabel: h.prizeLabel,
         status: h.status,
         chasers: store.chaserCount(h.id),

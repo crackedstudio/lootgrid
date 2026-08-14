@@ -77,6 +77,9 @@ export default function HuntPreview({ hunt, onConfirm, onClose, onPay }) {
               {hunt.prizeLabel}
             </div>
             <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.12em', color: 'var(--cream)', opacity: .55, marginTop: 6 }}>
+              {/* The tier is drawn per block and decides the prize, the fee and
+                  how hard the game generates — so it belongs next to the money. */}
+              {hunt.difficulty ? `${hunt.difficulty.toUpperCase()} · ` : ''}
               {isCash ? 'PRE-FUNDED PRIZE' : 'PUZZLE REWARD'}
             </div>
           </div>

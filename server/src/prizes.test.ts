@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DIFFICULTY_WEIGHTS,
   MAX_PRIZE_CENTS,
   PRIZE_CENTS,
+  difficultyForBlock,
   formatPrize,
   prizeCentsFor,
   prizeLabelFor,
   toTokenUnits,
 } from './prizes';
+import { randomHex } from './hash';
+import type { Difficulty } from './types';
 
 /**
  * Prize arithmetic.
@@ -81,5 +85,66 @@ describe('token unit conversion', () => {
     for (const cents of Object.values(PRIZE_CENTS)) {
       expect(toTokenUnits(cents, 18)).toBeLessThanOrEqual(capAt18);
     }
+  });
+});
+
+describe('drawing a difficulty', () => {
+  /** A realistic sample of blocks, drawn the way `replenish` draws them. */
+  function sample(n: number): Difficulty[] {
+    return Array.from({ length: n }, (_, i) => difficultyForBlock(randomHex(32), `ridge-1-3x4-${i}`));
+  }
+
+  it('is fixed by the salt and the hunt', () => {
+    // A property of the BLOCK. If this could vary per call, the house would be
+    // choosing who gets the cheap hunts.
+    const salt = randomHex(32);
+    expect(difficultyForBlock(salt, 'ridge-1-3x4-aaa')).toBe(
+      difficultyForBlock(salt, 'ridge-1-3x4-aaa'),
+    );
+  });
+
+  it('differs across blocks in the same zone', () => {
+    const salt = randomHex(32);
+    const drawn = new Set(Array.from({ length: 200 }, (_, i) => difficultyForBlock(salt, `h-${i}`)));
+    expect(drawn.size).toBeGreaterThan(1);
+  });
+
+  it('uses every tier, so none of the modules’ tables are dead code', () => {
+    // Each game module has carried easy/med/hard tables since phase 0; a draw
+    // that never reached two of them is why they never ran.
+    expect(new Set(sample(4_000))).toEqual(new Set(['easy', 'med', 'hard']));
+  });
+
+  it('lands near the advertised weights', () => {
+    const draws = sample(20_000);
+    for (const [difficulty, weight] of DIFFICULTY_WEIGHTS) {
+      const observed = (draws.filter(d => d === difficulty).length / draws.length) * 100;
+      // Wide enough not to flake, tight enough to catch a table edited without
+      // the arithmetic below being revisited.
+      expect(Math.abs(observed - weight)).toBeLessThan(3);
+    }
+  });
+
+  it('keeps the expected prize close to the flat tier it replaced', () => {
+    // The distribution IS the burn rate: a hard hunt is 500x an easy one, so a
+    // third of hunts at $5 would be a different business, not a harder game.
+    const expected = DIFFICULTY_WEIGHTS.reduce(
+      (sum, [difficulty, weight]) => sum + (weight / 100) * prizeCentsFor(difficulty),
+      0,
+    );
+    expect(expected).toBeCloseTo(56.6, 1);
+    // Sixteen live hunts on a 24h TTL, against the escrow's example $100/day
+    // claim cap. A cap that binds turns a legitimate win into a revert.
+    expect(16 * MAX_PRIZE_CENTS).toBeLessThan(10_000);
+  });
+
+  it('never draws a prize above the per-hunt cap', () => {
+    for (const d of sample(500)) {
+      expect(prizeCentsFor(d)).toBeLessThanOrEqual(MAX_PRIZE_CENTS);
+    }
+  });
+
+  it('weights sum to 100, so the table reads as percentages', () => {
+    expect(DIFFICULTY_WEIGHTS.reduce((sum, [, w]) => sum + w, 0)).toBe(100);
   });
 });

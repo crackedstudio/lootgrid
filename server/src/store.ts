@@ -12,7 +12,7 @@ import * as hints from './hints';
 import { hash, randomHex } from './hash';
 import { env } from './env';
 import { logger } from './logger';
-import { prizeCentsFor, prizeLabelFor, toTokenUnits } from './prizes';
+import { difficultyForBlock, prizeCentsFor, prizeLabelFor, toTokenUnits } from './prizes';
 import type { Attempt, BlockGame, Hunt, Player, Reveal, Zone } from './types';
 
 /**
@@ -196,6 +196,12 @@ export function replenish(zoneId: string, now = Date.now()): number {
 
     const salt = randomHex(32);
     const id = `${zone.id}-${zone.epoch}-${cellKey(r, c).replace(',', 'x')}-${randomHex(3)}`;
+    // Drawn from the salt, like the game type: fixed before anyone enters and
+    // checkable once the salt is revealed. It decides the prize, the entry fee
+    // and how hard the block's game generates — every module has carried easy
+    // and hard tables since phase 0, and a hardcoded 'med' here was the reason
+    // two thirds of them never ran.
+    const difficulty = difficultyForBlock(salt, id);
     const hunt: Hunt = {
       id,
       zoneId: zone.id,
@@ -205,10 +211,10 @@ export function replenish(zoneId: string, now = Date.now()): number {
       salt,
       cellCommit: hash(id, zone.id, r, c, salt).toString('hex'),
       kind: 'cash',
-      difficulty: 'med',
+      difficulty,
       // Derived from difficulty rather than cycled through a fixed array, so a
       // prize now means something about the hunt. See prizes.ts.
-      prizeLabel: prizeLabelFor('med'),
+      prizeLabel: prizeLabelFor(difficulty),
       status: 'live',
       winnerId: null,
       game: null,
