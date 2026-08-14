@@ -104,6 +104,9 @@ referee.observers.onHuntResolved = (hunt, winner, racers) => {
 openDb();
 store.bootstrap();
 referee.start();
+// Put resumed attempts' deadlines back in the wheel. Only the agent games can
+// be here — see migrations/008.
+referee.resume(store.takeRecovered());
 ratelimit.start();
 // Sweeps the binding cache and subscribes to on-chain key rotations, so a
 // revocation takes effect on the next request rather than the next minute.

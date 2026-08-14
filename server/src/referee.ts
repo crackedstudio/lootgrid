@@ -1,4 +1,4 @@
-import { ENERGY, NET, RACE } from './config';
+import { ASYNC, ENERGY, NET, RACE } from './config';
 import * as energy from './energy';
 import { moduleFor } from './games';
 import type { Timing } from './games/types';
@@ -40,6 +40,21 @@ export const observers: {
 export type OpenResult =
   | { ok: true; attempt: Attempt; spec: unknown; limitMs: number; gameType: string }
   | { ok: false; error: string };
+
+/**
+ * Resume attempts that survived a restart.
+ *
+ * Called once at boot, after the store has rehydrated them. All this has to do
+ * is put their deadlines back in the wheel — the deadline is an absolute
+ * timestamp, so one that passed while the server was down fires on the very
+ * next sweep rather than needing separate handling.
+ */
+export function resume(attempts: Attempt[]): void {
+  for (const attempt of attempts) wheel.push(attempt.id, attempt.deadlineAt);
+  if (attempts.length > 0) {
+    logger.info({ resumed: attempts.length }, 'resumed in-flight attempts');
+  }
+}
 
 export function openAttempt(player: Player, hunt: Hunt, now = Date.now()): OpenResult {
   if (hunt.status !== 'live') return { ok: false, error: 'hunt_not_live' };
@@ -165,6 +180,11 @@ export function submitInputs(attemptId: string, events: InputEvent[], now = Date
 
     if (result.kind === 'complete') return complete(attempt, serverElapsed);
   }
+
+  // Snapshot after the batch, not per event: an agent's inputs arrive minutes
+  // apart, so this is orders of magnitude rarer than one human attempt's taps —
+  // and a reflex module never reaches it at all.
+  if (mod.durable) store.saveAttemptState(attempt);
 }
 
 function complete(attempt: Attempt, serverElapsed: number): void {
@@ -196,9 +216,27 @@ function complete(attempt: Attempt, serverElapsed: number): void {
         } catch (err) {
           logger.error({ err, huntId: hunt.id }, 'resolve failed');
         }
-      }, RACE.settlementWindowMs),
+      }, settlementWindowFor(hunt)),
     );
   }
+}
+
+/**
+ * How long a result stays open for later finishers, by who plays the zone.
+ *
+ * On a human zone everyone racing a block started within a second of each
+ * other, so 400ms of hold covers network jitter and nothing else.
+ *
+ * On an agent zone the starts are spread over hours, and attempts are scored on
+ * their own elapsed time. An agent that begins an hour later and solves in half
+ * the time has genuinely won — with a 400ms window the prize would go to
+ * whoever merely *started* first, which is not a race, it is a queue. So the
+ * window is minutes there, and the hunt sits in `resolving` for that long
+ * before the grid replenishes. That is a real cost, paid for fairness.
+ */
+function settlementWindowFor(hunt: Hunt): number {
+  const kind = store.getZone(hunt.zoneId)?.kind ?? 'human';
+  return ASYNC.settlementWindowMs[kind];
 }
 
 function resolve(huntId: string, now = Date.now()): void {

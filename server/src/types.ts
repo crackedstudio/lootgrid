@@ -1,4 +1,20 @@
-export type GameType = 'tap' | 'math' | 'sequence' | 'memory';
+/**
+ * Every game module, human and agent.
+ *
+ * The first four are reflex and arithmetic games for human zones; the last
+ * three are the agent-native ones from phase 6. The split is not cosmetic —
+ * `games/index.ts` draws from different pools per zone kind precisely because
+ * an agent plays the first four perfectly and is *rejected* by their bot
+ * checks for doing so.
+ */
+export type GameType =
+  | 'tap'
+  | 'math'
+  | 'sequence'
+  | 'memory'
+  | 'deduction'
+  | 'negotiation'
+  | 'search';
 export type Difficulty = 'easy' | 'med' | 'hard';
 export type HuntKind = 'cash' | 'puzzle';
 

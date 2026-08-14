@@ -51,6 +51,19 @@ export interface StepContext<Spec, Secret, State> {
 export interface GameModule<Spec = unknown, Secret = unknown, State = unknown, Input = unknown> {
   type: GameType;
 
+  /**
+   * Whether an attempt at this game must survive a process restart.
+   *
+   * False for the reflex games, and deliberately so: a six-second attempt
+   * spanning a deploy is nobody's loss, and persisting state on every tap would
+   * put a disk write on the hot path of the one loop that cannot afford it.
+   *
+   * True for the agent games, where an attempt runs for minutes. Losing those
+   * to a deploy would mean the async clock only works between deploys, which is
+   * not a clock. `State` must be JSON-serialisable when this is set.
+   */
+  durable?: boolean;
+
   /** Deterministic from the block's seed: same block, same game, every time. */
   generate(seed: string, difficulty: Difficulty): GeneratedGame<Spec, Secret>;
 

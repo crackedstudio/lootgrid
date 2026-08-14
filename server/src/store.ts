@@ -1,4 +1,4 @@
-import { GRID, HUNTS_PER_ZONE } from './config';
+import { ASYNC, GRID, HUNTS_PER_ZONE } from './config';
 import { migrate } from './db/migrate';
 import { tx } from './db/index';
 import * as attemptRepo from './db/repos/attempts';
@@ -13,7 +13,7 @@ import { hash, randomHex } from './hash';
 import { env } from './env';
 import { logger } from './logger';
 import { difficultyForBlock, prizeCentsFor, prizeLabelFor, toTokenUnits } from './prizes';
-import type { Attempt, BlockGame, Hunt, Player, Reveal, Zone } from './types';
+import type { Attempt, BlockGame, Hunt, Player, Reveal, Zone, ZoneKind } from './types';
 
 /**
  * The seam between the referee and storage.
@@ -37,24 +37,56 @@ const playerCache = new Map<string, Player>();
  */
 const huntCache = new Map<string, Hunt>();
 
-// Every seeded zone is human-played. Agent zones arrive with their modules in
-// phase 6; seeding one now would create a zone that cannot host a cash hunt.
 const ZONE_SEED: Array<Pick<Zone, 'id' | 'name' | 'accent' | 'kind'>> = [
   { id: 'ridge', name: 'EASTERN RIDGE', accent: '#FF7A1A', kind: 'human' },
   { id: 'flats', name: 'GOLDEN FLATS', accent: '#FFD51F', kind: 'human' },
   { id: 'tide', name: 'NEON TIDE', accent: '#29E6E6', kind: 'human' },
   { id: 'hollow', name: 'DEEP HOLLOW', accent: '#8A3DFF', kind: 'human' },
+  // The first agent zone. It could not exist before phase 6 — with no agent
+  // module registered it would have been a zone that cannot host a cash hunt,
+  // which is a zone with nothing in it. One, not four: this is the zone that
+  // answers whether there is a challenge worth an agent solving, and until it
+  // has, the grid should not be mostly given over to it.
+  { id: 'lattice', name: 'THE LATTICE', accent: '#B7FF3B', kind: 'agent' },
 ];
 
-const HUNT_TTL_MS = 24 * 60 * 60 * 1000;
+/** Per zone kind — agent hunts outlive human ones. See config's ASYNC block. */
+const huntTtlFor = (kind: ZoneKind): number => ASYNC.huntTtlMs[kind];
+
+/**
+ * Attempts rehydrated by the last {@link bootstrap}.
+ *
+ * Handed to the referee by the entry point rather than pushed from here: the
+ * referee imports this module, so calling back into it would be a cycle. Same
+ * reason its observers are wired in `index.ts`.
+ */
+let recoveredAtBoot: Attempt[] = [];
+
+export const takeRecovered = (): Attempt[] => {
+  const out = recoveredAtBoot;
+  recoveredAtBoot = [];
+  return out;
+};
 
 export function bootstrap(): void {
   migrate();
 
-  const recovered = attemptRepo.abandonActiveOnBoot();
-  if (recovered > 0) {
+  // Long attempts come back; short ones cannot. An agent game runs for minutes
+  // and its player is owed the rest of it, while a six-second reflex attempt
+  // spanning a restart is unresumable by nature — nobody is mid-tap across a
+  // deploy, and the clock it was racing is long gone.
+  const resumed = attemptRepo.recoverable();
+  for (const a of resumed) {
+    if (!liveAttempts.has(a.huntId)) liveAttempts.set(a.huntId, new Map());
+    liveAttempts.get(a.huntId)!.set(a.playerId, a);
+    attemptIndex.set(a.id, a);
+  }
+  recoveredAtBoot = resumed;
+
+  const abandoned = attemptRepo.abandonActiveOnBoot();
+  if (abandoned > 0) {
     // These belong to a process that no longer exists and can never complete.
-    logger.warn({ recovered }, 'abandoned in-flight attempts from a previous run');
+    logger.warn({ abandoned }, 'abandoned in-flight attempts from a previous run');
   }
 
   if (zoneRepo.list().length === 0) {
@@ -218,7 +250,7 @@ export function replenish(zoneId: string, now = Date.now()): number {
       status: 'live',
       winnerId: null,
       game: null,
-      expiresAt: now + HUNT_TTL_MS,
+      expiresAt: now + huntTtlFor(zone.kind),
       createdAt: now,
     };
     // The hint set and its commitment are written in the same transaction as the
@@ -234,7 +266,7 @@ export function replenish(zoneId: string, now = Date.now()): number {
       escrow.enqueue(
         hunt.id,
         toTokenUnits(prizeCentsFor(hunt.difficulty), env.ESCROW_TOKEN_DECIMALS),
-        hunt.expiresAt ?? now + HUNT_TTL_MS,
+        hunt.expiresAt ?? now + huntTtlFor(zone.kind),
       );
     });
 
@@ -247,6 +279,22 @@ export function replenish(zoneId: string, now = Date.now()): number {
 }
 
 // ---------------------------------------------------------------- attempts
+
+/**
+ * Persist an in-flight attempt's module state.
+ *
+ * Only durable modules reach this — see `GameModule.durable`. Swallows its own
+ * errors: the attempt is already valid in memory and playing on, so a failed
+ * snapshot costs resumability after a restart that may never happen, and
+ * failing the input would cost the player their turn for certain.
+ */
+export function saveAttemptState(a: Attempt): void {
+  try {
+    attemptRepo.saveState(a);
+  } catch (err) {
+    logger.warn({ err, attemptId: a.id }, 'attempt state not saved — it will not survive a restart');
+  }
+}
 
 export function addAttempt(a: Attempt): void {
   attemptRepo.insert(a); // UNIQUE (hunt_id, player_id) — one shot per block

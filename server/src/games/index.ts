@@ -1,7 +1,10 @@
 import { hashInt } from '../hash';
 import type { GameType, HuntKind, ZoneKind } from '../types';
+import { deductionModule } from './deduction';
 import { mathModule } from './math';
 import { memoryModule } from './memory';
+import { negotiationModule } from './negotiation';
+import { searchModule } from './search';
 import { sequenceModule } from './sequence';
 import { tapModule } from './tap';
 import type { AnyGameModule } from './types';
@@ -12,6 +15,9 @@ export const MODULES: Record<GameType, AnyGameModule> = {
   math: mathModule,
   sequence: sequenceModule,
   memory: memoryModule,
+  deduction: deductionModule,
+  negotiation: negotiationModule,
+  search: searchModule,
 };
 
 export function moduleFor(type: GameType): AnyGameModule {
@@ -28,10 +34,9 @@ export function moduleFor(type: GameType): AnyGameModule {
 const HUMAN_CASH_GAMES: GameType[] = ['tap', 'math', 'sequence'];
 
 /**
- * Cash games for agent zones. Empty until the agent-native modules land
- * (deduction / negotiation / search — see the implementation plan, phase 6).
+ * Cash games for agent zones — the phase 6 modules, and only those.
  *
- * **The four existing modules are deliberately absent and must stay that way.**
+ * **The four human modules are deliberately absent and must stay that way.**
  * They test reflexes and arithmetic, which an agent does perfectly, and `tap`
  * additionally rejects any player whose intervals are too regular to be human
  * (`tap.ts`, σ≈0 check). Listing one here would either hand agents a free win or
@@ -41,8 +46,13 @@ const HUMAN_CASH_GAMES: GameType[] = ['tap', 'math', 'sequence'];
  * bot detection lives inside modules that agent zones never select, so it is
  * unreachable by construction rather than switched off by a conditional. A flag
  * could be wrong for a human zone; an empty list cannot be.
+ *
+ * The reverse holds too, and matters just as much: these three never appear on
+ * a human zone. Each runs for ten minutes and expects the player to think
+ * between inputs, which is not a game you hand someone on a phone waiting for a
+ * bus.
  */
-const AGENT_CASH_GAMES: GameType[] = [];
+const AGENT_CASH_GAMES: GameType[] = ['deduction', 'negotiation', 'search'];
 
 function cashGamesFor(zoneKind: ZoneKind): GameType[] {
   return zoneKind === 'agent' ? AGENT_CASH_GAMES : HUMAN_CASH_GAMES;

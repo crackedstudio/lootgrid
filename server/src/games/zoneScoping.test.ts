@@ -47,28 +47,37 @@ describe('human zones', () => {
 });
 
 describe('agent zones', () => {
-  // Until phase 6 registers deduction/negotiation/search there is no legal
-  // module, and refusing loudly beats silently falling back to a reflex game.
-  it('cannot host a cash hunt yet', () => {
-    expect(canHostCashHunt('agent')).toBe(false);
-  });
+  const AGENT_ONLY: GameType[] = ['deduction', 'negotiation', 'search'];
 
-  it('throw rather than fall back to a human module', () => {
-    expect(() => gameTypeForBlock('salt', 'hunt-1', 'cash', 'agent')).toThrow(/agent zones/);
+  it('host cash hunts now that the phase 6 modules are registered', () => {
+    expect(canHostCashHunt('agent')).toBe(true);
   });
 
   it('never yield a reflex module for a cash hunt', () => {
-    // The load-bearing assertion. If this ever passes a value, an agent is
-    // playing a game whose integrity depends on it not being one.
-    for (let i = 0; i < 100; i++) {
-      let type: GameType | null = null;
-      try {
-        type = gameTypeForBlock(`s${i}`, `h${i}`, 'cash', 'agent');
-      } catch {
-        // expected while the agent pool is empty
-      }
-      if (type !== null) expect(HUMAN_ONLY).not.toContain(type);
+    // The load-bearing assertion, and the reason the pools are separate at all.
+    // If this ever passes a human module, an agent is playing a game whose
+    // integrity depends on the player not being one — tap rejects anybody whose
+    // intervals are too regular, which is every agent that ever plays it.
+    for (let i = 0; i < 200; i++) {
+      const type = gameTypeForBlock(`s${i}`, `h${i}`, 'cash', 'agent');
+      expect(HUMAN_ONLY).not.toContain(type);
+      expect(AGENT_ONLY).toContain(type);
     }
+  });
+
+  it('never yield an agent module on a human zone', () => {
+    // The mirror, and it matters just as much: each agent game runs for ten
+    // minutes and expects thinking between inputs. Handing one to somebody on a
+    // phone waiting for a bus is not a hard hunt, it is a broken one.
+    for (let i = 0; i < 200; i++) {
+      expect(AGENT_ONLY).not.toContain(gameTypeForBlock(`s${i}`, `h${i}`, 'cash', 'human'));
+    }
+  });
+
+  it('use every module in the agent pool, so none is dead code', () => {
+    const seen = new Set<GameType>();
+    for (let i = 0; i < 400; i++) seen.add(gameTypeForBlock(`s${i}`, `h${i}`, 'cash', 'agent'));
+    expect([...seen].sort()).toEqual([...AGENT_ONLY].sort());
   });
 
   it('still share the puzzle module, which guards XP and never money', () => {
@@ -88,9 +97,14 @@ describe('the default is the strict branch', () => {
     }
   });
 
-  it('keeps human zones hosting cash hunts under every kind value', () => {
+  it('lets both kinds host cash hunts, from their own pools', () => {
     const kinds: ZoneKind[] = ['human', 'agent'];
-    expect(kinds.filter(canHostCashHunt)).toEqual(['human']);
+    expect(kinds.filter(canHostCashHunt)).toEqual(['human', 'agent']);
+    // Same question, different answer per kind — which is the whole point of
+    // scoping rather than sharing one pool.
+    expect(gameTypeForBlock('s', 'h', 'cash', 'human')).not.toBe(
+      gameTypeForBlock('s', 'h', 'cash', 'agent'),
+    );
   });
 });
 
