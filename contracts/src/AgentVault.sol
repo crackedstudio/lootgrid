@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {HintEscrow} from "./HintEscrow.sol";
 
 /**
  * @title AgentVault
@@ -200,6 +201,61 @@ contract AgentVault is ReentrancyGuard {
 
         token.safeTransfer(target, amount);
         emit Spent(target, amount, tradeRef);
+    }
+
+    /**
+     * @notice Buy a hint through HintEscrow, paying from this vault.
+     *
+     * ─────────────────────────── why this is not `spend` ────────────────────
+     *
+     * `spend` transfers tokens to an address. `HintEscrow.fund` pulls them from
+     * its caller, so an agent cannot buy a hint by transferring — the escrow
+     * would receive money attached to no trade. The vault has to BE the buyer.
+     *
+     * ─────────────────────────── why it is not a generic call ───────────────
+     *
+     * The obvious version of this takes `(address target, bytes calldata data)`
+     * and forwards it. That would hand a compromised agent the ability to call
+     * anything at all with the vault's balance behind it, which is precisely
+     * the power every other line in this contract exists to withhold. So the
+     * shape is fixed: one function, one destination interface, arguments the
+     * compiler checks.
+     *
+     * Every control still applies. The escrow must be allowlisted, the amount is
+     * capped per transaction and per day, and the approval is granted for
+     * exactly this trade and consumed by it. A refund from an expired trade
+     * returns here, because this vault was the buyer — so a hint that never
+     * arrives costs nothing but time.
+     */
+    function fundHintTrade(
+        address escrow,
+        bytes32 tradeId,
+        address seller,
+        uint256 amount,
+        uint64 expiresAt,
+        HintEscrow.Vouch calldata vouch,
+        bytes calldata vouchSignature
+    ) external nonReentrant {
+        address agent = spender;
+        if (agent == address(0)) revert NoSpender();
+        if (msg.sender != agent) revert NotSpender();
+        if (amount == 0) revert ZeroAmount();
+
+        // The escrow is a payment target like any other: the owner must have
+        // approved it, or their agent cannot trade through it.
+        if (!allowed[escrow]) revert TargetNotAllowed();
+        if (amount > perTxCap) revert ExceedsPerTxCap();
+        if (amount > token.balanceOf(address(this))) revert InsufficientBalance();
+
+        _chargeDailyCap(amount);
+
+        // Exactly this trade's worth, granted and spent in the same call. Any
+        // allowance left afterwards would be a standing claim on the vault.
+        token.forceApprove(escrow, amount);
+        HintEscrow(escrow).fund(tradeId, seller, amount, expiresAt, vouch, vouchSignature);
+        token.forceApprove(escrow, 0);
+
+        emit Spent(escrow, amount, tradeId);
     }
 
     /**

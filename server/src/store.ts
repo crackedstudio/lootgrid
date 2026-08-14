@@ -7,6 +7,7 @@ import * as playerRepo from './db/repos/players';
 import * as zoneRepo from './db/repos/zones';
 import * as escrow from './chain/escrow';
 import { gameTypeForBlock, moduleFor } from './games';
+export { moduleFor };
 import { cellKey } from './grid';
 import * as director from './director';
 import * as hints from './hints';

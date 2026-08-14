@@ -108,6 +108,11 @@ function build() {
     ofPlayer: db.prepare('SELECT * FROM agents WHERE player_id = ?'),
     setVault: db.prepare('UPDATE agents SET vault = ?, updated_at = ? WHERE id = ?'),
     setStatus: db.prepare('UPDATE agents SET status = ?, updated_at = ? WHERE id = ?'),
+    // Agents the driver should wake. A vault is required: one without has
+    // nothing to spend and nothing to protect.
+    allActive: db.prepare(
+      "SELECT * FROM agents WHERE status = 'active' AND vault IS NOT NULL ORDER BY created_at",
+    ),
 
     putConfig: db.prepare(`
       INSERT INTO agent_config (agent_id, aggression, max_hint_price_cents, daily_budget_cents,
@@ -163,6 +168,11 @@ export function get(id: string): Agent | null {
 export function ofPlayer(playerId: string): Agent | null {
   const row = s().ofPlayer.get(playerId) as AgentRaw | undefined;
   return row ? toAgent(row) : null;
+}
+
+/** Every agent the driver should consider this tick. */
+export function allActive(): Agent[] {
+  return (s().allActive.all() as AgentRaw[]).map(toAgent);
 }
 
 export function setVault(id: string, vault: string, now = Date.now()): void {

@@ -9,6 +9,7 @@ import * as budget from './budget';
 import { parseUpdate, type AgentConfig } from './config';
 import * as identity from './identity';
 import * as inference from './inference';
+import * as vaultChain from '../chain/agentVault';
 
 /**
  * The agent service: what the HTTP layer talks to.
@@ -117,17 +118,35 @@ export async function setupOffer(player: Player) {
 }
 
 /**
- * Record the vault address after the player's transaction lands.
+ * Find the player's vault on chain and record it.
  *
- * Read back from the factory by the caller rather than trusted from the client:
- * a vault address supplied by a request would be an address the server would
- * then let an agent spend against.
+ * The address is READ from the factory, never accepted from the request. A
+ * vault address a client could supply would be an address the server then lets
+ * an agent spend against — and the factory is the only thing that knows, since
+ * `vaultOf` is written at creation and by nothing else.
+ *
+ * Also checks the vault still names this agent as its spender. A player who
+ * pressed kill on chain has a vault whose spender is zero, and recording it as
+ * live would have the server handing turns to an agent the contract has already
+ * revoked.
  */
-export function attachVault(player: Player, vault: Address): AgentView {
+export async function attachVault(player: Player): Promise<AgentView> {
   requireEnabled();
   const agent = agentRepo.ofPlayer(player.id);
   if (!agent) throw notFound('no_agent');
-  agentRepo.setVault(agent.id, vault);
+
+  const vault = await vaultChain.readVault(player.id as Address);
+  if (!vault) throw conflict('no_vault_on_chain');
+
+  const expected = identity.addressFor(player.id);
+  if (vault.spender.toLowerCase() !== expected.toLowerCase()) {
+    // Either revoked, or pointed at a different agent entirely. Both mean the
+    // server must not treat this vault as spendable.
+    agentRepo.setStatus(agent.id, 'killed');
+    throw conflict('vault_spender_mismatch');
+  }
+
+  agentRepo.setVault(agent.id, vault.address);
   return view(agent.id, player.id);
 }
 

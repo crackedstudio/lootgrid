@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {AgentVault} from "../src/AgentVault.sol";
 import {AgentVaultFactory} from "../src/AgentVaultFactory.sol";
+import {HintEscrow} from "../src/HintEscrow.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 /**
@@ -330,6 +331,146 @@ contract AgentVaultTest is Test {
         vm.expectRevert(AgentVault.ZeroAmount.selector);
         vault.deposit(0);
         vm.stopPrank();
+    }
+
+    // ── buying a hint through the escrow ─────────────────────────────────────
+
+    /**
+     * The bridge exists because `spend` cannot do this: `HintEscrow.fund` pulls
+     * from its caller, so an agent transferring tokens to the escrow would send
+     * money attached to no trade. The vault has to be the buyer.
+     */
+    function _escrow() internal returns (HintEscrow) {
+        return new HintEscrow(
+            address(token),
+            address(0xB055),
+            address(0x7EA5),
+            vm.addr(0x5001),
+            vm.addr(0x5002),
+            address(0x6A12),
+            HintEscrow.Limits({
+                rakeBps: 250,
+                minTradeAmount: 0.01e18,
+                perTradeCap: 5e18,
+                rakeWaiverAmount: 0.05e18,
+                challengeWindow: 1 hours,
+                maxTradeTtl: 24 hours
+            })
+        );
+    }
+
+    function _vouch(HintEscrow escrow, uint256 key)
+        internal
+        view
+        returns (HintEscrow.Vouch memory vouch, bytes memory sig)
+    {
+        vouch = HintEscrow.Vouch({
+            hintHash: keccak256("hint"),
+            zoneId: bytes32("ridge"),
+            tier: 2,
+            reliabilityBps: 7000,
+            deadline: block.timestamp + 300
+        });
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, escrow.vouchDigest(vouch));
+        sig = abi.encodePacked(r, s, v);
+    }
+
+    function test_agentFundsAHintTradeFromTheVault() public {
+        HintEscrow escrow = _escrow();
+        vm.prank(player);
+        vault.setTarget(address(escrow), true);
+        (HintEscrow.Vouch memory vouch, bytes memory sig) = _vouch(escrow, 0x5001);
+
+        vm.prank(agent);
+        vault.fundHintTrade(
+            address(escrow), REF, market, 0.5e18, uint64(block.timestamp) + 1 hours, vouch, sig
+        );
+
+        // The money is in the escrow, and the VAULT is the buyer — so a refund
+        // comes back here rather than to an agent that holds nothing.
+        assertEq(token.balanceOf(address(escrow)), 0.5e18);
+        (address buyer,,,,,) = escrow.trades(REF);
+        assertEq(buyer, address(vault));
+    }
+
+    function test_fundHintTrade_leavesNoStandingAllowance() public {
+        HintEscrow escrow = _escrow();
+        vm.prank(player);
+        vault.setTarget(address(escrow), true);
+        (HintEscrow.Vouch memory vouch, bytes memory sig) = _vouch(escrow, 0x5001);
+
+        vm.prank(agent);
+        vault.fundHintTrade(
+            address(escrow), REF, market, 0.5e18, uint64(block.timestamp) + 1 hours, vouch, sig
+        );
+
+        // An allowance left behind would be a standing claim on the vault.
+        assertEq(token.allowance(address(vault), address(escrow)), 0);
+    }
+
+    function test_fundHintTrade_obeysEveryCap() public {
+        HintEscrow escrow = _escrow();
+        vm.prank(player);
+        vault.setTarget(address(escrow), true);
+        (HintEscrow.Vouch memory vouch, bytes memory sig) = _vouch(escrow, 0x5001);
+        uint64 expiry = uint64(block.timestamp) + 1 hours;
+
+        // Per-transaction.
+        vm.prank(agent);
+        vm.expectRevert(AgentVault.ExceedsPerTxCap.selector);
+        vault.fundHintTrade(address(escrow), REF, market, PER_TX + 1, expiry, vouch, sig);
+
+        // Per-day: five at the cap exhausts it.
+        for (uint256 i = 0; i < 5; i++) {
+            (HintEscrow.Vouch memory v2, bytes memory s2) = _vouch(escrow, 0x5001);
+            vm.prank(agent);
+            vault.fundHintTrade(address(escrow), keccak256(abi.encode(i)), market, PER_TX, expiry, v2, s2);
+        }
+        vm.prank(agent);
+        vm.expectRevert(AgentVault.ExceedsPerDayCap.selector);
+        vault.fundHintTrade(address(escrow), REF, market, 1, expiry, vouch, sig);
+    }
+
+    function test_fundHintTrade_refusesAnUnapprovedEscrow() public {
+        // The escrow is a payment target like any other. An agent that could
+        // route through an escrow its owner never approved would have found a
+        // way around the allowlist.
+        HintEscrow escrow = _escrow();
+        (HintEscrow.Vouch memory vouch, bytes memory sig) = _vouch(escrow, 0x5001);
+
+        vm.prank(agent);
+        vm.expectRevert(AgentVault.TargetNotAllowed.selector);
+        vault.fundHintTrade(
+            address(escrow), REF, market, 0.5e18, uint64(block.timestamp) + 1 hours, vouch, sig
+        );
+    }
+
+    function test_fundHintTrade_isSpenderOnly() public {
+        HintEscrow escrow = _escrow();
+        vm.prank(player);
+        vault.setTarget(address(escrow), true);
+        (HintEscrow.Vouch memory vouch, bytes memory sig) = _vouch(escrow, 0x5001);
+
+        vm.prank(attacker);
+        vm.expectRevert(AgentVault.NotSpender.selector);
+        vault.fundHintTrade(
+            address(escrow), REF, market, 0.5e18, uint64(block.timestamp) + 1 hours, vouch, sig
+        );
+    }
+
+    function test_fundHintTrade_stopsAtTheKillSwitch() public {
+        HintEscrow escrow = _escrow();
+        vm.startPrank(player);
+        vault.setTarget(address(escrow), true);
+        vault.kill();
+        vm.stopPrank();
+        (HintEscrow.Vouch memory vouch, bytes memory sig) = _vouch(escrow, 0x5001);
+
+        vm.prank(agent);
+        vm.expectRevert(AgentVault.NoSpender.selector);
+        vault.fundHintTrade(
+            address(escrow), REF, market, 0.5e18, uint64(block.timestamp) + 1 hours, vouch, sig
+        );
     }
 
     /**

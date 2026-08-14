@@ -68,6 +68,7 @@ export const FACTORY_ABI = parseAbi([
 
 export const VAULT_ABI = parseAbi([
   'function spend(address target, uint256 amount, bytes32 tradeRef)',
+  'function fundHintTrade(address escrow, bytes32 tradeId, address seller, uint256 amount, uint64 expiresAt, (bytes32 hintHash, bytes32 zoneId, uint8 tier, uint16 reliabilityBps, uint256 deadline) vouch, bytes vouchSignature)',
   'function kill()',
   'function setCaps(uint256 perTx, uint256 perDay)',
   'function setTarget(address target, bool value)',
@@ -262,6 +263,49 @@ export function spendCall(vault: Address, target: Address, amount: bigint, trade
     }),
     gas: toHex(AGENT_GAS),
   };
+}
+
+/**
+ * The vault transaction that buys a hint.
+ *
+ * The vault is the buyer, not the agent: `HintEscrow.fund` pulls from its
+ * caller, so an agent transferring tokens to the escrow would send money
+ * attached to no trade. It also means a refund on an expired trade returns to
+ * the vault rather than to an agent that holds nothing.
+ */
+export function fundHintTradeCall(quote: {
+  onChainId: Hex;
+  sellerId: string;
+  amount: string;
+  expiresAt: number;
+  vouch: {
+    hintHash: Hex;
+    zoneId: Hex;
+    tier: number;
+    reliabilityBps: number;
+    deadline: number;
+    signature: Hex;
+  };
+}): Hex {
+  return encodeFunctionData({
+    abi: VAULT_ABI,
+    functionName: 'fundHintTrade',
+    args: [
+      env.HINT_ESCROW_ADDRESS as Address,
+      quote.onChainId,
+      quote.sellerId as Address,
+      BigInt(quote.amount),
+      BigInt(Math.floor(quote.expiresAt / 1000)),
+      {
+        hintHash: quote.vouch.hintHash,
+        zoneId: quote.vouch.zoneId,
+        tier: quote.vouch.tier,
+        reliabilityBps: quote.vouch.reliabilityBps,
+        deadline: BigInt(quote.vouch.deadline),
+      },
+      quote.vouch.signature,
+    ],
+  });
 }
 
 /** The agent's signer, for the runtime to send transactions with. */

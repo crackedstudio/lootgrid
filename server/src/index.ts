@@ -12,6 +12,7 @@ import { registerRoutes } from './http';
 import { logger } from './logger';
 import * as hints from './hints';
 import * as metrics from './metrics';
+import * as agentDriver from './agents/driver';
 import * as x402 from './payments/x402';
 import * as ratelimit from './ratelimit';
 import * as referee from './referee';
@@ -117,6 +118,10 @@ relayer.start();
 // either way, they simply carry no money until a pot lands.
 escrowWorker.start();
 startNoncePruner();
+// Enters hunts and takes turns for players who have an agent. A no-op unless
+// AGENTS_ENABLED=true — and until this existed, every other agent module was a
+// capability nothing ever called.
+agentDriver.start();
 
 if (x402.enabled()) {
   // The one thing no test can establish offline: whether the token's real
@@ -173,6 +178,7 @@ async function shutdown(signal: string): Promise<void> {
     registry.stop();
     relayer.stop();
     escrowWorker.stop();
+    agentDriver.stop();
     stopNoncePruner();
     // Tell clients to reconnect rather than dropping them silently.
     for (const client of [...rooms.allClients()]) client.ws.close(1001, 'server shutting down');

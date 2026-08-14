@@ -571,11 +571,16 @@ export function registerRoutes(app: App): void {
     return await agents.setupOffer(player);
   });
 
-  /** Record the vault once the player's transaction has landed. */
+  /**
+   * Find the vault on chain once the player's transaction has landed.
+   *
+   * Takes no address: it is read from the factory. One a client could supply
+   * would be one the server then lets an agent spend against.
+   */
   app.post('/agent/vault', async req => {
     const player = await requirePlayer(req);
-    const { vault } = parse(z.object({ vault: hexAddress }), req.body);
-    return { agent: agents.attachVault(player, vault as `0x${string}`) };
+    limit(`agent:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'agent');
+    return { agent: await agents.attachVault(player) };
   });
 
   app.put('/agent/config', async req => {

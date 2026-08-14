@@ -279,6 +279,26 @@ export const agentBudgetRefusals = new Counter({
   registers: [registry],
 });
 
+/** Turns the driver actually drove. Zero means agents are not playing at all. */
+export const agentTurns = new Counter({
+  name: 'lootgrid_agent_turns_total',
+  help: 'Turns submitted to the referee by the driver',
+  labelNames: ['source'] as const,
+  registers: [registry],
+});
+
+export const agentEntries = new Counter({
+  name: 'lootgrid_agent_entries_total',
+  help: 'Hunts entered by an agent on its owner\'s behalf',
+  registers: [registry],
+});
+
+export const agentHintPurchases = new Counter({
+  name: 'lootgrid_agent_hint_purchases_total',
+  help: 'Hint trades funded from a vault',
+  registers: [registry],
+});
+
 /** Queue depth in the shared runtime. One busy tenant must not starve a hunt. */
 export const agentQueueDepth = new Gauge({
   name: 'lootgrid_agent_queue_depth',

@@ -39,17 +39,20 @@ export async function setupAgent() {
   await sendCall(offer.bind.call);
   const hash = await sendCall(offer.createVault);
 
-  return { agent: offer.agent, hash, caps: offer.caps };
+  // Close the loop: without this the vault exists on chain and the server never
+  // learns of it, so the screen reads "Not funded" forever.
+  const agent = await attachVault();
+
+  return { agent, hash, caps: offer.caps };
 }
 
 /**
- * Tell the server the vault address once it exists.
+ * Ask the server to find the vault on chain.
  *
- * The address is read from the factory rather than guessed: a vault address
- * supplied by the client would be an address the server then lets an agent
- * spend against.
+ * Sends no address on purpose — the server reads it from the factory. One the
+ * client could supply would be one the server then lets an agent spend against.
  */
-export const attachVault = vault => post('/agent/vault', { vault }).then(r => r.agent);
+export const attachVault = () => post('/agent/vault').then(r => r.agent);
 
 /**
  * Stop the agent here, and hand back the transaction that stops it on chain.
