@@ -249,4 +249,44 @@ describe('hunt creation queues a pot', () => {
       expect(r.status).toBe('pending');
     }
   });
+
+  /**
+   * The units, pinned end to end.
+   *
+   * This is the seam's one blind spot: every test above hands the queue a
+   * number it made up, so a caller feeding the wrong scale is invisible here
+   * while being catastrophic on chain. A millisecond epoch read as seconds
+   * lands in the year 55000 — `fundHunt` succeeds, `claim` succeeds, and
+   * `refund` reverts `NotExpired` forever, quietly disabling the escape hatch
+   * that is supposed to survive a lost key or a vanished operator.
+   */
+  it('hands the chain a seconds timestamp, from a hunt measured in milliseconds', async () => {
+    clearQueue();
+    freshWorld();
+
+    const jobs: escrow.FundingJob[] = [];
+    escrow.setTransportForTests(
+      async job => {
+        jobs.push(job);
+        return HASH;
+      },
+      async () => true,
+    );
+    escrow.unstopForTests();
+    await escrow.drain();
+    await escrow.settle();
+
+    expect(jobs.length).toBeGreaterThan(0);
+    for (const job of jobs) {
+      // What the real caller passes: a hunt's own expiry, in milliseconds.
+      // Asserting the scale here is the half the transport seam cannot see —
+      // every other test in this file invents the number it enqueues.
+      expect(job.expiresAt).toBeGreaterThan(1e12);
+
+      // And what the chain is given: seconds, ahead of now, in this century.
+      const onChain = escrow.toChainSeconds(job.expiresAt);
+      expect(onChain).toBeGreaterThan(BigInt(Math.floor(Date.now() / 1000)));
+      expect(onChain).toBeLessThan(4_102_444_800n); // 2100-01-01
+    }
+  });
 });

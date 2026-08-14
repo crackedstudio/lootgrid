@@ -51,7 +51,24 @@ interface Row {
 export interface FundingJob {
   huntId: Hex;
   amount: bigint;
+  /**
+   * MILLISECOND epoch, as everywhere else in this server. Converted to seconds
+   * at the chain boundary — see {@link chainSend}.
+   */
   expiresAt: number;
+}
+
+/**
+ * ms → s for `block.timestamp`.
+ *
+ * Stated as its own function because getting it wrong is silent and expensive:
+ * a millisecond value read as seconds lands in the year 55000, which makes
+ * `fundHunt` succeed, `claim` succeed, and `refund` revert `NotExpired`
+ * forever. The escape hatch that is supposed to survive a lost key or a
+ * vanished operator would simply never open.
+ */
+export function toChainSeconds(msEpoch: number): bigint {
+  return BigInt(Math.floor(msEpoch / 1000));
 }
 
 // ------------------------------------------------------------------ enqueue
@@ -65,6 +82,8 @@ export function enabled(): boolean {
 /**
  * Queue a pot for funding. Called inside the transaction that creates the hunt,
  * so a hunt and its funding intent are recorded together or not at all.
+ *
+ * `expiresAt` is a **millisecond** epoch — the hunt's own, unmodified.
  *
  * Never throws — see the module header. A hunt with no prize is a worse hunt,
  * not a failed one.
@@ -125,7 +144,7 @@ const chainSend: SendFn = async job => {
     abi: ESCROW_ABI,
     chain: null,
     functionName: 'fundHunt',
-    args: [job.huntId, job.amount, BigInt(job.expiresAt)],
+    args: [job.huntId, job.amount, toChainSeconds(job.expiresAt)],
     // fundHunt is one SSTORE-heavy write plus a transfer; fixed rather than
     // estimated, for the same reason the relayer skips estimation.
     gas: 200_000n,
