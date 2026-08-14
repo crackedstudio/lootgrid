@@ -43,6 +43,9 @@ const INITIAL = {
   /** True while a 402 is waiting on the player to accept a price. */
   paying: false,
 
+  /** Hunt id whose Director transcript is open, or null. */
+  transcriptFor: null,
+
   boardTab: 'daily',
   showToast: false,
   toastText: '',

@@ -4,6 +4,7 @@ import OnboardingScreen from './components/OnboardingScreen';
 import ZoneScreen from './components/ZoneScreen';
 import GridScreen from './components/GridScreen';
 import HuntPreview from './components/HuntPreview';
+import HuntTranscript from './components/HuntTranscript';
 import Minigame from './components/Minigame';
 import WinScreen from './components/WinScreen';
 import BoardScreen from './components/BoardScreen';
@@ -99,7 +100,19 @@ export default function App() {
       )}
 
       {state.winData && (
-        <WinScreen state={state} onShare={game.doShare} onBackToMap={game.backToMap} />
+        <WinScreen
+          state={state}
+          onShare={game.doShare}
+          onBackToMap={game.backToMap}
+          onShowTranscript={() => game.setField('transcriptFor', state.winData.huntId)}
+        />
+      )}
+
+      {state.transcriptFor && (
+        <HuntTranscript
+          huntId={state.transcriptFor}
+          onClose={() => game.setField('transcriptFor', null)}
+        />
       )}
 
       {showNavBar && <NavBar view={state.view} onNav={game.setView} />}

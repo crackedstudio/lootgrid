@@ -5,6 +5,7 @@ import { canonicalHttp } from './auth/canonical';
 import * as registry from './auth/registry';
 import { verifyHttp, type Credentials } from './auth/verify';
 import * as agents from './agents';
+import * as director from './director';
 import * as attestor from './chain/attestor';
 import * as escrowChain from './chain/escrow';
 import * as relayer from './chain/relayer';
@@ -754,6 +755,51 @@ export function registerRoutes(app: App): void {
     const zone = store.getZone(id);
     if (!zone) throw notFound('no_such_zone');
     return hintStats.auditZone(zone.id);
+  });
+
+  /**
+   * A hunt's directive transcript, and the signed head.
+   *
+   * Unauthenticated on purpose, like every other audit surface: a guarantee only
+   * players can check is weaker than one anybody can. The response carries
+   * everything needed to recompute the chain independently — the salt is
+   * included only once the hunt is over, for the same reason it always is.
+   */
+  app.get('/audit/transcript/:id', async req => {
+    const { id } = parse(idParams, req.params);
+    const hunt = store.getHunt(id);
+    if (!hunt) throw notFound('no_such_hunt');
+
+    const transcript = director.transcriptOf(hunt.id);
+    if (!transcript) throw notFound('not_directed');
+
+    const settled = hunt.status === 'resolved' || hunt.status === 'expired';
+    return {
+      huntId: hunt.id,
+      // Withheld while the hunt is live: it is the same secret the cell
+      // commitment rests on, and publishing it early would hand over the map.
+      salt: settled ? hunt.salt : null,
+      chainHead: transcript.chainHead,
+      rounds: transcript.length,
+      entries: transcript.list(),
+      // Signed at resolution, so the head cannot be revised afterwards. Absent
+      // until then, and absent entirely when attestations are switched off.
+      attestation:
+        settled && attestor.enabled()
+          ? await attestor.signTranscript(
+              attestor.toBytes32Id(hunt.id),
+              transcript.chainHead,
+              transcript.length,
+            )
+          : null,
+      /**
+       * What this proves, stated rather than implied: the rounds were not chosen
+       * differently per player and were not rewritten after the fact. NOT that
+       * they were fair — a live Director trades that away, and the chain is the
+       * replacement, not an equivalent.
+       */
+      proves: 'one version of events, identical for every racer',
+    };
   });
 
   app.get('/audit/zones/:id', async req => {

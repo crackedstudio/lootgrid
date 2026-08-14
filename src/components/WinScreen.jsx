@@ -146,7 +146,7 @@ function PrizeClaim({ huntId }) {
   );
 }
 
-export default function WinScreen({ state, onShare, onBackToMap }) {
+export default function WinScreen({ state, onShare, onBackToMap, onShowTranscript }) {
   const { winData, shared } = state;
   if (!winData) return null;
 
@@ -220,6 +220,17 @@ export default function WinScreen({ state, onShare, onBackToMap }) {
         >
           {shared ? 'SHARED ✓ — NICE ONE' : 'SHARE THE WIN'}
         </div>
+
+        {winData.huntId && onShowTranscript && (
+          <div
+            onClick={onShowTranscript}
+            style={{
+              marginTop: 12, fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700,
+              color: 'var(--cream)', opacity: .6, cursor: 'pointer', letterSpacing: '.08em',
+              textDecoration: 'underline',
+            }}
+          >HOW THIS HUNT WAS RUN →</div>
+        )}
 
         <div
           onClick={onBackToMap}

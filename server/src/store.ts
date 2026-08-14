@@ -8,6 +8,7 @@ import * as zoneRepo from './db/repos/zones';
 import * as escrow from './chain/escrow';
 import { gameTypeForBlock, moduleFor } from './games';
 import { cellKey } from './grid';
+import * as director from './director';
 import * as hints from './hints';
 import { hash, randomHex } from './hash';
 import { env } from './env';
@@ -260,6 +261,11 @@ export function replenish(zoneId: string, now = Date.now()): number {
     tx(() => {
       huntRepo.insert(hunt);
       hints.commitAtCreation(hunt, now);
+      // Start the directive chain from the same salt the cell commitment uses,
+      // so the transcript's first link is computable by anyone who later holds
+      // the revealed salt. Opening it here means no hunt can be played before
+      // its chain exists.
+      director.open({ huntId: hunt.id, salt: hunt.salt, difficulty: hunt.difficulty });
       // Queue the prize alongside the hunt, so a created hunt and its funding
       // intent are recorded together or not at all. The worker funds it out of
       // band — an unfunded hunt still plays, it just carries no money yet.

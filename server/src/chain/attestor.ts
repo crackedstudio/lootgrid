@@ -115,6 +115,30 @@ export const TYPES = {
     {name: 'deadline', type: 'uint256'},
   ],
   /**
+   * The head of a hunt's directive chain, signed at resolution.
+   *
+   * A live Director destroys v1's commit-reveal guarantee: the game is no longer
+   * decided before anyone enters, so no commitment made in advance can cover it.
+   * The replacement is a hash chain over every issued round — but a chain the
+   * house could recompute after the fact would prove nothing, so the head is
+   * signed at the moment the hunt resolves.
+   *
+   * What that buys, precisely: the rounds cannot have been chosen differently
+   * per player, and cannot have been rewritten once the house saw who was
+   * winning. It does NOT prove they were fair — only that there was one version
+   * of events and this is it. Architecture §4 states the same trade-off.
+   *
+   * Nothing verifies this on chain yet; `LootGridActions` has no transcript
+   * function. The signature is what makes the published head tamper-evident, and
+   * the audit endpoint is where anyone recomputes the chain against it.
+   */
+  Transcript: [
+    {name: 'huntId', type: 'bytes32'},
+    {name: 'chainHead', type: 'bytes32'},
+    {name: 'rounds', type: 'uint16'},
+    {name: 'deadline', type: 'uint256'},
+  ],
+  /**
    * Authorises HintEscrow to move one buyer's escrowed money to their seller.
    *
    * Separate from {@link TYPES.Hint} and signed with a different key, because
@@ -651,6 +675,52 @@ export function fundCall(
       ],
     }),
     gas: toHex(MARKET_GAS),
+  };
+}
+
+export interface TranscriptAttestation {
+  kind: 'transcript';
+  huntId: Hex;
+  chainHead: Hex;
+  rounds: number;
+  deadline: number;
+  signature: Hex;
+  contract: Address;
+  chainId: number;
+}
+
+/**
+ * Sign a hunt's directive chain head.
+ *
+ * Signed with the records key: this authorises nothing and moves nothing, it
+ * only pins what happened. Same key that vouches for a hint's provenance, and
+ * for the same reason — provenance is not payment.
+ */
+export async function signTranscript(
+  huntId: Hex,
+  chainHead: Hex,
+  rounds: number,
+  now: number = Date.now(),
+): Promise<TranscriptAttestation> {
+  const deadline = deadlineFrom(now);
+  const clampedRounds = Math.max(0, Math.min(Math.trunc(rounds), 65_535));
+
+  const signature = await signer().signTypedData({
+    domain: domain(),
+    types: TYPES,
+    primaryType: 'Transcript',
+    message: {huntId, chainHead, rounds: clampedRounds, deadline: BigInt(deadline)},
+  });
+
+  return {
+    kind: 'transcript',
+    huntId,
+    chainHead,
+    rounds: clampedRounds,
+    deadline,
+    signature,
+    contract: env.LOOTGRID_ACTIONS_ADDRESS as Address,
+    chainId: CHAIN_IDS[env.CHAIN],
   };
 }
 

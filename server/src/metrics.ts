@@ -286,6 +286,34 @@ export const agentQueueDepth = new Gauge({
   registers: [registry],
 });
 
+// ---- the director ----
+//
+// Phase 8 asks whether live difficulty beats deterministic generation. The
+// honest way to answer it is to watch how often the Director actually decides
+// anything: a `fallback` share near 100% means the model is contributing
+// nothing and the phase's answer is no.
+
+export const directiveIssued = new Counter({
+  name: 'lootgrid_directives_issued_total',
+  help: 'Rounds issued, by whether the Director or the fallback chose them',
+  labelNames: ['source'] as const,
+  registers: [registry],
+});
+
+/**
+ * Prefetches that produced nothing usable.
+ *
+ * `too_slow` is the one to watch against `directiveIssued{source="model"}`: it
+ * is the pipeline losing its race, and it is the difference between a Director
+ * that is live and one that is decorative.
+ */
+export const directiveDropped = new Counter({
+  name: 'lootgrid_directives_dropped_total',
+  help: 'Director answers discarded before being issued',
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
 export const authFailures = new Counter({
   name: 'lootgrid_auth_failures_total',
   help: 'Rejected authentication attempts by reason',
