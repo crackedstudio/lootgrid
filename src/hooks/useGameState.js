@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { get, post, ApiError } from '../api/http';
 import { fetchHints } from '../api/hints';
+import { enterHunt } from '../api/entry';
 import { publishEntry, publishWin } from '../api/records';
 import { createSender, socket } from '../api/socket';
 import { ONB_CARDS } from '../data/gameData';
@@ -38,6 +39,9 @@ const INITIAL = {
   lostTo: null,
   winData: null,
   shared: false,
+
+  /** True while a 402 is waiting on the player to accept a price. */
+  paying: false,
 
   boardTab: 'daily',
   showToast: false,
@@ -342,7 +346,26 @@ export function useGameState() {
     [set, toast],
   );
 
-  const closeHunt = useCallback(() => set({ huntPreview: null }), [set]);
+  /**
+   * Resolves the promise `enterHunt` is waiting on while a price is shown.
+   * Held in a ref because the answer arrives from a click, long after the
+   * request that asked for it.
+   */
+  const quoteResolver = useRef(null);
+
+  const settleQuote = useCallback(accepted => {
+    const resolve = quoteResolver.current;
+    quoteResolver.current = null;
+    resolve?.(accepted);
+  }, []);
+
+  const acceptQuote = useCallback(() => settleQuote(true), [settleQuote]);
+
+  const closeHunt = useCallback(() => {
+    // Closing mid-quote is a decline, not a dangling promise.
+    settleQuote(false);
+    set({ huntPreview: null, paying: false });
+  }, [set, settleQuote]);
 
   // ---------------------------------------------------------------- hunts
 
@@ -351,7 +374,20 @@ export function useGameState() {
     if (!hunt) return;
 
     try {
-      const res = await post(`/hunts/${hunt.id}/attempts`);
+      // Pays only if the server asks, and only after the player has seen the
+      // price. Energy is tried first server-side, so most entries never reach
+      // the payment branch at all.
+      const res = await enterHunt(hunt.id, {
+        // The 402 arrives mid-flight, so the price is shown and the entry waits
+        // on a promise the player resolves. Nobody should be charged by a screen
+        // they have not read.
+        onQuote: terms =>
+          new Promise(resolve => {
+            quoteResolver.current = resolve;
+            set({ huntPreview: { ...hunt, quote: terms }, paying: true });
+          }),
+      });
+      if (!res) return set({ huntPreview: null, paying: false });
       senderRef.current?.dispose();
       senderRef.current = createSender(res.attemptId);
       socket.join(`hunt:${hunt.id}`);
@@ -362,6 +398,7 @@ export function useGameState() {
 
       set({
         huntPreview: null,
+        paying: false,
         energy: res.energy,
         huntId: hunt.id,
         huntPrize: hunt.prizeLabel,
@@ -375,7 +412,10 @@ export function useGameState() {
         shared: false,
       });
     } catch (err) {
-      set({ huntPreview: null });
+      set({ huntPreview: null, paying: false });
+      if (err.code === 'no_wallet') return toast('NO WALLET TO PAY WITH');
+      if (err.code === 'signature_refused') return toast('PAYMENT CANCELLED');
+      if (err.status === 402) return toast('PAYMENT WAS REFUSED');
       if (err.code === 'insufficient_energy') return toast('NOT ENOUGH ENERGY');
       if (err.code === 'already_attempted') return toast('YOU ALREADY TRIED THIS ONE');
       if (err.code === 'hunt_not_live') return toast('ALREADY CRACKED');
@@ -468,6 +508,7 @@ export function useGameState() {
     onTile,
     closeHunt,
     confirmHunt,
+    acceptQuote,
     exitMinigame,
     onMgTap,
     onSeqTap,

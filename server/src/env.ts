@@ -199,6 +199,14 @@ const schema = z
       .transform(v => v === 'true'),
     /** Where entry fees are collected. */
     ENTRY_FEE_PAY_TO: hexAddress.optional(),
+    /**
+     * API key for the Celo x402 facilitator.
+     *
+     * Goes to the facilitator and nowhere else — never to a buyer, never into
+     * the client bundle. Optional: the facilitator may serve unauthenticated
+     * traffic at a lower rate limit.
+     */
+    X402_API_KEY: z.string().min(8).optional(),
 
     METRICS_ENABLED: z
       .enum(['true', 'false'])

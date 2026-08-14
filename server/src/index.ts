@@ -12,6 +12,7 @@ import { registerRoutes } from './http';
 import { logger } from './logger';
 import * as hints from './hints';
 import * as metrics from './metrics';
+import * as x402 from './payments/x402';
 import * as ratelimit from './ratelimit';
 import * as referee from './referee';
 import * as rooms from './rooms';
@@ -113,6 +114,19 @@ relayer.start();
 // either way, they simply carry no money until a pot lands.
 escrowWorker.start();
 startNoncePruner();
+
+if (x402.enabled()) {
+  // The one thing no test can establish offline: whether the token's real
+  // EIP-712 domain matches what we sign against. Get it wrong and every payment
+  // is rejected with nothing in our logs to explain it — so ask the token now,
+  // at boot, rather than discovering it from a player.
+  const domain = await x402.checkTokenDomain();
+  if (!domain.ok) {
+    logger.error({ domain }, 'entry fees are ON but the token domain does not check out');
+  }
+} else {
+  logger.info({ why: x402.disabledReason() }, 'entry fees are off');
+}
 
 if (env.AUTH_MODE === 'chain') {
   const reachable = await registry.checkReachable();

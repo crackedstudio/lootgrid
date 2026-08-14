@@ -139,6 +139,19 @@ export const entriesFree = new Counter({
 });
 
 /**
+ * Entries a player actually paid for.
+ *
+ * Watch it against {@link entriesFree}. If almost nobody ever pays, the fee is
+ * not filtering anything and the legal exposure it carries is being taken for
+ * no benefit — which is a reason to turn it off, not to raise it.
+ */
+export const entriesPaid = new Counter({
+  name: 'lootgrid_entries_paid_total',
+  help: 'Entries admitted after a settled payment',
+  registers: [registry],
+});
+
+/**
  * Fee as a fraction of one entrant's expected prize share, per zone.
  *
  * THE metric for this phase. A rational agent refuses a hunt where this reaches

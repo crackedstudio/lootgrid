@@ -1,6 +1,52 @@
 import Mascot from './Mascot';
 
-export default function HuntPreview({ hunt, onConfirm, onClose }) {
+/**
+ * The price, shown before the wallet is ever prompted.
+ *
+ * A 402 arrives mid-entry, so this appears in place of the enter button and the
+ * request waits on the answer. Two things it must say plainly: what the fee is,
+ * and that energy would have covered it — the free route exists and a player
+ * who does not know that has effectively been charged for nothing.
+ */
+function PaymentStep({ quote, onPay, onClose }) {
+  return (
+    <>
+      <div style={{
+        border: '3px solid #FFD51F', background: 'rgba(255,213,31,.1)',
+        padding: '14px 16px', marginBottom: 16,
+      }}>
+        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.14em', color: '#FFD51F' }}>
+          ENTRY FEE
+        </div>
+        <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 34, lineHeight: 1.1, color: 'var(--cream)', marginTop: 4 }}>
+          {quote.price}
+        </div>
+        <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 12, lineHeight: 1.5, color: 'var(--cream)', opacity: .7, marginTop: 8 }}>
+          Your energy is spent, so this hunt costs money to enter. One signature —
+          no gas, and nothing leaves your wallet until the payment settles.
+        </div>
+      </div>
+
+      <div onClick={onPay} style={{
+        border: '4px solid #0C0C10', background: '#2CE66A',
+        boxShadow: '5px 5px 0 #0C0C10', padding: 16, textAlign: 'center',
+        fontFamily: "'Archivo Black', sans-serif", fontSize: 17, color: '#0C0C10', cursor: 'pointer',
+      }}>
+        → PAY {quote.price} AND ENTER
+      </div>
+
+      <div onClick={onClose} style={{
+        marginTop: 12, textAlign: 'center', fontFamily: "'Space Mono', monospace",
+        fontSize: 10, fontWeight: 700, letterSpacing: '.08em',
+        color: 'var(--cream)', opacity: .5, cursor: 'pointer',
+      }}>
+        NO THANKS — WAIT FOR ENERGY
+      </div>
+    </>
+  );
+}
+
+export default function HuntPreview({ hunt, onConfirm, onClose, onPay }) {
   if (!hunt) return null;
   const isCash = hunt.kind === 'cash';
   const cost = isCash ? 3 : 2;
@@ -54,13 +100,17 @@ export default function HuntPreview({ hunt, onConfirm, onClose }) {
           The challenge is fixed to this block — everyone racing it plays the same game.
         </div>
 
-        <div onClick={onConfirm} style={{
-          border: '4px solid #0C0C10', background: isCash ? '#FFD51F' : '#8A3DFF',
-          boxShadow: '5px 5px 0 #0C0C10', padding: '16px', textAlign: 'center',
-          fontFamily: "'Archivo Black', sans-serif", fontSize: 17, color: '#0C0C10', cursor: 'pointer',
-        }}>
-          {isCash ? '→ ENTER HUNT' : '→ SOLVE PUZZLE'}
-        </div>
+        {hunt.quote ? (
+          <PaymentStep quote={hunt.quote} onPay={onPay} onClose={onClose} />
+        ) : (
+          <div onClick={onConfirm} style={{
+            border: '4px solid #0C0C10', background: isCash ? '#FFD51F' : '#8A3DFF',
+            boxShadow: '5px 5px 0 #0C0C10', padding: '16px', textAlign: 'center',
+            fontFamily: "'Archivo Black', sans-serif", fontSize: 17, color: '#0C0C10', cursor: 'pointer',
+          }}>
+            {isCash ? '→ ENTER HUNT' : '→ SOLVE PUZZLE'}
+          </div>
+        )}
       </div>
     </div>
   );

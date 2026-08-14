@@ -374,9 +374,13 @@ export function registerRoutes(app: App): void {
       const settled = await x402.settleEntry(terms, headerOrNull(req, 'x-payment'));
       if (!settled.ok) {
         // 402 with the terms attached is what the protocol expects; the client
-        // signs and retries against the same URL.
-        return reply.code(402).send(x402.paymentRequiredBody(terms));
+        // signs and retries against the same URL. The challenge is built for
+        // the *authenticated* player, so a signed authorisation can only ever
+        // spend the balance of whoever asked for it.
+        const challenge = x402.challengeFor(terms, player.id as `0x${string}`);
+        return reply.code(402).send(x402.paymentRequiredBody(terms, challenge));
       }
+      metrics.entriesPaid.inc();
     } else if (quote.freeEntryAvailable) {
       metrics.entriesFree.inc();
     }

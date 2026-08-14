@@ -79,6 +79,7 @@ export default function App() {
         <HuntPreview
           hunt={state.huntPreview}
           onConfirm={game.confirmHunt}
+          onPay={game.acceptQuote}
           onClose={game.closeHunt}
         />
       )}

@@ -93,6 +93,28 @@ export async function sendCall(call) {
 const send = sendCall;
 
 /**
+ * Sign server-built EIP-712 typed data. Resolves to a signature, or `null` when
+ * there is no wallet or the player declines.
+ *
+ * The entry-fee path uses this: an x402 payment is an EIP-3009 authorisation,
+ * so the wallet signs rather than sends, and the token contract moves the funds
+ * later. One prompt, no gas, no transaction of our own.
+ *
+ * `eth_signTypedData_v4` takes the payload as a JSON *string*, which is easy to
+ * get wrong by passing the object.
+ */
+export async function signTypedData(typedData) {
+  const eth = provider();
+  const from = await payer();
+  if (!eth || !from) return null;
+
+  return eth.request({
+    method: 'eth_signTypedData_v4',
+    params: [from, JSON.stringify(typedData)],
+  });
+}
+
+/**
  * Fetch an attestation and submit it.
  *
  * Returns the transaction hash, or `null` when there is nothing to do — no
