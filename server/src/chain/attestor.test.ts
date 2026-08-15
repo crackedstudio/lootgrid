@@ -25,6 +25,7 @@ import * as relayer from './relayer';
 const here = dirname(fileURLToPath(import.meta.url));
 const SOLIDITY = join(here, '../../../contracts/src/LootGridActions.sol');
 const HINT_SOLIDITY = join(here, '../../../contracts/src/HintEscrow.sol');
+const BOND_SOLIDITY = join(here, '../../../contracts/src/HintBond.sol');
 
 const KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d' as const;
 const ACTIONS = '0x00000000000000000000000000000000000000ac' as const;
@@ -93,7 +94,24 @@ describe('EIP-712 types match the contract', () => {
   const sources = [
     { file: 'LootGridActions.sol', types: ['Entry', 'Resolution'] as const, path: SOLIDITY },
     { file: 'HintEscrow.sol', types: ['Hint', 'Release'] as const, path: HINT_SOLIDITY },
+    { file: 'HintBond.sol', types: ['Slash'] as const, path: BOND_SOLIDITY },
   ];
+
+  it('checks every struct that has a contract to drift from', () => {
+    // The failure this whole block exists to prevent is a NEW struct skipping
+    // it — the plan says as much, and `Slash` did skip it until an audit looked.
+    // `Transcript` is the deliberate exception: nothing on chain verifies it, so
+    // there is no second definition for it to disagree with.
+    const guarded = new Set(sources.flatMap(s => s.types as readonly string[]));
+    const unverified = new Set(['Transcript']);
+
+    for (const name of Object.keys(attestor.TYPES)) {
+      expect(
+        guarded.has(name) || unverified.has(name),
+        `${name} is signed but checked against no contract — add it to \`sources\``,
+      ).toBe(true);
+    }
+  });
 
   for (const { file, types, path } of sources) {
     const onChain = contractTypeStrings(path);

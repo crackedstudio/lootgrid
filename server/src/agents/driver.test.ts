@@ -96,11 +96,26 @@ afterEach(() => {
   teardownWorld();
 });
 
-const attemptOf = () =>
+/**
+ * The agent's attempts, oldest first.
+ *
+ * A list rather than the first hit: once `MAX_CONCURRENT` is above one the agent
+ * holds several at a time, and "whichever hunt sorts first" is a different
+ * attempt from tick to tick. That ambiguity made the turn-taking test read a
+ * freshly-entered attempt's `lastSeq` and fail on the seeds where the new hunt
+ * happened to sort ahead of the old one.
+ */
+const attemptsOf = () =>
   store
     .liveHuntsIn(lattice())
     .map(h => store.attemptOf(h.id, PLAYER))
-    .find(Boolean);
+    .filter((a): a is NonNullable<typeof a> => Boolean(a))
+    .sort((a, b) => a.startedAt - b.startedAt);
+
+const attemptOf = () => attemptsOf()[0];
+
+/** Follow one specific attempt across ticks, whatever else the agent starts. */
+const attemptById = (id: string) => attemptsOf().find(a => a.id === id);
 
 describe('an agent actually plays', () => {
   it('enters a hunt on its owner’s behalf', async () => {
@@ -117,19 +132,27 @@ describe('an agent actually plays', () => {
 
   it('takes turns through the referee, like a human', async () => {
     await driver.tick();
-    const before = attemptOf()!.lastSeq;
+    const first = attemptOf()!;
+    const before = first.lastSeq;
 
     await driver.tick();
 
     // Same validation, same deadline, same anti-cheat path. An agent with a
     // private route into the referee would be playing a different game.
-    expect(attemptOf()!.lastSeq).toBeGreaterThan(before);
+    //
+    // Followed by id: the second tick also ENTERS a hunt, so "the agent's
+    // attempt" is ambiguous by the time it is read.
+    expect(attemptById(first.id)!.lastSeq).toBeGreaterThan(before);
   });
 
   it('makes real progress rather than flailing', async () => {
-    for (let i = 0; i < 4; i++) await driver.tick();
+    await driver.tick();
+    const first = attemptOf()!;
+    for (let i = 0; i < 3; i++) await driver.tick();
 
-    const attempt = attemptOf()!;
+    // The attempt it opened first, not whichever it opened most recently — a
+    // hunt entered on the last tick has had no turn yet and never will have.
+    const attempt = attemptById(first.id)!;
     expect(attempt).toBeDefined();
     // Unconditional: whatever module the block drew, the moves have to have
     // moved something. A guarded assertion here would pass vacuously on two

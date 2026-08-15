@@ -92,15 +92,17 @@ export interface ListingView {
   suggestedCents: number;
   /** False when no price for this hunt's hints leaves a buyer better off. */
   rational: boolean;
-  /**
-   * The seller's weighted trust, 0–100, or null when reputation is off.
-   *
-   * Deliberately the weighted number rather than the registry's raw score:
-   * showing a buyer a figure a wash farm can manufacture would be worse than
-   * showing them nothing, because it looks like diligence.
-   */
-  sellerTrust?: number | null;
 }
+
+/**
+ * Seller trust is deliberately NOT on the view above.
+ *
+ * It arrives through `GET /market/trust/:id`, one seller at a time, because
+ * computing it reads the ERC-8004 registry — putting it on every row of a browse
+ * response would mean a chain read per listing on the market's hottest path.
+ * A field here would also have to be optional, and an optional trust score is
+ * one a client can forget to check while looking like it did.
+ */
 
 /**
  * A listing as anyone may see it.

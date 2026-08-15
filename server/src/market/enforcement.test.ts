@@ -230,19 +230,14 @@ describe('the verdict reaches a signature', () => {
     expect(recovered.toLowerCase()).toBe(privateKeyToAccount(KEY).address.toLowerCase());
   });
 
-  it('signs the same struct the contract hashes', () => {
-    // The recovery test above proves the signature matches what THIS FILE
-    // thinks the contract expects, which both sides would keep agreeing on if
-    // the contract drifted. So read the typehash out of the Solidity itself.
+  it('signs against the domain the contract declares', () => {
+    // The type string itself is covered by `attestor.test`'s drift guard, which
+    // is where every signed struct with an on-chain verifier belongs. What that
+    // guard does not read is the EIP-712 domain, and a correct struct signed
+    // under the wrong domain recovers to the wrong address just as fatally.
     const source = readFileSync(
       new URL('../../../contracts/src/HintBond.sol', import.meta.url),
       'utf8',
-    );
-    const typehash = source.match(/keccak256\(\s*"(Slash\([^"]*\))"\s*\)/)?.[1];
-
-    expect(typehash, 'could not find SLASH_TYPEHASH in HintBond.sol').toBeDefined();
-    expect(typehash).toBe(
-      'Slash(bytes32 claimId,address seller,uint256 amount,bytes32 evidenceHash,uint256 deadline)',
     );
     expect(source).toContain('EIP712("LootgridHintBond", "1")');
   });
