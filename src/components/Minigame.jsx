@@ -155,6 +155,13 @@ function MathGame({ game, locked, onPick }) {
         <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.14em', color: 'var(--cream)', opacity: .55, marginBottom: 8 }}>
           SOLVE {game.count} IN A ROW
         </div>
+        {/* Per question, not per attempt — a directed round can be shorter than
+            the one before it, and a player racing a clock is owed the number. */}
+        {game.maxAnswerMs != null && (
+          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.14em', color: '#FFD51F', opacity: .8, marginBottom: 8 }}>
+            {(game.maxAnswerMs / 1000).toFixed(1)}s PER QUESTION
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginBottom: 16 }}>
           {Array.from({ length: game.count }).map((_, i) => (
             <div key={i} style={{ width: 16, height: 16, border: '2.5px solid var(--cream)', background: i < game.index ? '#2CE66A' : 'transparent' }} />

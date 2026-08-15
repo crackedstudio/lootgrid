@@ -33,8 +33,11 @@ function hunt(difficulty: (typeof DIFFICULTIES)[number], seed: string) {
   const state = mod.init(spec) as SearchState;
 
   const probe = (r: number, c: number, at = 1_000) =>
-    mod.step({ spec, secret, state, timing: timing(at) }, { kind: 'probe', value: { r, c } });
-  const step = (input: SearchInput) => mod.step({ spec, secret, state, timing: timing() }, input);
+    mod.step(
+      { spec, secret, state, timing: timing(at), directive: null },
+      { kind: 'probe', value: { r, c } },
+    );
+  const step = (input: SearchInput) => mod.step({ spec, secret, state, timing: timing(), directive: null }, input);
 
   return { spec, secret, state, probe, step };
 }

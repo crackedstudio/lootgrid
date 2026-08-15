@@ -23,7 +23,10 @@ function play(difficulty: 'easy' | 'med' | 'hard' = 'med', seed = 'salt-abc') {
   const state = mod.init(spec) as DeductionState;
 
   const step = (input: DeductionInput, at = 1_000) =>
-    mod.step({ spec, secret, state, timing: at === 0 ? timing(0) : timing(at) }, input);
+    mod.step(
+      { spec, secret, state, timing: at === 0 ? timing(0) : timing(at), directive: null },
+      input,
+    );
 
   const probe = (payload: HintPayload) => step({ kind: 'probe', value: payload });
   const commit = (r: number, c: number) => step({ kind: 'commit', value: { r, c } });

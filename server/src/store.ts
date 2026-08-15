@@ -191,6 +191,13 @@ export function setHuntStatus(
  * identically to everyone racing it.
  */
 export function blockGame(hunt: Hunt): BlockGame {
+  // Director sessions live in memory, so a hunt that outlived a restart has a
+  // chain that was opened by a process which no longer exists. Reopening here —
+  // idempotent, and on the one path every attempt already takes — is what stops
+  // a surviving hunt falling back on an empty salt and a guessed difficulty,
+  // which would silently be a different game from the one it started as.
+  director.open({ huntId: hunt.id, salt: hunt.salt, difficulty: hunt.difficulty });
+
   if (hunt.game) return hunt.game;
 
   // The zone decides which module pool the block may draw from — reflex games

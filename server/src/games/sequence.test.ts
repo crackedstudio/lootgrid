@@ -5,7 +5,7 @@ import type { Timing } from './types';
 
 function step(spec: SeqSpec, state: SeqState, sinceStart: number, sinceLast: number | null, value: unknown, kind = 'tap') {
   const timing: Timing = { sinceStart, sinceLast, intervals: [] };
-  return sequenceModule.step({ spec, secret: null, state, timing }, { kind, value });
+  return sequenceModule.step({ spec, secret: null, state, timing, directive: null }, { kind, value });
 }
 
 describe('sequence module', () => {

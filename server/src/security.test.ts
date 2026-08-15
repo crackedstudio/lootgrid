@@ -151,15 +151,26 @@ describe('game secrecy', () => {
     if (!res.ok) return;
 
     const spec = res.spec as { count: number; index: number; question: { q: string } };
-    const secret = store.blockGame(hunt).secret as { questions: Array<{ q: string; answer: number }> };
+    const game = store.blockGame(hunt);
+    const secret = game.secret as { ladder: Array<Array<{ q: string; answer: number }>> };
+    const baseRung = (game.spec as { baseRung: number }).baseRung;
 
     expect(spec.index).toBe(0);
-    expect(spec.question.q).toBe(secret.questions[0]!.q);
-    // Questions 2..N must not be reachable from what the client is handed.
-    for (const q of secret.questions.slice(1)) {
-      expect(JSON.stringify(spec)).not.toContain(q.q);
+    expect(spec.question.q).toBe(secret.ladder[0]![baseRung]!.q);
+
+    // The Director's ladder made the secret five times larger, so this now has
+    // five times as much to keep back: not just later rounds, but every rung of
+    // this one the player was not served. A leaked rung is a leaked answer for
+    // whichever round the Director happens to pick next.
+    const sent = JSON.stringify(spec);
+    for (const [round, rungs] of secret.ladder.entries()) {
+      for (const [rung, q] of rungs.entries()) {
+        if (round === 0 && rung === baseRung) continue;
+        if (q.q === spec.question.q) continue; // two rungs can coincide
+        expect(sent, `round ${round} rung ${rung} leaked`).not.toContain(q.q);
+      }
     }
-    expect(JSON.stringify(spec)).not.toContain('answer');
+    expect(sent).not.toContain('answer');
   });
 
   it('keeps memory off cash blocks, where the client must know the answer', () => {

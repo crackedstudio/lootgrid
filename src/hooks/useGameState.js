@@ -63,7 +63,16 @@ function initGame(gameType, spec) {
     case 'memory':
       return { phase: 'watch', lit: -1, index: 0, sequence: spec.sequence, padCount: spec.padCount };
     case 'math':
-      return { index: 0, count: spec.count, question: spec.question, picked: null };
+      // `maxAnswerMs` is per-question, not per-attempt: the Director may make a
+      // round shorter than the last one, and it has to be shown. A clock that
+      // silently tightened would be the Director taking a prize away.
+      return {
+        index: 0,
+        count: spec.count,
+        question: spec.question,
+        picked: null,
+        maxAnswerMs: spec.maxAnswerMs,
+      };
     default:
       return {};
   }
@@ -179,7 +188,20 @@ export function useGameState() {
         case 'game:update':
           // Math Dash issues question N+1 only once N is answered correctly.
           return set(s =>
-            s.game ? { game: { ...s.game, index: msg.data.index, question: msg.data.question, picked: null } } : null,
+            s.game
+              ? {
+                  game: {
+                    ...s.game,
+                    index: msg.data.index,
+                    question: msg.data.question,
+                    picked: null,
+                    // Carried through so a directed round's clock is visible.
+                    // Falls back to the one already on screen: an older server
+                    // that does not send it must not blank the display.
+                    maxAnswerMs: msg.data.maxAnswerMs ?? s.game.maxAnswerMs,
+                  },
+                }
+              : null,
           );
 
         case 'attempt:complete':

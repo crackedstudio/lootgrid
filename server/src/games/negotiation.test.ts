@@ -36,9 +36,12 @@ function table(difficulty: (typeof DIFFICULTIES)[number], seed: string) {
   const state = mod.init(spec) as NegotiationState;
 
   const offer = (keepBps: number, at = 1_000) =>
-    mod.step({ spec, secret, state, timing: timing(at) }, { kind: 'offer', value: { keepBps } });
+    mod.step(
+      { spec, secret, state, timing: timing(at), directive: null },
+      { kind: 'offer', value: { keepBps } },
+    );
 
-  const step = (input: NegotiationInput) => mod.step({ spec, secret, state, timing: timing() }, input);
+  const step = (input: NegotiationInput) => mod.step({ spec, secret, state, timing: timing(), directive: null }, input);
 
   return { spec, secret, state, offer, step };
 }

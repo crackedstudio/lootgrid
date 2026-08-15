@@ -1,7 +1,9 @@
 import { ASYNC, ENERGY, NET, RACE } from './config';
+import * as director from './director';
+import type { Directive } from './director/types';
 import * as energy from './energy';
 import { moduleFor } from './games';
-import type { Timing } from './games/types';
+import type { AnyGameModule, Timing } from './games/types';
 import { hashInt, randomHex } from './hash';
 import { logger } from './logger';
 import * as rooms from './rooms';
@@ -152,7 +154,13 @@ export function submitInputs(attemptId: string, events: InputEvent[], now = Date
 
     const timing: Timing = { sinceStart: serverElapsed, sinceLast, intervals: attempt.intervals };
     const result = mod.step(
-      { spec: game.spec, secret: game.secret, state: attempt.state, timing },
+      {
+        spec: game.spec,
+        secret: game.secret,
+        state: attempt.state,
+        timing,
+        directive: directiveFor(mod, game.spec, hunt, attempt, now),
+      },
       { kind: ev.kind, value: (ev as { value?: unknown }).value },
     );
 
@@ -185,6 +193,43 @@ export function submitInputs(attemptId: string, events: InputEvent[], now = Date
   // apart, so this is orders of magnitude rarer than one human attempt's taps —
   // and a reflex module never reaches it at all.
   if (mod.durable) store.saveAttemptState(attempt);
+}
+
+/**
+ * The directive for the round this input may serve.
+ *
+ * Synchronous by construction — `director.directiveFor` cannot await, so there
+ * is no path on which a slow model delays somebody's answer. Past the budget the
+ * deterministic fallback supplies the round and the pipeline catches up later.
+ *
+ * The blind state is built here rather than anywhere nearer the Director,
+ * because here is where the identities are: `blind` takes progress values
+ * already separated from their owners, so this function is the last place an
+ * attempt object exists and the first place it cannot be passed on.
+ */
+function directiveFor(
+  mod: AnyGameModule,
+  spec: unknown,
+  hunt: Hunt,
+  attempt: Attempt,
+  now: number,
+): Directive | null {
+  if (!mod.directedRound) return null;
+
+  const round = mod.directedRound(attempt.state, spec);
+  // No round left to shape. Asking anyway would put a directive nobody played
+  // into a transcript whose only purpose is to be checked afterwards.
+  if (round === null) return null;
+
+  // Everyone still in the race, including whoever has already won it — a racer
+  // dropping out must not change the round the others are handed.
+  const progress = store
+    .attemptsFor(hunt.id)
+    .filter(a => a.status === 'active' || a.status === 'won')
+    .map(a => a.progress);
+
+  const state = director.stateFrom(round, progress, Math.max(0, now - hunt.createdAt));
+  return director.directiveFor(hunt.id, round, state, now);
 }
 
 function complete(attempt: Attempt, serverElapsed: number): void {
