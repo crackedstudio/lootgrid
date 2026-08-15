@@ -1,15 +1,28 @@
-import type { Reveal, TileType, Zone } from '../../types';
+import type { Reveal, TileType, Zone, ZoneKind } from '../../types';
 import { getDb } from '../index';
 
 interface ZoneRow {
   id: string;
   name: string;
   accent: string;
+  kind: string;
   epoch: number;
   seed_secret: string;
   seed_commit: string;
   rotates_at: number | null;
   created_at: number;
+}
+
+/**
+ * Narrow the stored string to {@link ZoneKind}, defaulting to 'human'.
+ *
+ * SQLite cannot retroactively enforce a CHECK added by ALTER TABLE, so this is
+ * where the column's domain is actually guaranteed. Defaulting rather than
+ * throwing is deliberate: an unrecognised value yields the *stricter* zone type,
+ * with anti-automation intact, instead of failing open.
+ */
+function toZoneKind(raw: string): ZoneKind {
+  return raw === 'agent' ? 'agent' : 'human';
 }
 
 interface RevealRow {
@@ -27,6 +40,7 @@ const toZone = (r: ZoneRow): Zone => ({
   id: r.id,
   name: r.name,
   accent: r.accent,
+  kind: toZoneKind(r.kind),
   epoch: r.epoch,
   seedSecret: r.seed_secret,
   seedCommit: r.seed_commit,
@@ -47,8 +61,8 @@ function build() {
     get: db.prepare('SELECT * FROM zones WHERE id = ?'),
     list: db.prepare('SELECT * FROM zones ORDER BY rowid'),
     insert: db.prepare(`
-      INSERT INTO zones (id, name, accent, epoch, seed_secret, seed_commit, rotates_at, created_at)
-      VALUES (@id, @name, @accent, @epoch, @seedSecret, @seedCommit, @rotatesAt, @createdAt)
+      INSERT INTO zones (id, name, accent, kind, epoch, seed_secret, seed_commit, rotates_at, created_at)
+      VALUES (@id, @name, @accent, @kind, @epoch, @seedSecret, @seedCommit, @rotatesAt, @createdAt)
     `),
     getReveal: db.prepare(
       'SELECT * FROM reveals WHERE zone_id = ? AND epoch = ? AND r = ? AND c = ?',

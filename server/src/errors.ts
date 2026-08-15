@@ -36,6 +36,13 @@ export const tooManyRequests = (code = 'rate_limited', msg?: string) =>
   new AppError(code, 429, msg);
 export const internal = (code = 'internal_error', msg?: string) =>
   new AppError(code, 500, msg, { expose: false });
+/**
+ * A dependency we need is not answering. Exposed, unlike {@link internal},
+ * because the caller's correct response is to try again — and a 500 tells them
+ * the opposite.
+ */
+export const unavailable = (code = 'unavailable', msg?: string) =>
+  new AppError(code, 503, msg);
 
 export interface WireError {
   error: string;

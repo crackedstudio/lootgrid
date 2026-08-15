@@ -1,0 +1,35 @@
+-- Long attempts have to survive a deploy.
+--
+-- ─────────────────────────── what changed and why ───────────────────────────
+--
+-- Until phase 6 every attempt was six seconds long, so module runtime state
+-- lived in memory and boot recovery marked anything still `active` abandoned.
+-- That was right: nobody is mid-tap across a restart, and writing state on
+-- every tap would put a disk write on the hot path of the one loop that cannot
+-- afford one. `repos/attempts.ts` said so in a comment, which this migration
+-- makes obsolete.
+--
+-- Agent attempts run for minutes. An agent thinks between probes, and the gap
+-- between two of its inputs is longer than an entire human attempt. Abandoning
+-- those on restart would mean the async clock works only between deploys, which
+-- is not a clock — and it would take the player's energy for a hunt the server
+-- interrupted.
+--
+-- So state is persisted for the games that declare themselves durable, and only
+-- those. The reflex modules keep the memory-only path exactly as it was.
+--
+-- ─────────────────────────── why one column ───────────────────────────
+--
+-- The state is opaque JSON, written by whichever module owns the attempt. The
+-- referee never looks inside it and no query ever filters on it, so a column is
+-- the whole requirement — a table of typed rows would be a schema the modules
+-- would then have to agree on, and they are deliberately independent.
+--
+-- NULL means "not durable, or nothing written yet", which is exactly how a
+-- reflex attempt reads. Recovery treats those the way it always has.
+ALTER TABLE attempts ADD COLUMN state TEXT;
+
+-- Recovery reads active attempts at boot, and that is the only query that
+-- touches this. Cheap index, and it keeps a restart from scanning the whole
+-- attempt history once this table is a year old.
+CREATE INDEX attempts_active ON attempts (status) WHERE status = 'active';

@@ -4,10 +4,13 @@ import OnboardingScreen from './components/OnboardingScreen';
 import ZoneScreen from './components/ZoneScreen';
 import GridScreen from './components/GridScreen';
 import HuntPreview from './components/HuntPreview';
+import HuntTranscript from './components/HuntTranscript';
 import Minigame from './components/Minigame';
 import WinScreen from './components/WinScreen';
 import BoardScreen from './components/BoardScreen';
+import AgentScreen from './components/AgentScreen';
 import HuntsScreen from './components/HuntsScreen';
+import MarketScreen from './components/MarketScreen';
 import YouScreen from './components/YouScreen';
 import NavBar from './components/NavBar';
 import ConnectionGate from './components/ConnectionGate';
@@ -18,7 +21,7 @@ export default function App() {
 
   const showZones = state.view === 'map' && !state.mapZone;
   const showGrid = state.view === 'map' && !!state.mapZone;
-  const showNavBar = ['map', 'hunts', 'board', 'you'].includes(state.view);
+  const showNavBar = ['map', 'market', 'agent', 'hunts', 'board', 'you'].includes(state.view);
 
   return (
     <div
@@ -59,6 +62,10 @@ export default function App() {
         <GridScreen state={state} onBackZones={game.backZones} onTile={game.onTile} />
       )}
 
+      {state.view === 'market' && <MarketScreen state={state} />}
+
+      {state.view === 'agent' && <AgentScreen />}
+
       {state.view === 'hunts' && (
         <HuntsScreen state={state} setField={game.setField} />
       )}
@@ -76,6 +83,7 @@ export default function App() {
         <HuntPreview
           hunt={state.huntPreview}
           onConfirm={game.confirmHunt}
+          onPay={game.acceptQuote}
           onClose={game.closeHunt}
         />
       )}
@@ -92,7 +100,19 @@ export default function App() {
       )}
 
       {state.winData && (
-        <WinScreen state={state} onShare={game.doShare} onBackToMap={game.backToMap} />
+        <WinScreen
+          state={state}
+          onShare={game.doShare}
+          onBackToMap={game.backToMap}
+          onShowTranscript={() => game.setField('transcriptFor', state.winData.huntId)}
+        />
+      )}
+
+      {state.transcriptFor && (
+        <HuntTranscript
+          huntId={state.transcriptFor}
+          onClose={() => game.setField('transcriptFor', null)}
+        />
       )}
 
       {showNavBar && <NavBar view={state.view} onNav={game.setView} />}

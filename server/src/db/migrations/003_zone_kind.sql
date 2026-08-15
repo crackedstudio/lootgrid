@@ -1,0 +1,15 @@
+-- Who plays a zone: humans, or autonomous agents.
+--
+-- v2 runs both, in separate zones, bridged by the hint market. The distinction
+-- has to live on the zone because it decides which game modules are eligible —
+-- and therefore whether anti-automation applies at all.
+--
+-- 'human' is the default and the safe direction. A zone that somehow misses this
+-- column's intent gets the reflex modules with their bot checks intact, which
+-- fails loudly against an agent rather than silently admitting one to a cash
+-- game. See docs/AGENTIC_ARCHITECTURE.md §0.
+--
+-- No CHECK constraint: SQLite does not verify one retroactively on ALTER TABLE,
+-- so it would read as a guarantee it cannot make. The value is validated in the
+-- repo layer instead, where it is actually enforced.
+ALTER TABLE zones ADD COLUMN kind TEXT NOT NULL DEFAULT 'human';

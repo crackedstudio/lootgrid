@@ -7,6 +7,18 @@ const NAV_ITEMS = [
     paths: ['M4 5 L9 7 L15 5 L20 7 L20 19 L15 17 L9 19 L4 17 Z', 'M9 7 L9 19', 'M15 5 L15 17'],
   },
   {
+    id: 'market',
+    label: 'MARKET',
+    // Two hands passing something between them: a hint copies rather than moves.
+    paths: ['M4 10 L11 10 L9 7', 'M20 14 L13 14 L15 17'],
+  },
+  {
+    id: 'agent',
+    label: 'AGENT',
+    // A small figure inside a box: it acts for you, inside limits you set.
+    paths: ['M5 5 L19 5 L19 19 L5 19 Z', 'M12 10 A2 2 0 1 0 12 9.99', 'M9 15 C9 13.3 10.3 12.5 12 12.5 C13.7 12.5 15 13.3 15 15'],
+  },
+  {
     id: 'hunts',
     label: 'CREATE',
     paths: ['M12 5 L12 19', 'M5 12 L19 12'],
@@ -24,7 +36,7 @@ const NAV_ITEMS = [
 ];
 
 export default function NavBar({ view, onNav }) {
-  const activeViews = ['map', 'hunts', 'board', 'you'];
+  const activeViews = ['map', 'market', 'agent', 'hunts', 'board', 'you'];
   if (!activeViews.includes(view)) return null;
 
   return (

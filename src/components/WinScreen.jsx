@@ -1,5 +1,13 @@
+import { useCallback, useEffect, useState } from 'react';
 import Mascot from './Mascot';
 import { SPEC9 } from '../data/gameData';
+import {
+  claimPrize,
+  fetchPrizeBalance,
+  formatWait,
+  secondsUntilCollectable,
+  withdrawPrize,
+} from '../api/prizes';
 
 function Confetti() {
   const pieces = Array.from({ length: 18 }).map((_, i) => ({
@@ -23,7 +31,122 @@ function Confetti() {
   );
 }
 
-export default function WinScreen({ state, onShare, onBackToMap }) {
+/**
+ * Claim, then collect.
+ *
+ * Two steps because the escrow pays by pull: `claim` credits the pot against
+ * the referee's signature, and `withdraw` moves the tokens once the challenge
+ * window has elapsed. The wait is shown rather than hidden — it is the window
+ * in which a payout signed by a leaked key can still be stopped, and a button
+ * that reverts teaches a player the app is broken.
+ *
+ * The balance is read from the chain, never assumed. The server signs the
+ * attestation but never sees the transaction, so only the contract knows
+ * whether the claim actually landed.
+ */
+function PrizeClaim({ huntId }) {
+  const [balance, setBalance] = useState(null);
+  const [phase, setPhase] = useState('idle'); // idle | claiming | collecting
+  const [error, setError] = useState(null);
+  const [, tick] = useState(0);
+
+  const load = useCallback(
+    () => fetchPrizeBalance().then(setBalance).catch(() => setBalance(null)),
+    [],
+  );
+
+  useEffect(() => {
+    let alive = true;
+    fetchPrizeBalance()
+      .then(b => alive && setBalance(b))
+      .catch(() => alive && setBalance(null));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Re-render while the window counts down, so the button enables itself
+  // instead of demanding the player guess when to try again.
+  const waiting = balance ? secondsUntilCollectable(balance) : 0;
+  useEffect(() => {
+    if (waiting <= 0) return undefined;
+    const timer = setInterval(() => tick(n => n + 1), 1_000);
+    return () => clearInterval(timer);
+  }, [waiting]);
+
+  // Payouts are switched off server-side. Say nothing rather than offer a
+  // button that cannot work.
+  if (!balance) return null;
+
+  const owed = BigInt(balance.owed ?? '0');
+  const run = async (next, fn) => {
+    setPhase(next);
+    setError(null);
+    try {
+      await fn();
+      await load();
+    } catch (err) {
+      // A failure here costs the player their prize, so it is shown. This is
+      // the opposite rule from publishing a record, which fails silently.
+      setError(err?.code || err?.message || 'that did not work');
+    } finally {
+      setPhase('idle');
+    }
+  };
+
+  const label = () => {
+    if (phase === 'claiming') return 'CLAIMING…';
+    if (phase === 'collecting') return 'COLLECTING…';
+    if (owed === 0n) return 'CLAIM YOUR PRIZE';
+    if (waiting > 0) return `COLLECT IN ${formatWait(waiting)}`;
+    return 'COLLECT IT';
+  };
+
+  const ready = owed > 0n && waiting <= 0;
+  const disabled = phase !== 'idle' || (owed > 0n && waiting > 0);
+
+  return (
+    <>
+      <div
+        onClick={
+          disabled
+            ? undefined
+            : () =>
+                owed === 0n
+                  ? run('claiming', () => claimPrize(huntId))
+                  : run('collecting', () => withdrawPrize(balance))
+        }
+        style={{
+          marginTop: 14, width: 300, border: '4px solid #0C0C10',
+          background: disabled ? 'rgba(245,239,227,.35)' : ready ? '#2CE66A' : '#FFD51F',
+          boxShadow: '6px 6px 0 #29E6E6', padding: 16, textAlign: 'center',
+          fontFamily: "'Archivo Black', sans-serif", fontSize: 17, color: '#0C0C10',
+          cursor: disabled ? 'not-allowed' : 'pointer', transition: 'background .2s',
+        }}
+      >
+        {label()}
+      </div>
+
+      {owed > 0n && waiting > 0 && (
+        <div style={{
+          marginTop: 8, width: 300, fontFamily: "'Space Mono', monospace", fontSize: 9,
+          lineHeight: 1.5, color: 'var(--cream)', opacity: .55, textAlign: 'center',
+        }}>
+          CLAIMED. THE ESCROW HOLDS IT FOR A SHORT WINDOW BEFORE IT CAN BE MOVED.
+        </div>
+      )}
+
+      {error && (
+        <div style={{
+          marginTop: 8, width: 300, fontFamily: "'Space Mono', monospace", fontSize: 9,
+          fontWeight: 700, color: '#FF3D3D', textAlign: 'center',
+        }}>{error}</div>
+      )}
+    </>
+  );
+}
+
+export default function WinScreen({ state, onShare, onBackToMap, onShowTranscript }) {
   const { winData, shared } = state;
   if (!winData) return null;
 
@@ -83,10 +206,12 @@ export default function WinScreen({ state, onShare, onBackToMap }) {
           )}
         </div>
 
+        {winData.huntId && <PrizeClaim huntId={winData.huntId} />}
+
         <div
           onClick={onShare}
           style={{
-            marginTop: 18, width: 300, border: '4px solid #0C0C10',
+            marginTop: 14, width: 300, border: '4px solid #0C0C10',
             background: shared ? '#2CE66A' : '#FFD51F',
             boxShadow: '6px 6px 0 #FF3BBD', padding: 16, textAlign: 'center',
             fontFamily: "'Archivo Black', sans-serif", fontSize: 17, color: '#0C0C10',
@@ -95,6 +220,17 @@ export default function WinScreen({ state, onShare, onBackToMap }) {
         >
           {shared ? 'SHARED ✓ — NICE ONE' : 'SHARE THE WIN'}
         </div>
+
+        {winData.huntId && onShowTranscript && (
+          <div
+            onClick={onShowTranscript}
+            style={{
+              marginTop: 12, fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700,
+              color: 'var(--cream)', opacity: .6, cursor: 'pointer', letterSpacing: '.08em',
+              textDecoration: 'underline',
+            }}
+          >HOW THIS HUNT WAS RUN →</div>
+        )}
 
         <div
           onClick={onBackToMap}

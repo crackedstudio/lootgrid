@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { SPEC9 } from '../data/gameData';
+import { candidates, describe, reliabilityPct, tierLabel } from '../api/hints';
 
 const TILE_SIZE = 54;
 const GAP = 8;
@@ -12,7 +14,7 @@ const TYPE_COLORS = {
   found:   '#FFD51F',
 };
 
-function TileCell({ cell, onClick }) {
+function TileCell({ cell, onClick, dimmed }) {
   const { opened, hunt, reveal } = cell;
 
   let bg = '#1A1815';
@@ -47,8 +49,11 @@ function TileCell({ cell, onClick }) {
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         cursor: opened ? 'default' : 'pointer',
         position: 'relative', overflow: 'hidden',
-        transition: 'transform .08s',
+        transition: 'transform .08s, opacity .15s',
         flexShrink: 0,
+        // Ruled out by an active hint. Dimmed rather than blocked: the hint may
+        // be lying, and a player who wants to dig here must stay free to.
+        opacity: dimmed ? 0.25 : 1,
       }}
     >
       {content}
@@ -57,8 +62,19 @@ function TileCell({ cell, onClick }) {
 }
 
 export default function GridScreen({ state, onBackZones, onTile }) {
-  const { grid, energy, showToast, toastText, zones, mapZone } = state;
+  const { grid, energy, showToast, toastText, zones, mapZone, hints = [] } = state;
   const zone = zones.find(z => z.id === mapZone);
+
+  // Which hints the player is currently trusting. View state, not game state —
+  // the server neither knows nor cares which ones you believe.
+  const [active, setActive] = useState(() => new Set());
+  const toggle = id =>
+    setActive(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   if (!grid) {
     return (
@@ -88,6 +104,14 @@ export default function GridScreen({ state, onBackZones, onTile }) {
   const energyCells = Array.from({ length: energy.max }).map((_, i) => ({
     color: i < energy.value ? '#FFD51F' : '#0C0C10',
   }));
+
+  // Hints for this zone only — one from another map tells you nothing here.
+  const zoneHints = hints.filter(h => h.zoneId === mapZone);
+  const activePayloads = zoneHints.filter(h => active.has(h.id)).map(h => h.payload);
+  // Intersecting is the game: one hint is weak and might be a lie, several that
+  // agree are worth digging on. An empty set means they contradict each other,
+  // which is information too — at least one of them is false.
+  const candidateSet = activePayloads.length ? candidates(activePayloads, grid.rows, grid.cols) : null;
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--surface)', overflow: 'hidden', position: 'relative' }}>
@@ -122,6 +146,60 @@ export default function GridScreen({ state, onBackZones, onTile }) {
 
       <div style={{ height: 4, background: zone?.accent ?? '#FF7A1A', flexShrink: 0 }} />
 
+      {/* Hints. Tap to trust one and watch the map narrow; tap again to doubt it. */}
+      {zoneHints.length > 0 && (
+        <div style={{
+          flexShrink: 0, padding: '8px 12px', background: '#0C0C10',
+          borderBottom: '3px solid #0C0C10', display: 'flex', gap: 8,
+          overflowX: 'auto', alignItems: 'center',
+        }}>
+          <div style={{
+            fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700,
+            letterSpacing: '.14em', color: '#FFD51F', flexShrink: 0, opacity: .8,
+          }}>
+            {candidateSet ? `${candidateSet.size} LEFT` : `${zoneHints.length} HINT${zoneHints.length > 1 ? 'S' : ''}`}
+          </div>
+
+          {zoneHints.map(h => {
+            const on = active.has(h.id);
+            const pct = reliabilityPct(h);
+            return (
+              <div
+                key={h.id}
+                onClick={() => toggle(h.id)}
+                title={`${tierLabel(h.tier)} · about ${pct}% of these are true`}
+                style={{
+                  flexShrink: 0, cursor: 'pointer', padding: '5px 9px',
+                  background: on ? '#FFD51F' : '#1A1815',
+                  border: `2px solid ${on ? '#FFD51F' : '#3A352C'}`,
+                  color: on ? '#0C0C10' : 'var(--cream)',
+                  fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700,
+                  lineHeight: 1.35, maxWidth: 190, whiteSpace: 'nowrap',
+                  overflow: 'hidden', textOverflow: 'ellipsis',
+                }}
+              >
+                <div>{describe(h.payload)}</div>
+                {/* The odds, always visible. A sharp hint is close to a coin
+                    flip and the player is entitled to know before digging. */}
+                <div style={{ opacity: .65, fontSize: 8, letterSpacing: '.08em' }}>
+                  {tierLabel(h.tier).toUpperCase()} · {pct}% RELIABLE
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {candidateSet?.size === 0 && (
+        <div style={{
+          flexShrink: 0, padding: '6px 12px', background: '#FF3D3D',
+          fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700,
+          color: '#0C0C10', letterSpacing: '.1em',
+        }}>
+          THESE HINTS CONTRADICT — AT LEAST ONE IS LYING
+        </div>
+      )}
+
       {/* scrollable grid */}
       <div className="lg-scroll" style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
         <div style={{
@@ -132,7 +210,12 @@ export default function GridScreen({ state, onBackZones, onTile }) {
           width: 'max-content',
         }}>
           {cells.map(cell => (
-            <TileCell key={cell.id} cell={cell} onClick={onTile} />
+            <TileCell
+              key={cell.id}
+              cell={cell}
+              onClick={onTile}
+              dimmed={candidateSet !== null && !candidateSet.has(`${cell.r}:${cell.c}`)}
+            />
           ))}
         </div>
       </div>

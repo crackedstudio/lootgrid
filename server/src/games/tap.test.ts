@@ -5,7 +5,7 @@ import type { Timing } from './types';
 
 function ctx(spec: TapSpec, state: TapState, sinceStart: number, sinceLast: number | null) {
   const timing: Timing = { sinceStart, sinceLast, intervals: state.intervals };
-  return { spec, secret: null, state, timing };
+  return { spec, secret: null, state, timing, directive: null };
 }
 
 /** Plays a full run with the given intervals and returns the final result. */

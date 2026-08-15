@@ -39,6 +39,34 @@ const DOMAIN_NAME = 'LootGridActions';
 const DOMAIN_VERSION = '1';
 
 /**
+ * The escrow verifies the identical `Resolution` struct under its OWN domain,
+ * with its own on-chain attestor. So the same message is signed twice: once for
+ * the public record, once for the money.
+ *
+ * That is deliberate. Sharing one signature would tie the key that writes
+ * cosmetic game logs to the key that moves funds, and they need different
+ * protection — records can stay on a hot key, payouts should not. Point
+ * ESCROW_PRIVATE_KEY at the same value as ATTESTOR_PRIVATE_KEY on day one if you
+ * like; the separation exists so you can stop.
+ */
+const ESCROW_DOMAIN_NAME = 'LootGridEscrow';
+const ESCROW_DOMAIN_VERSION = '1';
+
+/**
+ * The hint market's own escrow, and therefore its own domain.
+ *
+ * `Hint` and `Release` are verified by `HintEscrow.sol` and by nothing else, so
+ * they are signed against it. Both keys already in play are reused rather than
+ * multiplied — the records key vouches, the payout key releases — because the
+ * separation that matters is between *what may be sold* and *when money moves*,
+ * not between contracts.
+ */
+const HINT_DOMAIN_NAME = 'HintEscrow';
+const BOND_DOMAIN_NAME = 'LootgridHintBond';
+const BOND_DOMAIN_VERSION = '1';
+const HINT_DOMAIN_VERSION = '1';
+
+/**
  * How long an attestation stays valid. Long enough to survive a slow wallet
  * round trip and a congested block or two; short enough that a leaked one is
  * near-worthless. The contract compares against `block.timestamp`, so this is
@@ -63,6 +91,93 @@ export const TYPES = {
     {name: 'huntId', type: 'bytes32'},
     {name: 'elapsedMs', type: 'uint32'},
     {name: 'racers', type: 'uint16'},
+    {name: 'deadline', type: 'uint256'},
+  ],
+  /**
+   * Vouches for a hint being offered for sale.
+   *
+   * What it asserts: this hash is a hint the GAME issued, for this zone, at this
+   * precision tier, drawn from a pool advertised at this reliability.
+   *
+   * What it deliberately does NOT assert: that the hint is correct. Hints lie on
+   * purpose and the referee cannot certify accuracy without handing over the
+   * answer. A buyer learns the odds, never the outcome — which is exactly what
+   * makes the market work, because it prices information rather than truth.
+   *
+   * This is the fix for the lemon market: without it a seller can offer
+   * fabricated hints and a buyer cannot tell, so bad hints drive out good and
+   * the market dies. With it, the worst a seller can do is sell you a genuine
+   * hint that happens to be one of the false ones — which is the game.
+   */
+  Hint: [
+    {name: 'hintHash', type: 'bytes32'},
+    {name: 'zoneId', type: 'bytes32'},
+    {name: 'tier', type: 'uint8'},
+    {name: 'reliabilityBps', type: 'uint16'},
+    {name: 'deadline', type: 'uint256'},
+  ],
+  /**
+   * A verdict against a hint seller, signed so `HintBond` will act on it.
+   *
+   * Note what this does NOT assert, for the same reason `Hint` above does not
+   * assert that a hint is correct: it says nothing about any individual trade.
+   * A false hint is the product working. What it attests is a *statistical*
+   * finding over a seller's delivered hints — that they were selecting the false
+   * ones — which is the one thing a seller controls and the one thing the phase 2
+   * commitment makes provable after the fact.
+   *
+   * `evidenceHash` is the commitment to that finding. The chain cannot recompute
+   * a binomial test, but pinning the evidence means a seller who disputes the
+   * slash can publish the same bytes and have anyone rerun the arithmetic.
+   */
+  Slash: [
+    {name: 'claimId', type: 'bytes32'},
+    {name: 'seller', type: 'address'},
+    {name: 'amount', type: 'uint256'},
+    {name: 'evidenceHash', type: 'bytes32'},
+    {name: 'deadline', type: 'uint256'},
+  ],
+  /**
+   * The head of a hunt's directive chain, signed at resolution.
+   *
+   * A live Director destroys v1's commit-reveal guarantee: the game is no longer
+   * decided before anyone enters, so no commitment made in advance can cover it.
+   * The replacement is a hash chain over every issued round — but a chain the
+   * house could recompute after the fact would prove nothing, so the head is
+   * signed at the moment the hunt resolves.
+   *
+   * What that buys, precisely: the rounds cannot have been chosen differently
+   * per player, and cannot have been rewritten once the house saw who was
+   * winning. It does NOT prove they were fair — only that there was one version
+   * of events and this is it. Architecture §4 states the same trade-off.
+   *
+   * Nothing verifies this on chain yet; `LootGridActions` has no transcript
+   * function. The signature is what makes the published head tamper-evident, and
+   * the audit endpoint is where anyone recomputes the chain against it.
+   */
+  Transcript: [
+    {name: 'huntId', type: 'bytes32'},
+    {name: 'chainHead', type: 'bytes32'},
+    {name: 'rounds', type: 'uint16'},
+    {name: 'deadline', type: 'uint256'},
+  ],
+  /**
+   * Authorises HintEscrow to move one buyer's escrowed money to their seller.
+   *
+   * Separate from {@link TYPES.Hint} and signed with a different key, because
+   * they decide different things: the vouch says what may be sold, the release
+   * says the sale went through. A leaked vouch key sells nothing on its own.
+   *
+   * The referee issues this only after checking the trade is real and the seller
+   * genuinely held the hint — and hands the hint to the buyer only once the
+   * release has actually settled on chain. Delivering first would let a buyer
+   * take the hint, sit on the attestation until the trade expired, refund, and
+   * keep it for nothing.
+   */
+  Release: [
+    {name: 'tradeId', type: 'bytes32'},
+    {name: 'hintHash', type: 'bytes32'},
+    {name: 'buyer', type: 'address'},
     {name: 'deadline', type: 'uint256'},
   ],
 } as const;
@@ -143,6 +258,146 @@ function signer() {
 /** The attestor's public address, for wiring `ACTIONS_ATTESTOR` at deploy time. */
 export function address(): Address {
   return signer().address;
+}
+
+// ─────────────────────────── escrow (payouts) ───────────────────────────
+
+let escrowAccount: ReturnType<typeof privateKeyToAccount> | null = null;
+
+/** Whether payout signing is configured. Absent key => escrow claims are off. */
+export function escrowEnabled(): boolean {
+  return Boolean(env.ESCROW_PRIVATE_KEY && env.LOOTGRID_ESCROW_ADDRESS);
+}
+
+function escrowSigner() {
+  if (!escrowAccount) {
+    if (!env.ESCROW_PRIVATE_KEY) {
+      throw new Error('escrow attestor misconfigured — check escrowEnabled() before signing');
+    }
+    escrowAccount = privateKeyToAccount(env.ESCROW_PRIVATE_KEY as Hex);
+    logger.info({ escrowAttestor: escrowAccount.address }, 'escrow payout key loaded');
+  }
+  return escrowAccount;
+}
+
+/** The payout signer's address, for wiring ESCROW_ATTESTOR at deploy time. */
+export function escrowAddress(): Address {
+  return escrowSigner().address;
+}
+
+function escrowDomain() {
+  return {
+    name: ESCROW_DOMAIN_NAME,
+    version: ESCROW_DOMAIN_VERSION,
+    chainId: CHAIN_IDS[env.CHAIN],
+    verifyingContract: env.LOOTGRID_ESCROW_ADDRESS as Address,
+  } as const;
+}
+
+export const ESCROW_ABI = parseAbi([
+  'function claim(address winner, bytes32 huntId, uint32 elapsedMs, uint16 racers, uint256 deadline, bytes signature)',
+  'function withdraw(address winner)',
+]);
+
+/** Headroom over the ~120k `claim` measures at, which is the heavier of the two. */
+const ESCROW_GAS = 250_000n;
+
+export interface PayoutAttestation {
+  kind: 'payout';
+  winner: Address;
+  huntId: Hex;
+  elapsedMs: number;
+  racers: number;
+  deadline: number;
+  signature: Hex;
+  contract: Address;
+  chainId: number;
+  /** Credits the pot to the winner. Anyone may send it; it always pays them. */
+  call: SubmitCall;
+  /**
+   * Moves the credited balance to the winner's wallet.
+   *
+   * A second transaction because the escrow pays by pull, not push: `claim`
+   * credits, and the challenge window has to elapse before `withdraw` succeeds.
+   * That gap is the guardian's chance to stop a payout signed by a leaked key,
+   * so it is a feature of the contract rather than an inconvenience to route
+   * around — the client sends this one later, and it reverts if sent too early.
+   */
+  withdraw: SubmitCall;
+}
+
+/**
+ * The pull half of a payout. Permissionless and always pays the named winner,
+ * so the house can send it on behalf of a player with an empty wallet.
+ */
+export function withdrawCall(winner: Address): SubmitCall {
+  return {
+    to: env.LOOTGRID_ESCROW_ADDRESS as Address,
+    data: encodeFunctionData({ abi: ESCROW_ABI, functionName: 'withdraw', args: [winner] }),
+    gas: toHex(ESCROW_GAS),
+  };
+}
+
+/**
+ * Sign a payout claim against LootGridEscrow.
+ *
+ * Same fields as {@link signResolution} — the escrow deliberately verifies the
+ * identical struct — but under the escrow's domain and with the escrow's key.
+ * The amount is NOT signed: it comes from the pot the treasury funded, so the
+ * referee never has to know or agree about how much a hunt is worth.
+ */
+export async function signPayout(
+  winner: Address,
+  huntId: Hex,
+  elapsedMs: number,
+  racers: number,
+  now: number = Date.now(),
+): Promise<PayoutAttestation> {
+  const deadline = deadlineFrom(now);
+  const clampedElapsed = Math.max(0, Math.min(Math.trunc(elapsedMs), 4_294_967_295));
+  const clampedRacers = Math.max(0, Math.min(Math.trunc(racers), 65_535));
+
+  const signature = await escrowSigner().signTypedData({
+    domain: escrowDomain(),
+    types: TYPES,
+    primaryType: 'Resolution',
+    message: {
+      winner,
+      huntId,
+      elapsedMs: clampedElapsed,
+      racers: clampedRacers,
+      deadline: BigInt(deadline),
+    },
+  });
+
+  return {
+    kind: 'payout',
+    winner,
+    huntId,
+    elapsedMs: clampedElapsed,
+    racers: clampedRacers,
+    deadline,
+    signature,
+    contract: env.LOOTGRID_ESCROW_ADDRESS as Address,
+    chainId: CHAIN_IDS[env.CHAIN],
+    call: {
+      to: env.LOOTGRID_ESCROW_ADDRESS as Address,
+      data: encodeFunctionData({
+        abi: ESCROW_ABI,
+        functionName: 'claim',
+        args: [
+          winner,
+          huntId,
+          clampedElapsed,
+          clampedRacers,
+          BigInt(deadline),
+          signature,
+        ],
+      }),
+      gas: toHex(ESCROW_GAS),
+    },
+    withdraw: withdrawCall(winner),
+  };
 }
 
 function domain() {
@@ -260,7 +515,310 @@ export async function signResolution(
   };
 }
 
-/** Clears the cached account. Tests only. */
+// ─────────────────────────── the hint market ───────────────────────────
+
+function hintDomain() {
+  return {
+    name: HINT_DOMAIN_NAME,
+    version: HINT_DOMAIN_VERSION,
+    chainId: CHAIN_IDS[env.CHAIN],
+    verifyingContract: env.HINT_ESCROW_ADDRESS as Address,
+  } as const;
+}
+
+/** Whether hint vouches can be issued. Absent address => the market is off. */
+export function hintEnabled(): boolean {
+  return Boolean(env.ATTESTOR_PRIVATE_KEY && env.HINT_ESCROW_ADDRESS);
+}
+
+function bondDomain() {
+  return {
+    name: BOND_DOMAIN_NAME,
+    version: BOND_DOMAIN_VERSION,
+    chainId: CHAIN_IDS[env.CHAIN],
+    verifyingContract: env.HINT_BOND_ADDRESS as Address,
+  } as const;
+}
+
+/** Whether verdicts can be signed at all. No bond contract => nothing to slash. */
+export function bondEnabled(): boolean {
+  return Boolean(env.ATTESTOR_PRIVATE_KEY && env.HINT_BOND_ADDRESS);
+}
+
+export interface SlashAttestation {
+  kind: 'slash';
+  claimId: Hex;
+  seller: Address;
+  /** Token base units, decimal string. Never a JS number. */
+  amount: string;
+  evidenceHash: Hex;
+  deadline: number;
+  signature: Hex;
+  contract: Address;
+  chainId: number;
+}
+
+/**
+ * Sign a verdict.
+ *
+ * Signing is not submitting. This produces a bearer authorisation that anyone
+ * may relay to `HintBond.slash`, exactly like the release attestation — so
+ * enforcement does not depend on this server being awake at the right moment,
+ * and the short deadline keeps an unused verdict from staying live forever.
+ */
+export async function signSlash(
+  claimId: Hex,
+  seller: Address,
+  amount: bigint,
+  evidenceHash: Hex,
+  now: number = Date.now(),
+): Promise<SlashAttestation> {
+  const deadline = deadlineFrom(now);
+
+  const signature = await signer().signTypedData({
+    domain: bondDomain(),
+    types: TYPES,
+    primaryType: 'Slash',
+    message: {
+      claimId,
+      seller,
+      amount,
+      evidenceHash,
+      deadline: BigInt(deadline),
+    },
+  });
+
+  return {
+    kind: 'slash',
+    claimId,
+    seller,
+    amount: amount.toString(),
+    evidenceHash,
+    deadline,
+    signature,
+    contract: env.HINT_BOND_ADDRESS as Address,
+    chainId: CHAIN_IDS[env.CHAIN],
+  };
+}
+
+/** Whether trades can be released. Needs the payout key as well as the vouch key. */
+export function releaseEnabled(): boolean {
+  return Boolean(env.ESCROW_PRIVATE_KEY && env.HINT_ESCROW_ADDRESS);
+}
+
+export const HINT_ESCROW_ABI = parseAbi([
+  'function fund(bytes32 tradeId, address seller, uint256 amount, uint64 expiresAt, (bytes32 hintHash, bytes32 zoneId, uint8 tier, uint16 reliabilityBps, uint256 deadline) vouch, bytes vouchSignature)',
+  'function settle(bytes32 tradeId, bytes32 hintHash, address buyer, uint256 deadline, bytes signature)',
+]);
+
+/** Headroom over the ~150k `fund` measures at, which is the heavier of the two. */
+const MARKET_GAS = 300_000n;
+
+export interface HintAttestation {
+  kind: 'hint';
+  hintHash: Hex;
+  zoneId: Hex;
+  tier: number;
+  reliabilityBps: number;
+  deadline: number;
+  signature: Hex;
+  contract: Address;
+  chainId: number;
+}
+
+/**
+ * Vouch for a hint a seller is listing.
+ *
+ * Signed with the records key rather than the payout key: this authorises
+ * nothing financial by itself, it only certifies provenance. The escrow that
+ * releases a buyer's money is a separate authority, and `HintEscrow` checks the
+ * two against different addresses.
+ *
+ * `hintHash` binds the attestation to one specific hint without disclosing it —
+ * the buyer can check afterwards that what they received hashes to what they
+ * were promised.
+ *
+ * Deliberately not single-use. Information copies rather than moves, so one
+ * vouch is expected to back many concurrent trades of the same hint; the trade
+ * id is what stops a *payment* being replayed.
+ */
+export async function signHint(
+  hintHash: Hex,
+  zoneId: Hex,
+  tier: number,
+  reliabilityBps: number,
+  now: number = Date.now(),
+): Promise<HintAttestation> {
+  const deadline = deadlineFrom(now);
+
+  const signature = await signer().signTypedData({
+    domain: hintDomain(),
+    types: TYPES,
+    primaryType: 'Hint',
+    message: {
+      hintHash,
+      zoneId,
+      tier,
+      reliabilityBps,
+      deadline: BigInt(deadline),
+    },
+  });
+
+  return {
+    kind: 'hint',
+    hintHash,
+    zoneId,
+    tier,
+    reliabilityBps,
+    deadline,
+    signature,
+    contract: env.HINT_ESCROW_ADDRESS as Address,
+    chainId: CHAIN_IDS[env.CHAIN],
+  };
+}
+
+export interface ReleaseAttestation {
+  kind: 'release';
+  tradeId: Hex;
+  hintHash: Hex;
+  buyer: Address;
+  deadline: number;
+  signature: Hex;
+  contract: Address;
+  chainId: number;
+  call: SubmitCall;
+}
+
+/**
+ * Authorise a funded trade to pay out.
+ *
+ * Signed with the payout key: unlike a vouch, this moves a buyer's money. The
+ * amount is not in the signature — it comes from what the buyer actually
+ * escrowed, so the referee never has to agree about the price.
+ */
+export async function signRelease(
+  tradeId: Hex,
+  hintHash: Hex,
+  buyer: Address,
+  now: number = Date.now(),
+): Promise<ReleaseAttestation> {
+  const deadline = deadlineFrom(now);
+
+  const signature = await escrowSigner().signTypedData({
+    domain: hintDomain(),
+    types: TYPES,
+    primaryType: 'Release',
+    message: {tradeId, hintHash, buyer, deadline: BigInt(deadline)},
+  });
+
+  return {
+    kind: 'release',
+    tradeId,
+    hintHash,
+    buyer,
+    deadline,
+    signature,
+    contract: env.HINT_ESCROW_ADDRESS as Address,
+    chainId: CHAIN_IDS[env.CHAIN],
+    call: {
+      to: env.HINT_ESCROW_ADDRESS as Address,
+      data: encodeFunctionData({
+        abi: HINT_ESCROW_ABI,
+        functionName: 'settle',
+        args: [tradeId, hintHash, buyer, BigInt(deadline), signature],
+      }),
+      gas: toHex(MARKET_GAS),
+    },
+  };
+}
+
+/**
+ * The transaction a buyer sends to escrow their payment.
+ *
+ * Encoded here for the same reason entries and resolutions are: the client
+ * holds no ABI, and hand-rolling a tuple plus a dynamic `bytes` argument inside
+ * a wallet webview fails silently. Nothing is trusted to the client by doing it
+ * — every field is either inside the vouch signature or checked by the contract.
+ */
+export function fundCall(
+  tradeId: Hex,
+  seller: Address,
+  amount: bigint,
+  expiresAt: number,
+  vouch: HintAttestation,
+): SubmitCall {
+  return {
+    to: env.HINT_ESCROW_ADDRESS as Address,
+    data: encodeFunctionData({
+      abi: HINT_ESCROW_ABI,
+      functionName: 'fund',
+      args: [
+        tradeId,
+        seller,
+        amount,
+        BigInt(expiresAt),
+        {
+          hintHash: vouch.hintHash,
+          zoneId: vouch.zoneId,
+          tier: vouch.tier,
+          reliabilityBps: vouch.reliabilityBps,
+          deadline: BigInt(vouch.deadline),
+        },
+        vouch.signature,
+      ],
+    }),
+    gas: toHex(MARKET_GAS),
+  };
+}
+
+export interface TranscriptAttestation {
+  kind: 'transcript';
+  huntId: Hex;
+  chainHead: Hex;
+  rounds: number;
+  deadline: number;
+  signature: Hex;
+  contract: Address;
+  chainId: number;
+}
+
+/**
+ * Sign a hunt's directive chain head.
+ *
+ * Signed with the records key: this authorises nothing and moves nothing, it
+ * only pins what happened. Same key that vouches for a hint's provenance, and
+ * for the same reason — provenance is not payment.
+ */
+export async function signTranscript(
+  huntId: Hex,
+  chainHead: Hex,
+  rounds: number,
+  now: number = Date.now(),
+): Promise<TranscriptAttestation> {
+  const deadline = deadlineFrom(now);
+  const clampedRounds = Math.max(0, Math.min(Math.trunc(rounds), 65_535));
+
+  const signature = await signer().signTypedData({
+    domain: domain(),
+    types: TYPES,
+    primaryType: 'Transcript',
+    message: {huntId, chainHead, rounds: clampedRounds, deadline: BigInt(deadline)},
+  });
+
+  return {
+    kind: 'transcript',
+    huntId,
+    chainHead,
+    rounds: clampedRounds,
+    deadline,
+    signature,
+    contract: env.LOOTGRID_ACTIONS_ADDRESS as Address,
+    chainId: CHAIN_IDS[env.CHAIN],
+  };
+}
+
+/** Clears the cached accounts. Tests only. */
 export function reset(): void {
   account = null;
+  escrowAccount = null;
 }

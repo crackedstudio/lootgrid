@@ -64,7 +64,17 @@ async function payer() {
   }
 }
 
-async function send(call) {
+/**
+ * Send a server-encoded call. Resolves to a transaction hash, or `null` when
+ * there is no wallet to send it with.
+ *
+ * Exported because the hint market needs the same wallet plumbing for a very
+ * different purpose. Note the difference in how the two use it: publishing a
+ * record swallows every failure, because a missing log costs nothing. Funding a
+ * trade must not — a payment that silently fails to send is a player staring at
+ * a hint they think they bought. Callers there surface the error.
+ */
+export async function sendCall(call) {
   const eth = provider();
   const from = await payer();
   if (!eth || !from) return null;
@@ -78,6 +88,30 @@ async function send(call) {
   };
 
   return eth.request({ method: 'eth_sendTransaction', params: [tx] });
+}
+
+const send = sendCall;
+
+/**
+ * Sign server-built EIP-712 typed data. Resolves to a signature, or `null` when
+ * there is no wallet or the player declines.
+ *
+ * The entry-fee path uses this: an x402 payment is an EIP-3009 authorisation,
+ * so the wallet signs rather than sends, and the token contract moves the funds
+ * later. One prompt, no gas, no transaction of our own.
+ *
+ * `eth_signTypedData_v4` takes the payload as a JSON *string*, which is easy to
+ * get wrong by passing the object.
+ */
+export async function signTypedData(typedData) {
+  const eth = provider();
+  const from = await payer();
+  if (!eth || !from) return null;
+
+  return eth.request({
+    method: 'eth_signTypedData_v4',
+    params: [from, JSON.stringify(typedData)],
+  });
 }
 
 /**

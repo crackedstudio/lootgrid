@@ -2,10 +2,18 @@ import { createPublicClient, http, parseAbi, type Address, type PublicClient } f
 import { env } from '../env';
 import { logger } from '../logger';
 
-const ABI = parseAbi([
+export const ABI = parseAbi([
   'function sessionKeyOf(address player) view returns (address)',
   'function isBound(address player, address sessionKey) view returns (bool)',
+  'event SessionKeyBound(address indexed player, address indexed sessionKey, uint64 at)',
+  'event SessionKeyCleared(address indexed player, address indexed sessionKey, uint64 at)',
 ]);
+
+// ⚠️ These signatures are the topic0 preimage. Changing a parameter list in the
+// contract — even adding `indexed`, which does not move the parameter — changes
+// the hash and silently kills the subscription: no error, no log, just nothing.
+// `abiMatchesContract.test.ts` diffs these against the Solidity source so the
+// next drift fails a test instead of disabling revocation in production.
 
 /**
  * No `chain` object is passed deliberately. These are read-only `eth_call`s, so
@@ -28,22 +36,37 @@ interface Entry {
 const cache = new Map<string, Entry>();
 
 /**
- * Reads the bound session key, cached for REGISTRY_CACHE_MS.
+ * Bumped on every invalidation. A read-through write straddles an `await`, so an
+ * invalidation that lands mid-flight would otherwise be undone by the in-flight
+ * read writing back the pre-revocation value — with a fresh full-length TTL.
+ */
+let generation = 0;
+
+/** Negative results expire far sooner — see `sessionKeyOf`. */
+const ttlFor = (e: Entry) =>
+  e.key === null ? env.REGISTRY_NEGATIVE_CACHE_MS : env.REGISTRY_CACHE_MS;
+
+/**
+ * Reads the bound session key.
  *
- * The cache is why a key rotation is not instant: after `clear()` or a rebind,
- * the old key keeps working for up to the TTL. That is the price of not doing
- * an RPC round trip on every request, and one minute is short enough that it
- * cannot be meaningfully exploited — an attacker with the old key already had
- * it before the rotation.
+ * Two TTLs, deliberately. A positive result is cached for REGISTRY_CACHE_MS; a
+ * negative one ("no binding") for far less, because an unauthenticated request
+ * naming a not-yet-bound address would otherwise lock that player out of their
+ * own first login for the full window.
+ *
+ * The cache is no longer the sole revocation path: `watchRevocations()`
+ * subscribes to the contract's events and evicts on rotation, so the TTL is now
+ * a backstop for a dropped subscription rather than the mechanism itself.
  */
 export async function sessionKeyOf(player: Address, now = Date.now()): Promise<Address | null> {
   const cacheKey = player.toLowerCase();
   const hit = cache.get(cacheKey);
-  if (hit && now - hit.at < env.REGISTRY_CACHE_MS) return hit.key;
+  if (hit && now - hit.at < ttlFor(hit)) return hit.key;
 
   const address = env.PLAYER_REGISTRY_ADDRESS as Address | undefined;
   if (!address) throw new Error('PLAYER_REGISTRY_ADDRESS is required when AUTH_MODE=chain');
 
+  const gen = generation;
   const raw = await getClient().readContract({
     address,
     abi: ABI,
@@ -52,20 +75,105 @@ export async function sessionKeyOf(player: Address, now = Date.now()): Promise<A
   });
 
   const key = raw === '0x0000000000000000000000000000000000000000' ? null : (raw as Address);
-  cache.set(cacheKey, { key, at: now });
+
+  // Only cache if no invalidation happened while this read was in flight —
+  // otherwise a revocation that arrived mid-request gets silently reverted.
+  // Stamped at completion, not at request start, so the TTL cannot be
+  // back-dated to before the rotation it missed.
+  if (gen === generation) cache.set(cacheKey, { key, at: Date.now() });
   return key;
 }
 
 /** Drops a cached binding so a rotation takes effect immediately. */
 export function invalidate(player: string): void {
   cache.delete(player.toLowerCase());
+  generation += 1;
 }
 
 export function clearCache(): void {
   cache.clear();
+  generation += 1;
 }
 
 export const cacheSize = () => cache.size;
+
+/**
+ * Evicts entries nobody has touched.
+ *
+ * Without this the cache is an unbounded Map keyed by an attacker-chosen,
+ * unauthenticated address — every sprayed request left a permanent entry.
+ * `ratelimit.ts` has always swept its buckets for exactly this reason.
+ */
+export function sweep(now = Date.now()): number {
+  let dropped = 0;
+  for (const [key, entry] of cache) {
+    if (now - entry.at > ttlFor(entry)) {
+      cache.delete(key);
+      dropped += 1;
+    }
+  }
+  return dropped;
+}
+
+let sweepTimer: NodeJS.Timeout | null = null;
+let unwatch: Array<() => void> = [];
+
+/**
+ * Subscribes to the contract's own revocation signals.
+ *
+ * This is what makes `clear()` mean what its NatSpec says. Previously the only
+ * mechanism was the TTL, so a revoked key kept authenticating for up to a
+ * minute — precisely in the scenario `clear()` exists to handle.
+ */
+export function watchRevocations(): void {
+  if (env.AUTH_MODE !== 'chain') return;
+  const address = env.PLAYER_REGISTRY_ADDRESS as Address | undefined;
+  if (!address) return;
+
+  const onLogs = (logs: Array<{ args: { player?: Address } }>) => {
+    for (const log of logs) {
+      if (log.args.player) {
+        invalidate(log.args.player);
+        logger.info({ player: log.args.player }, 'session key rotated — cache invalidated');
+      }
+    }
+  };
+
+  for (const eventName of ['SessionKeyBound', 'SessionKeyCleared'] as const) {
+    unwatch.push(
+      getClient().watchContractEvent({
+        address,
+        abi: ABI,
+        eventName,
+        onLogs: onLogs as never,
+        onError: err => logger.error({ err, eventName }, 'registry event subscription error'),
+      }),
+    );
+  }
+  logger.info({ address }, 'watching registry for key rotations');
+}
+
+export function start(): void {
+  sweepTimer = setInterval(() => {
+    const dropped = sweep();
+    if (dropped > 0) logger.debug({ dropped }, 'swept registry cache');
+  }, 60_000);
+  sweepTimer.unref?.();
+  watchRevocations();
+}
+
+export function stop(): void {
+  if (sweepTimer) clearInterval(sweepTimer);
+  sweepTimer = null;
+  for (const off of unwatch) {
+    try {
+      off();
+    } catch {
+      /* already torn down */
+    }
+  }
+  unwatch = [];
+}
 
 /** Called at boot so a misconfigured RPC or address fails loudly, not per-request. */
 export async function checkReachable(): Promise<boolean> {

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { get, post, ApiError } from '../api/http';
+import { fetchHints } from '../api/hints';
+import { enterHunt } from '../api/entry';
 import { publishEntry, publishWin } from '../api/records';
 import { createSender, socket } from '../api/socket';
 import { ONB_CARDS } from '../data/gameData';
@@ -11,6 +13,8 @@ const INITIAL = {
   view: 'home',
   onbStep: 0,
   mapZone: null,
+  /** Hints the player holds. Directions toward a hunt — some of them lie. */
+  hints: [],
 
   // session
   status: 'connecting', // connecting | online | offline
@@ -36,6 +40,12 @@ const INITIAL = {
   winData: null,
   shared: false,
 
+  /** True while a 402 is waiting on the player to accept a price. */
+  paying: false,
+
+  /** Hunt id whose Director transcript is open, or null. */
+  transcriptFor: null,
+
   boardTab: 'daily',
   showToast: false,
   toastText: '',
@@ -53,7 +63,16 @@ function initGame(gameType, spec) {
     case 'memory':
       return { phase: 'watch', lit: -1, index: 0, sequence: spec.sequence, padCount: spec.padCount };
     case 'math':
-      return { index: 0, count: spec.count, question: spec.question, picked: null };
+      // `maxAnswerMs` is per-question, not per-attempt: the Director may make a
+      // round shorter than the last one, and it has to be shown. A clock that
+      // silently tightened would be the Director taking a prize away.
+      return {
+        index: 0,
+        count: spec.count,
+        question: spec.question,
+        picked: null,
+        maxAnswerMs: spec.maxAnswerMs,
+      };
     default:
       return {};
   }
@@ -169,7 +188,20 @@ export function useGameState() {
         case 'game:update':
           // Math Dash issues question N+1 only once N is answered correctly.
           return set(s =>
-            s.game ? { game: { ...s.game, index: msg.data.index, question: msg.data.question, picked: null } } : null,
+            s.game
+              ? {
+                  game: {
+                    ...s.game,
+                    index: msg.data.index,
+                    question: msg.data.question,
+                    picked: null,
+                    // Carried through so a directed round's clock is visible.
+                    // Falls back to the one already on screen: an older server
+                    // that does not send it must not blank the display.
+                    maxAnswerMs: msg.data.maxAnswerMs ?? s.game.maxAnswerMs,
+                  },
+                }
+              : null,
           );
 
         case 'attempt:complete':
@@ -193,6 +225,11 @@ export function useGameState() {
             return set({
               outcome: 'won',
               winData: {
+                // Carried so the win screen can claim against it. The prize is
+                // held in escrow per hunt, so without the id there is nothing to
+                // claim — which is exactly how the payout path came to be
+                // unreachable from the UI.
+                huntId: s.huntId,
                 prize: s.huntPrize || '',
                 elapsedMs: msg.elapsedMs,
                 beat: Math.max(0, (s.rivals?.length ?? 0)),
@@ -274,6 +311,8 @@ export function useGameState() {
         for (const cell of grid.reveals) reveals[cellKey(cell.r, cell.c)] = cell;
         set({ mapZone: zoneId, grid: { ...grid, reveals } });
         socket.join(`zone:${zoneId}`);
+        // Best-effort: an empty hint strip is a worse map, never a broken one.
+        fetchHints().then(hints => set({ hints })).catch(() => {});
       } catch {
         toast('COULD NOT LOAD ZONE');
       }
@@ -310,6 +349,16 @@ export function useGameState() {
             ? { ...prev.grid, reveals: { ...prev.grid.reveals, [cellKey(cell.r, cell.c)]: res.cell } }
             : null,
         }));
+        // A reveal can pay out a hint. Prepend so the newest is first, and
+        // guard against a duplicate if the same grant arrives twice.
+        if (res.hint) {
+          set(prev => ({
+            hints: prev.hints.some(h => h.id === res.hint.id)
+              ? prev.hints
+              : [res.hint, ...prev.hints],
+          }));
+          toast('HINT FOUND');
+        }
         if (res.alreadyOpen) toast('SOMEONE BEAT YOU TO IT');
       } catch (err) {
         if (err.code === 'insufficient_energy') {
@@ -322,7 +371,26 @@ export function useGameState() {
     [set, toast],
   );
 
-  const closeHunt = useCallback(() => set({ huntPreview: null }), [set]);
+  /**
+   * Resolves the promise `enterHunt` is waiting on while a price is shown.
+   * Held in a ref because the answer arrives from a click, long after the
+   * request that asked for it.
+   */
+  const quoteResolver = useRef(null);
+
+  const settleQuote = useCallback(accepted => {
+    const resolve = quoteResolver.current;
+    quoteResolver.current = null;
+    resolve?.(accepted);
+  }, []);
+
+  const acceptQuote = useCallback(() => settleQuote(true), [settleQuote]);
+
+  const closeHunt = useCallback(() => {
+    // Closing mid-quote is a decline, not a dangling promise.
+    settleQuote(false);
+    set({ huntPreview: null, paying: false });
+  }, [set, settleQuote]);
 
   // ---------------------------------------------------------------- hunts
 
@@ -331,7 +399,20 @@ export function useGameState() {
     if (!hunt) return;
 
     try {
-      const res = await post(`/hunts/${hunt.id}/attempts`);
+      // Pays only if the server asks, and only after the player has seen the
+      // price. Energy is tried first server-side, so most entries never reach
+      // the payment branch at all.
+      const res = await enterHunt(hunt.id, {
+        // The 402 arrives mid-flight, so the price is shown and the entry waits
+        // on a promise the player resolves. Nobody should be charged by a screen
+        // they have not read.
+        onQuote: terms =>
+          new Promise(resolve => {
+            quoteResolver.current = resolve;
+            set({ huntPreview: { ...hunt, quote: terms }, paying: true });
+          }),
+      });
+      if (!res) return set({ huntPreview: null, paying: false });
       senderRef.current?.dispose();
       senderRef.current = createSender(res.attemptId);
       socket.join(`hunt:${hunt.id}`);
@@ -342,6 +423,7 @@ export function useGameState() {
 
       set({
         huntPreview: null,
+        paying: false,
         energy: res.energy,
         huntId: hunt.id,
         huntPrize: hunt.prizeLabel,
@@ -355,7 +437,10 @@ export function useGameState() {
         shared: false,
       });
     } catch (err) {
-      set({ huntPreview: null });
+      set({ huntPreview: null, paying: false });
+      if (err.code === 'no_wallet') return toast('NO WALLET TO PAY WITH');
+      if (err.code === 'signature_refused') return toast('PAYMENT CANCELLED');
+      if (err.status === 402) return toast('PAYMENT WAS REFUSED');
       if (err.code === 'insufficient_energy') return toast('NOT ENOUGH ENERGY');
       if (err.code === 'already_attempted') return toast('YOU ALREADY TRIED THIS ONE');
       if (err.code === 'hunt_not_live') return toast('ALREADY CRACKED');
@@ -448,6 +533,7 @@ export function useGameState() {
     onTile,
     closeHunt,
     confirmHunt,
+    acceptQuote,
     exitMinigame,
     onMgTap,
     onSeqTap,

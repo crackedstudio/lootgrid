@@ -4,13 +4,22 @@ import type { App } from './appTypes';
 import { canonicalHttp } from './auth/canonical';
 import * as registry from './auth/registry';
 import { verifyHttp, type Credentials } from './auth/verify';
+import * as agents from './agents';
+import * as reputation from './agents/reputation';
+import * as director from './director';
 import * as attestor from './chain/attestor';
+import * as escrowChain from './chain/escrow';
 import * as relayer from './chain/relayer';
 import { GRID } from './config';
 import { getDb } from './db/index';
 import * as energy from './energy';
 import { stdev } from './games/tap';
 import { inBounds, tileType } from './grid';
+import * as hints from './hints';
+import * as hintStats from './hints/stats';
+import * as market from './market';
+import { quoteEntry } from './payments/fees';
+import * as x402 from './payments/x402';
 import { badRequest, conflict, forbidden, isAppError, notFound, toWireError, tooManyRequests, unauthorized } from './errors';
 import { env, isProd } from './env';
 import { logger } from './logger';
@@ -35,6 +44,17 @@ const tileParams = zoneParams.extend({
   c: z.coerce.number().int().min(0).max(GRID.cols - 1),
 });
 const idParams = z.object({ id: z.string().min(1).max(128) });
+const hexAddress = z.string().regex(/^0x[a-fA-F0-9]{40}$/, 'must be a 0x-prefixed address');
+
+// Prices are whole cents, always. A float here would be a rounding error with a
+// wallet attached — see prizes.ts.
+const centsField = z.number().int().min(1).max(100_000);
+const listingBody = z.object({ hintId: z.string().min(1).max(128), askCents: centsField });
+const priceBody = z.object({ priceCents: centsField });
+const browseQuery = z.object({
+  zoneId: z.string().min(1).max(64).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
 
 function parse<T extends z.ZodTypeAny>(schema: T, value: unknown): z.infer<T> {
   const result = schema.safeParse(value);
@@ -45,6 +65,12 @@ function parse<T extends z.ZodTypeAny>(schema: T, value: unknown): z.infer<T> {
 }
 
 // ---------------------------------------------------------------- auth
+
+/** A single header value, or null. Headers may arrive as arrays. */
+function headerOrNull(req: FastifyRequest, name: string): string | null {
+  const v = req.headers[name];
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
 
 function credentialsFrom(req: FastifyRequest): Credentials {
   const h = req.headers;
@@ -193,6 +219,9 @@ export function registerRoutes(app: App): void {
       id: z.id,
       name: z.name,
       accent: z.accent,
+      // Who plays here. The client uses it to route between the reflex UI and
+      // the agent UI; it is not a secret.
+      kind: z.kind,
       epoch: z.epoch,
       // Published up front; the secret is revealed when the epoch rotates, so
       // the map can be proved to have been fixed in advance.
@@ -218,6 +247,10 @@ export function registerRoutes(app: App): void {
         r: h.r,
         c: h.c,
         kind: h.kind,
+        // Drawn from the salt at creation. Surfaced because it now decides the
+        // prize, the entry fee AND how hard the block's game generates — a
+        // player choosing between two hunts is choosing between those.
+        difficulty: h.difficulty,
         prizeLabel: h.prizeLabel,
         status: h.status,
         chasers: store.chaserCount(h.id),
@@ -269,8 +302,34 @@ export function registerRoutes(app: App): void {
       tileType: relayer.tileTypeCode(cell.type),
     });
 
+    // Awarded after the reveal is committed, and never allowed to throw: the
+    // player has already paid energy for this tile, so a hint that fails to
+    // generate is a missing bonus rather than a failed request.
+    const hint = hints.awardForReveal(
+      zone.seedSecret,
+      player.id,
+      r,
+      c,
+      store.liveHuntsIn(zone),
+      now,
+    );
+
     rooms.broadcast(rooms.zoneRoom(zone.id), { t: 'tile:revealed', ...cell });
-    return { cell, energy: spent.energy };
+    return { cell, energy: spent.energy, hint };
+  });
+
+  /**
+   * The player's unexpired hints.
+   *
+   * There is deliberately no `POST /hints/:id/apply`: applying a hint is a
+   * client-side view filter over `cellMatches`, and an endpoint that mutates
+   * nothing would be noise. What phase 1 actually needs to learn — whether hints
+   * change where people dig — is answered by the `hints_awarded` and
+   * `hunts_found{hinted=}` counters instead.
+   */
+  app.get('/hints', async req => {
+    const player = await requirePlayer(req);
+    return { hints: hints.forPlayer(player.id) };
   });
 
   // ---- hunts ----
@@ -293,13 +352,46 @@ export function registerRoutes(app: App): void {
     };
   });
 
-  app.post('/hunts/:id/attempts', async req => {
+  app.post('/hunts/:id/attempts', async (req, reply) => {
     const player = await requirePlayer(req);
     const { id } = parse(idParams, req.params);
     limit(`attempt:${player.id}`, env.RATE_ATTEMPT_PER_MIN, 60_000, 'attempt');
 
     const hunt = store.getHunt(id);
     if (!hunt) throw notFound('no_such_hunt');
+
+    // Entry gate. Energy is the free route and is tried first: a player who has
+    // it never sees a payment prompt, which keeps a no-cost path to every prize.
+    // Only when energy is exhausted does a fee apply, and only if fees are on at
+    // all — ENTRY_FEES_ENABLED is false by default and legally gated.
+    const zone = store.getZone(hunt.zoneId);
+    const quote = quoteEntry(
+      hunt.difficulty,
+      zone?.kind ?? 'human',
+      store.chaserCount(hunt.id),
+      energy.currentEnergy(player, Date.now()) > 0,
+    );
+
+    metrics.entryEvRatio.set(
+      { zone: hunt.zoneId, difficulty: hunt.difficulty },
+      Number.isFinite(quote.evRatio) ? quote.evRatio : 0,
+    );
+
+    if (x402.enabled() && quote.feeCents > 0 && !quote.freeEntryAvailable) {
+      const terms = x402.termsFor(hunt.id, quote.feeCents);
+      const settled = await x402.settleEntry(terms, headerOrNull(req, 'x-payment'));
+      if (!settled.ok) {
+        // 402 with the terms attached is what the protocol expects; the client
+        // signs and retries against the same URL. The challenge is built for
+        // the *authenticated* player, so a signed authorisation can only ever
+        // spend the balance of whoever asked for it.
+        const challenge = x402.challengeFor(terms, player.id as `0x${string}`);
+        return reply.code(402).send(x402.paymentRequiredBody(terms, challenge));
+      }
+      metrics.entriesPaid.inc();
+    } else if (quote.freeEntryAvailable) {
+      metrics.entriesFree.inc();
+    }
 
     const result = referee.openAttempt(player, hunt);
     if (!result.ok) throw conflict(result.error);
@@ -396,9 +488,338 @@ export function registerRoutes(app: App): void {
     );
   });
 
+  /**
+   * Attestation for a prize, against LootGridEscrow.
+   *
+   * The same `Resolution` fields as the record above, signed under the escrow's
+   * own domain with the payout key — so a signature minted to write a public log
+   * cannot move money, and the two keys can be protected differently.
+   *
+   * Nothing is paid here. The response carries `claim` calldata the winner sends
+   * themselves, and `withdraw` calldata for afterwards: the escrow credits on
+   * claim and pays on withdraw, with the challenge window in between. Both are
+   * permissionless and both always pay the winner the referee named, so a player
+   * with an empty wallet can have either sent for them.
+   */
+  app.post('/hunts/:id/attestations/payout', async req => {
+    if (!attestor.escrowEnabled()) throw notFound('payouts_disabled');
+
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+
+    const hunt = store.getHunt(id);
+    if (!hunt) throw notFound('no_such_hunt');
+    if (hunt.status !== 'resolved' || !hunt.winnerId) throw conflict('hunt_not_resolved');
+    // Scoped to the winner even though the contract would accept whoever pays
+    // the gas. The referee will not sign a claim it did not decide.
+    if (hunt.winnerId !== player.id) throw forbidden('not_the_winner');
+
+    const attempt = store.attemptOf(hunt.id, player.id);
+    if (!attempt) throw conflict('no_winning_attempt');
+
+    return attestor.signPayout(
+      player.id as `0x${string}`,
+      attestor.toBytes32Id(hunt.id),
+      attempt.elapsedMs ?? 0,
+      store.racerCount(hunt.id),
+    );
+  });
+
+  /**
+   * What the escrow owes the caller, read from the chain.
+   *
+   * The server issued the attestation but never saw the transaction, so only the
+   * contract knows whether a claim actually landed. A UI that assumed would tell
+   * a player their prize was ready when it was not.
+   */
+  app.get('/escrow/balance', async req => {
+    const player = await requirePlayer(req);
+    if (!escrowChain.readable()) throw notFound('payouts_disabled');
+
+    const balance = await escrowChain.readBalance(player.id as `0x${string}`);
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    return {
+      // A decimal string: base units of an 18dp token exceed Number's safe range.
+      owed: balance.owed.toString(),
+      withdrawableAt: balance.withdrawableAt,
+      withdrawable: balance.owed > 0n && nowSec >= balance.withdrawableAt,
+      call: attestor.withdrawCall(player.id as `0x${string}`),
+    };
+  });
+
+  // ---- player agents ----
+  //
+  // Every state change that matters is a transaction the PLAYER signs. The
+  // server derives the agent key, proves it consents, encodes calldata and reads
+  // results back — but binding, funding, capping and revoking are all theirs.
+  // That is what makes "the house cannot spend your money" a property rather
+  // than a promise.
+
+  app.get('/agent', async req => {
+    const player = await requirePlayer(req);
+    return { agent: agents.ensure(player) };
+  });
+
+  /**
+   * The two transactions that bring an agent to life: bind it as a session key,
+   * then create the vault naming it as spender. Returned together so the UI can
+   * show the whole commitment before any of it is made.
+   */
+  app.post('/agent/setup', async req => {
+    const player = await requirePlayer(req);
+    limit(`agent:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'agent');
+    return await agents.setupOffer(player);
+  });
+
+  /**
+   * Find the vault on chain once the player's transaction has landed.
+   *
+   * Takes no address: it is read from the factory. One a client could supply
+   * would be one the server then lets an agent spend against.
+   */
+  app.post('/agent/vault', async req => {
+    const player = await requirePlayer(req);
+    limit(`agent:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'agent');
+    return { agent: await agents.attachVault(player) };
+  });
+
+  app.put('/agent/config', async req => {
+    const player = await requirePlayer(req);
+    limit(`agent:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'agent');
+    return { agent: agents.configure(player, req.body) };
+  });
+
+  /**
+   * Stop the agent.
+   *
+   * The server refuses its next turn immediately, but the row is NOT the kill
+   * switch — the returned call is, and until the player sends it the agent still
+   * holds on-chain spending rights the server cannot revoke.
+   */
+  app.post('/agent/kill', async req => {
+    const player = await requirePlayer(req);
+    return agents.killOffer(player);
+  });
+
+  app.post('/agent/resume', async req => {
+    const player = await requirePlayer(req);
+    return { agent: agents.resume(player) };
+  });
+
+  /** Owner-only vault transactions, encoded here and sent by the player. */
+  app.post('/agent/vault/:action', async req => {
+    const player = await requirePlayer(req);
+    const { action } = parse(
+      z.object({ action: z.enum(['withdrawAll', 'setCaps', 'setTarget']) }),
+      req.params,
+    );
+    const args = parse(
+      z
+        .object({
+          perTxCents: z.number().int().min(1).max(100_000).optional(),
+          perDayCents: z.number().int().min(1).max(1_000_000).optional(),
+          target: hexAddress.optional(),
+          allowed: z.boolean().optional(),
+        })
+        .optional(),
+      req.body ?? {},
+    );
+    return {
+      call: agents.vaultCallFor(player, action, {
+        ...args,
+        target: args?.target as `0x${string}` | undefined,
+      }),
+    };
+  });
+
+  app.get('/agent/ledger', async req => {
+    const player = await requirePlayer(req);
+    return agents.ledger(player);
+  });
+
+  // ---- the hint market ----
+  //
+  // The server never holds a buyer's money here. It vouches for what is being
+  // sold, hands back the transaction the buyer sends themselves, and grants the
+  // hint once HintEscrow says the payment settled. Every route below is either
+  // a database write about intent or a read of the chain — none of them move
+  // funds, which is what keeps a compromised server unable to steal a trade.
+
+  /**
+   * A seller's weighted trust, for a buyer deciding whether to pay them.
+   *
+   * The weighted number, never the registry's raw score — showing a figure a
+   * wash farm can manufacture would be worse than showing nothing, because it
+   * looks like diligence. Unauthenticated, like every other market surface.
+   */
+  app.get('/market/trust/:id', async req => {
+    const { id } = parse(idParams, req.params);
+    return await reputation.trustFor(id);
+  });
+
+  app.get('/market/listings', async req => {
+    const { zoneId, limit } = parse(browseQuery, req.query);
+    // Public: an order book only participants can read is not a market, and the
+    // listing view deliberately cannot carry a hint's payload.
+    return { listings: market.browse(zoneId ?? null, limit) };
+  });
+
+  app.post('/market/listings', async req => {
+    const player = await requirePlayer(req);
+    const { hintId, askCents } = parse(listingBody, req.body);
+    limit(`market:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'market');
+    return { listing: await market.list(player, hintId, askCents) };
+  });
+
+  app.get('/market/listings/mine', async req => {
+    const player = await requirePlayer(req);
+    return { listings: market.myListings(player) };
+  });
+
+  app.delete('/market/listings/:id', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    market.cancel(player, id);
+    return { ok: true };
+  });
+
+  /** The book for one listing. Seller only — see `market.bidsFor`. */
+  app.get('/market/listings/:id/bids', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    return { bids: market.bidsFor(player, id) };
+  });
+
+  app.post('/market/listings/:id/bids', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    const { priceCents } = parse(priceBody, req.body);
+    limit(`market:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'market');
+    return { bid: market.bid(player, id, priceCents) };
+  });
+
+  app.delete('/market/bids/:id', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    market.withdrawBid(player, id);
+    return { ok: true };
+  });
+
+  /** Seller accepts a bid, which quotes the *bidder* — it does not move money. */
+  app.post('/market/bids/:id/accept', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    limit(`market:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'market');
+    return { quote: await market.acceptBid(player, id) };
+  });
+
+  /**
+   * Take a listing at its ask.
+   *
+   * Returns a quote, not a purchase: the buyer still has to escrow the money
+   * themselves with the calldata attached. Nothing is owed until they do, and
+   * nothing is delivered until the contract says it settled.
+   */
+  app.post('/market/listings/:id/buy', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    limit(`market:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'market');
+    return { quote: await market.buy(player, id) };
+  });
+
+  app.get('/market/trades', async req => {
+    const player = await requirePlayer(req);
+    return { trades: market.myTrades(player) };
+  });
+
+  /**
+   * Bring a trade up to date with the chain.
+   *
+   * The buyer polls this after funding: it reads HintEscrow, hands back a
+   * release attestation once the money is there, and delivers the hint once the
+   * release has actually settled. Idempotent — the hint is granted once however
+   * often either party asks.
+   */
+  app.post('/market/trades/:id/sync', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(idParams, req.params);
+    limit(`market:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'market');
+    return { trade: await market.sync(player, id) };
+  });
+
+  /**
+   * Rake as it actually landed, per zone. Unauthenticated, like the other audit
+   * surfaces: a fee whose size players have to take on trust is worse than one
+   * they can check.
+   */
+  app.get('/market/stats', async () => ({ zones: market.rakeStats() }));
+
   // ---- audit ----
 
   /** Revealed seeds for finished epochs: anyone can recompute the old map. */
+  /**
+   * Hint honesty, in public.
+   *
+   * Live hunts show a commitment and nothing else. Finished ones show the whole
+   * set — truth flags included — plus the salt, so anyone can regenerate it and
+   * confirm it matches what was published before the hunt opened.
+   *
+   * Unauthenticated on purpose, exactly like `/audit/zones/:id`. A guarantee only
+   * players can check is a weaker guarantee than one anybody can.
+   */
+  app.get('/audit/hints/:id', async req => {
+    const { id } = parse(zoneParams, req.params);
+    const zone = store.getZone(id);
+    if (!zone) throw notFound('no_such_zone');
+    return hintStats.auditZone(zone.id);
+  });
+
+  /**
+   * A hunt's directive transcript, and the signed head.
+   *
+   * Unauthenticated on purpose, like every other audit surface: a guarantee only
+   * players can check is weaker than one anybody can. The response carries
+   * everything needed to recompute the chain independently — the salt is
+   * included only once the hunt is over, for the same reason it always is.
+   */
+  app.get('/audit/transcript/:id', async req => {
+    const { id } = parse(idParams, req.params);
+    const hunt = store.getHunt(id);
+    if (!hunt) throw notFound('no_such_hunt');
+
+    const transcript = director.transcriptOf(hunt.id);
+    if (!transcript) throw notFound('not_directed');
+
+    const settled = hunt.status === 'resolved' || hunt.status === 'expired';
+    return {
+      huntId: hunt.id,
+      // Withheld while the hunt is live: it is the same secret the cell
+      // commitment rests on, and publishing it early would hand over the map.
+      salt: settled ? hunt.salt : null,
+      chainHead: transcript.chainHead,
+      rounds: transcript.length,
+      entries: transcript.list(),
+      // Signed at resolution, so the head cannot be revised afterwards. Absent
+      // until then, and absent entirely when attestations are switched off.
+      attestation:
+        settled && attestor.enabled()
+          ? await attestor.signTranscript(
+              attestor.toBytes32Id(hunt.id),
+              transcript.chainHead,
+              transcript.length,
+            )
+          : null,
+      /**
+       * What this proves, stated rather than implied: the rounds were not chosen
+       * differently per player and were not rewritten after the fact. NOT that
+       * they were fair — a live Director trades that away, and the chain is the
+       * replacement, not an equivalent.
+       */
+      proves: 'one version of events, identical for every racer',
+    };
+  });
+
   app.get('/audit/zones/:id', async req => {
     const { id } = parse(zoneParams, req.params);
     const zone = store.getZone(id);

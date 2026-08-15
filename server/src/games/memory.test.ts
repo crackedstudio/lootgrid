@@ -6,7 +6,7 @@ import type { Timing } from './types';
 
 function step(spec: MemSpec, state: MemState, sinceStart: number, sinceLast: number | null, value: unknown, kind = 'pad') {
   const timing: Timing = { sinceStart, sinceLast, intervals: [] };
-  return memoryModule.step({ spec, secret: null, state, timing }, { kind, value });
+  return memoryModule.step({ spec, secret: null, state, timing, directive: null }, { kind, value });
 }
 
 /** Plays the whole sequence correctly, starting after playback ends. */

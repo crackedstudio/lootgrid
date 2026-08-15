@@ -17,12 +17,15 @@ interface Row {
   intervals: string;
   max_clock_skew_ms: number;
   finished_at: number | null;
+  state: string | null;
 }
 
 /**
- * Note there is no `state` column. Module runtime state is meaningful only while
- * an attempt is in flight, and an in-flight attempt is intentionally lost on a
- * crash — the boot recovery below marks those abandoned and refunds the energy.
+ * `state` is opaque JSON owned by the game module, and it is only ever written
+ * for modules that declare themselves durable — the agent games, whose attempts
+ * run for minutes and must survive a deploy. Reflex attempts leave it NULL and
+ * keep the memory-only path: six seconds of state is not worth a disk write per
+ * tap, and losing it to a restart costs nobody anything.
  */
 function toDomain(r: Row): Attempt {
   return {
@@ -35,7 +38,9 @@ function toDomain(r: Row): Attempt {
     deadlineAt: r.deadline_at,
     status: r.status as AttemptStatus,
     lastSeq: r.last_seq,
-    state: null,
+    // Rehydrated on the recovery path; null everywhere else, which is what a
+    // reflex attempt has always looked like.
+    state: r.state === null ? null : (JSON.parse(r.state) as unknown),
     elapsedMs: r.elapsed_ms,
     failReason: r.fail_reason,
     progress: r.progress,
@@ -74,8 +79,17 @@ function build() {
       ON CONFLICT (attempt_id, seq) DO NOTHING
     `),
     events: db.prepare('SELECT * FROM attempt_events WHERE attempt_id = ? ORDER BY seq'),
+    // Written after every accepted input on a durable module. Progress and
+    // lastSeq ride along because a recovered attempt has to refuse the inputs it
+    // already applied — otherwise a replayed sequence would advance it twice.
+    saveState: db.prepare(
+      'UPDATE attempts SET state = @state, last_seq = @lastSeq, progress = @progress WHERE id = @id',
+    ),
+    activeWithState: db.prepare(
+      "SELECT * FROM attempts WHERE status = 'active' AND state IS NOT NULL",
+    ),
     abandonActive: db.prepare(
-      "UPDATE attempts SET status = 'abandoned', fail_reason = 'server_restart', finished_at = ? WHERE status = 'active'",
+      "UPDATE attempts SET status = 'abandoned', fail_reason = 'server_restart', finished_at = ? WHERE status = 'active' AND state IS NULL",
     ),
   };
 }
@@ -152,8 +166,35 @@ export function eventsFor(attemptId: string): AttemptEvent[] {
 }
 
 /**
- * Crash recovery. Anything still `active` at boot belongs to a process that no
- * longer exists, so it can never complete. Fail closed.
+ * Snapshot an in-flight durable attempt.
+ *
+ * Called after every accepted input on an agent game — which sounds expensive
+ * and is not: those arrive minutes apart, so this runs orders of magnitude less
+ * often than a single human attempt's taps.
+ */
+export function saveState(a: Attempt): void {
+  s().saveState.run({
+    id: a.id,
+    state: JSON.stringify(a.state),
+    lastSeq: a.lastSeq,
+    progress: a.progress,
+  });
+}
+
+/** In-flight attempts that carried state through the restart. */
+export function recoverable(): Attempt[] {
+  return (s().activeWithState.all() as Row[]).map(toDomain);
+}
+
+/**
+ * Crash recovery for attempts that cannot be resumed.
+ *
+ * Anything still `active` with no saved state belongs to a process that no
+ * longer exists and can never complete, so it fails closed. Attempts WITH state
+ * are left alone and rehydrated instead — see {@link recoverable}. Their
+ * deadlines are absolute wall-clock times, so one that expired while the server
+ * was down is swept by the referee within a tick of coming back up rather than
+ * needing separate handling here.
  */
 export function abandonActiveOnBoot(now = Date.now()): number {
   return s().abandonActive.run(now).changes;
