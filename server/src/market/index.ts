@@ -15,6 +15,8 @@ import { MAX_PRIZE_CENTS, prizeCentsFor, toTokenUnits } from '../prizes';
 import * as store from '../store';
 import type { Player } from '../types';
 import { chargeFor, isTradeable, MIN_TRADE_CENTS, splitAccrual } from './fees';
+
+export { MIN_TRADE_CENTS };
 import { hintHashOf, hintNonce } from './hash';
 import { suggestAsk } from './pricing';
 
@@ -222,6 +224,13 @@ export function bid(
   return b;
 }
 
+/** A bidder's view of their own bid. Only ever their own. */
+export function getBidFor(player: Player, bidId: string): repo.Bid | null {
+  const b = repo.getBid(bidId);
+  if (!b || b.bidderId !== player.id) return null;
+  return b;
+}
+
 export function withdrawBid(player: Player, bidId: string, now = Date.now()): void {
   const b = repo.getBid(bidId);
   if (!b) throw notFound('no_such_bid');
@@ -261,6 +270,33 @@ export async function acceptBid(player: Player, bidId: string, now = Date.now())
 
   if (!repo.setBidStatus(bidId, 'open', 'accepted', now)) throw conflict('bid_not_open');
   return quote(buyer, listing, b.priceCents, now);
+}
+
+/**
+ * The quote for a bid the seller already accepted, fetched by the bidder.
+ *
+ * `acceptBid` hands its quote back to the *seller*, who is not the party that
+ * funds — so without this a negotiated price would have no route to the buyer's
+ * wallet, and taking `buy` instead would quote the listing's ask rather than the
+ * price that was agreed.
+ *
+ * Safe to call repeatedly: `quote` reuses an unfunded trade at the same price,
+ * so this reissues rather than duplicating.
+ */
+export async function quoteAcceptedBid(
+  player: Player,
+  bidId: string,
+  now = Date.now(),
+): Promise<Quote> {
+  requireEnabled();
+
+  const b = repo.getBid(bidId);
+  if (!b) throw notFound('no_such_bid');
+  if (b.bidderId !== player.id) throw forbidden('not_your_bid');
+  if (b.status !== 'accepted') throw conflict('bid_not_accepted');
+
+  const listing = openListingOr404(b.listingId, now);
+  return quote(player, listing, b.priceCents, now);
 }
 
 function openListingOr404(listingId: string, now: number): repo.Listing {

@@ -11,6 +11,9 @@ import type { Attempt, Hunt, Player } from '../types';
 import * as budget from './budget';
 import * as identity from './identity';
 import { model } from './inference';
+import * as mailbox from './mailbox';
+import * as negotiate from './negotiate';
+import type { Message } from './protocol';
 import * as reputation from './reputation';
 import * as runtime from './runtime';
 import { isAgentGame } from './validate';
@@ -100,13 +103,209 @@ async function driveOne(agent: agentRepo.Agent, now: number): Promise<void> {
     return;
   }
 
+  // Answer the post before doing anything else. A counterparty waiting on a
+  // reply is a deal in progress, and threads expire — letting one lapse while
+  // this agent went looking for a new hunt would be losing a trade it had.
+  const inbox = answerMessages(agent, player, config, now);
+  await settleAgreements(agent, player, vault, now);
+
   // Turns first: an attempt already in flight is money already committed, and
   // finishing it beats starting another.
   const live = liveAttempts(player);
-  for (const attempt of live) await takeTurn(agent, player, attempt, config, now);
+  for (const attempt of live) await takeTurn(agent, player, attempt, config, inbox, now);
 
   if (live.length >= MAX_CONCURRENT) return;
   await enterSomething(agent, player, config, vault, now);
+}
+
+// ─────────────────────────── talking to rivals ───────────────────────────
+
+/**
+ * Read the inbox and reply.
+ *
+ * Every reply comes from {@link negotiate}, which is arithmetic — no model is
+ * consulted about whether to spend money, because a message from a rival is
+ * attacker-controlled input and the strongest containment available is that it
+ * arrives at a function which cannot be persuaded of anything.
+ *
+ * The model does still see the conversation: the inbox is passed to
+ * `runtime.schedule`, which renders it through the protocol's fixed templates so
+ * an agent deciding how to play a hunt knows what rivals are offering. What it
+ * does not get is the chequebook.
+ */
+function answerMessages(
+  agent: agentRepo.Agent,
+  player: Player,
+  config: ReturnType<typeof agentRepo.getConfig>,
+  now: number,
+): Message[] {
+  const inbox = mailbox.take(agent.id, now);
+
+  for (const message of inbox) {
+    const thread = negotiate.getThread(message.thread, now);
+    // A message naming a thread nobody opened is the cheapest thing a hostile
+    // agent can send. It costs a `continue`.
+    if (!thread) continue;
+
+    const stance = stanceFor(agent, player, thread, config, now);
+    if (!stance) continue;
+
+    const reply = negotiate.respond(agent.id, message, stance, now);
+    if (!reply) continue;
+
+    const to = thread.buyerId === agent.id ? thread.sellerId : thread.buyerId;
+    mailbox.send(agent.id, to, reply, now);
+  }
+
+  // Handed on to the turn, where `runtime` renders them through the protocol's
+  // fixed templates. The model reads what rivals said; it decided none of it.
+  return inbox;
+}
+
+/**
+ * Which side of a thread this agent is on, and what it knows.
+ *
+ * Returns null when the listing has gone — sold, cancelled or expired under the
+ * conversation. Answering about a listing that no longer exists would be
+ * negotiating over nothing.
+ */
+function stanceFor(
+  agent: agentRepo.Agent,
+  player: Player,
+  thread: negotiate.Thread,
+  config: ReturnType<typeof agentRepo.getConfig>,
+  now: number,
+): negotiate.Stance | null {
+  const listing = market.browse(null, 200, now).find(l => l.id === thread.listingId);
+  if (!listing) return null;
+
+  const side = thread.sellerId === agent.id ? 'seller' : 'buyer';
+  if (side === 'seller' && listing.sellerId !== player.id) return null;
+
+  return {
+    side,
+    config,
+    // The market's own valuation, not one this module invents. A ceiling
+    // computed here would be a second opinion about what a hint is worth.
+    rationalCeilingCents: side === 'buyer' ? listing.suggestedCents : undefined,
+    minTradeCents: side === 'seller' ? market.MIN_TRADE_CENTS : undefined,
+    reliabilityBps: listing.reliabilityBps,
+    zoneId: listing.zoneId,
+  };
+}
+
+/**
+ * Turn an agreed price into a trade.
+ *
+ * Deliberately reuses the market's existing bid path rather than inventing a
+ * second way for money to move: the buyer bids at the agreed price, the seller
+ * accepts, and the buyer funds the resulting quote through the same escrow,
+ * vouch and rake as every other trade. The conversation decides; the market
+ * still executes.
+ */
+async function settleAgreements(
+  agent: agentRepo.Agent,
+  player: Player,
+  vault: vaultChain.VaultState,
+  now: number,
+): Promise<void> {
+  if (!market.enabled()) return;
+
+  for (const thread of negotiate.agreedFor(agent.id, now)) {
+    try {
+      if (thread.buyerId === agent.id) {
+        await fundAgreed(agent, player, thread, vault, now);
+      } else {
+        await acceptAgreed(player, thread, now);
+      }
+    } catch (err) {
+      logger.warn({ err, agentId: agent.id, thread: thread.id }, 'settling an agreed price failed');
+      negotiate.close(thread.id);
+    }
+  }
+}
+
+/**
+ * Seller side: take the bid that matches what was agreed.
+ *
+ * Awaited rather than fired off. `acceptBid` is async, so `void`-ing it sends
+ * any rejection past the caller's try/catch as an unhandled rejection — and it
+ * does reject in the ordinary case where the hunt ended while the two agents
+ * were still talking.
+ */
+async function acceptAgreed(player: Player, thread: negotiate.Thread, now: number): Promise<void> {
+  const bid = market
+    .bidsFor(player, thread.listingId, now)
+    .find(b => b.status === 'open' && b.priceCents === thread.agreedCents);
+  if (!bid) return; // The buyer has not placed it yet. Next tick.
+
+  await market.acceptBid(player, bid.id, now);
+  negotiate.markSettled(thread.id, bid.id);
+}
+
+/** Buyer side: place the bid, then fund it once the seller has accepted. */
+async function fundAgreed(
+  agent: agentRepo.Agent,
+  player: Player,
+  thread: negotiate.Thread,
+  vault: vaultChain.VaultState,
+  now: number,
+): Promise<void> {
+  const price = thread.agreedCents;
+  if (price === null) return;
+
+  if (!thread.bidId) {
+    // At or above the ask there is nothing to bid on — the market refuses such a
+    // bid, correctly, so take the listing instead.
+    const listing = market.browse(null, 200, now).find(l => l.id === thread.listingId);
+    if (!listing) return negotiate.close(thread.id);
+
+    const quote =
+      price >= listing.askCents
+        ? await market.buy(player, thread.listingId, now)
+        : null;
+
+    if (quote) {
+      await fund(agent, player, thread, quote, vault, now);
+      return;
+    }
+
+    negotiate.markBid(thread.id, market.bid(player, thread.listingId, price, now).id);
+    return; // The seller accepts on their own tick.
+  }
+
+  const bid = market.getBidFor(player, thread.bidId);
+  if (!bid || bid.status !== 'accepted') return;
+
+  await fund(agent, player, thread, await market.quoteAcceptedBid(player, thread.bidId, now), vault, now);
+}
+
+async function fund(
+  agent: agentRepo.Agent,
+  player: Player,
+  thread: negotiate.Thread,
+  quote: market.Quote,
+  vault: vaultChain.VaultState,
+  now: number,
+): Promise<void> {
+  const amount = BigInt(quote.amount);
+  if (amount > vault.perTxCap || amount > vault.remainingToday) {
+    metrics.agentBudgetRefusals.inc({ reason: 'vault_cap' });
+    return negotiate.close(thread.id);
+  }
+
+  await vaultChain.sendAsAgent(player.id, vault.address, identity.fundHintTradeCall(quote));
+  budget.record(agent.id, 'hint', quote.priceCents * 1_000, {
+    huntId: quote.listingId,
+    tradeRef: quote.onChainId,
+  });
+  metrics.agentHintPurchases.inc();
+  logger.info(
+    { agentId: agent.id, thread: thread.id, priceCents: quote.priceCents },
+    'agent funded a negotiated hint trade',
+  );
+  negotiate.close(thread.id);
+  void now;
 }
 
 /**
@@ -143,6 +342,7 @@ async function takeTurn(
   player: Player,
   attempt: Attempt,
   config: ReturnType<typeof agentRepo.getConfig>,
+  inbox: Message[],
   now: number,
 ): Promise<void> {
   const hunt = store.getHunt(attempt.huntId);
@@ -162,7 +362,7 @@ async function takeTurn(
     // it the answer.
     spec: moduleSpec(hunt),
     state: attempt.state,
-    inbox: [],
+    inbox,
   });
 
   // `t` is the server's own elapsed time. A client-derived value here would be
@@ -260,6 +460,13 @@ async function considerHints(
     });
     if (!decision.ok) {
       metrics.agentBudgetRefusals.inc({ reason: decision.reason ?? 'unknown' });
+      // Too dear at the asking price is not the same as not worth having. If the
+      // seller is an agent, ask — that is the whole point of a negotiation
+      // protocol, and before this the agent simply walked past every listing
+      // priced above its limit without ever finding out whether it had to be.
+      if (decision.reason === 'hint_price') {
+        openNegotiation(agent, listing, config, now);
+      }
       continue;
     }
 
@@ -303,6 +510,38 @@ async function considerHints(
       return;
     }
   }
+}
+
+/**
+ * Open a thread with the agent behind a listing.
+ *
+ * Returns quietly when the seller is a person: a human has no inbox, and a
+ * thread nobody can answer would sit until it expired while the buyer believed
+ * it had a negotiation running. Agent-to-agent only, by construction.
+ */
+function openNegotiation(
+  agent: agentRepo.Agent,
+  listing: market.ListingView,
+  config: ReturnType<typeof agentRepo.getConfig>,
+  now: number,
+): void {
+  const seller = agentRepo.ofPlayer(listing.sellerId);
+  if (!seller || seller.status !== 'active' || seller.id === agent.id) return;
+  if (negotiate.hasThreadFor(agent.id, listing.id, now)) return;
+
+  const threadId = `th_${listing.id}_${agent.id.slice(2, 10)}`;
+  negotiate.openThread(threadId, listing.id, agent.id, seller.id, listing.askCents, now);
+
+  mailbox.send(
+    agent.id,
+    seller.id,
+    negotiate.open(agent.id, threadId, listing.zoneId, config.maxHintPriceCents, config.minReliabilityBps),
+    now,
+  );
+  logger.info(
+    { agentId: agent.id, listingId: listing.id, askCents: listing.askCents },
+    'agent opened a negotiation',
+  );
 }
 
 export function start(): void {

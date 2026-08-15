@@ -332,6 +332,32 @@ export const agentQueueDepth = new Gauge({
   registers: [registry],
 });
 
+// ---- agent to agent ----
+//
+// A rising `a2aDropped{reason="inbox_full"}` is the signal worth alerting on:
+// it means somebody is flooding, and the per-sender quota is doing its job.
+
+export const a2aMessages = new Counter({
+  name: 'lootgrid_a2a_messages_total',
+  help: 'Messages delivered between agents, by intent',
+  labelNames: ['intent'] as const,
+  registers: [registry],
+});
+
+export const a2aDropped = new Counter({
+  name: 'lootgrid_a2a_dropped_total',
+  help: 'Messages refused at the mailbox, by reason',
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
+export const a2aDeals = new Counter({
+  name: 'lootgrid_a2a_deals_total',
+  help: 'Negotiations that ended in an agreed price or a walk-away',
+  labelNames: ['outcome'] as const,
+  registers: [registry],
+});
+
 // ---- the director ----
 //
 // Phase 8 asks whether live difficulty beats deterministic generation. The
