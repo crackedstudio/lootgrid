@@ -157,6 +157,7 @@ const schema = z
      * verify against nothing.
      */
     HINT_ESCROW_ADDRESS: hexAddress.optional(),
+    HINT_BOND_ADDRESS: hexAddress.optional(),
     /**
      * Open the hint market.
      *
@@ -354,6 +355,7 @@ const schema = z
       // release the money. Neither alone completes a trade.
       for (const [key, val] of [
         ['HINT_ESCROW_ADDRESS', v.HINT_ESCROW_ADDRESS],
+        ['HINT_BOND_ADDRESS', v.HINT_BOND_ADDRESS],
         ['HINT_TOKEN_ADDRESS', v.HINT_TOKEN_ADDRESS],
         ['ATTESTOR_PRIVATE_KEY', v.ATTESTOR_PRIVATE_KEY],
         ['ESCROW_PRIVATE_KEY', v.ESCROW_PRIVATE_KEY],

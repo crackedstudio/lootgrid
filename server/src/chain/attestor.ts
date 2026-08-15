@@ -62,6 +62,8 @@ const ESCROW_DOMAIN_VERSION = '1';
  * not between contracts.
  */
 const HINT_DOMAIN_NAME = 'HintEscrow';
+const BOND_DOMAIN_NAME = 'LootgridHintBond';
+const BOND_DOMAIN_VERSION = '1';
 const HINT_DOMAIN_VERSION = '1';
 
 /**
@@ -112,6 +114,27 @@ export const TYPES = {
     {name: 'zoneId', type: 'bytes32'},
     {name: 'tier', type: 'uint8'},
     {name: 'reliabilityBps', type: 'uint16'},
+    {name: 'deadline', type: 'uint256'},
+  ],
+  /**
+   * A verdict against a hint seller, signed so `HintBond` will act on it.
+   *
+   * Note what this does NOT assert, for the same reason `Hint` above does not
+   * assert that a hint is correct: it says nothing about any individual trade.
+   * A false hint is the product working. What it attests is a *statistical*
+   * finding over a seller's delivered hints — that they were selecting the false
+   * ones — which is the one thing a seller controls and the one thing the phase 2
+   * commitment makes provable after the fact.
+   *
+   * `evidenceHash` is the commitment to that finding. The chain cannot recompute
+   * a binomial test, but pinning the evidence means a seller who disputes the
+   * slash can publish the same bytes and have anyone rerun the arithmetic.
+   */
+  Slash: [
+    {name: 'claimId', type: 'bytes32'},
+    {name: 'seller', type: 'address'},
+    {name: 'amount', type: 'uint256'},
+    {name: 'evidenceHash', type: 'bytes32'},
     {name: 'deadline', type: 'uint256'},
   ],
   /**
@@ -506,6 +529,76 @@ function hintDomain() {
 /** Whether hint vouches can be issued. Absent address => the market is off. */
 export function hintEnabled(): boolean {
   return Boolean(env.ATTESTOR_PRIVATE_KEY && env.HINT_ESCROW_ADDRESS);
+}
+
+function bondDomain() {
+  return {
+    name: BOND_DOMAIN_NAME,
+    version: BOND_DOMAIN_VERSION,
+    chainId: CHAIN_IDS[env.CHAIN],
+    verifyingContract: env.HINT_BOND_ADDRESS as Address,
+  } as const;
+}
+
+/** Whether verdicts can be signed at all. No bond contract => nothing to slash. */
+export function bondEnabled(): boolean {
+  return Boolean(env.ATTESTOR_PRIVATE_KEY && env.HINT_BOND_ADDRESS);
+}
+
+export interface SlashAttestation {
+  kind: 'slash';
+  claimId: Hex;
+  seller: Address;
+  /** Token base units, decimal string. Never a JS number. */
+  amount: string;
+  evidenceHash: Hex;
+  deadline: number;
+  signature: Hex;
+  contract: Address;
+  chainId: number;
+}
+
+/**
+ * Sign a verdict.
+ *
+ * Signing is not submitting. This produces a bearer authorisation that anyone
+ * may relay to `HintBond.slash`, exactly like the release attestation — so
+ * enforcement does not depend on this server being awake at the right moment,
+ * and the short deadline keeps an unused verdict from staying live forever.
+ */
+export async function signSlash(
+  claimId: Hex,
+  seller: Address,
+  amount: bigint,
+  evidenceHash: Hex,
+  now: number = Date.now(),
+): Promise<SlashAttestation> {
+  const deadline = deadlineFrom(now);
+
+  const signature = await signer().signTypedData({
+    domain: bondDomain(),
+    types: TYPES,
+    primaryType: 'Slash',
+    message: {
+      claimId,
+      seller,
+      amount,
+      evidenceHash,
+      deadline: BigInt(deadline),
+    },
+  });
+
+  return {
+    kind: 'slash',
+    claimId,
+    seller,
+    amount: amount.toString(),
+    evidenceHash,
+    deadline,
+    signature,
+    contract: env.HINT_BOND_ADDRESS as Address,
+    chainId: CHAIN_IDS[env.CHAIN],
+  };
 }
 
 /** Whether trades can be released. Needs the payout key as well as the vouch key. */

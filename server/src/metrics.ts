@@ -358,6 +358,25 @@ export const a2aDeals = new Counter({
   registers: [registry],
 });
 
+// ---- seller validation ----
+//
+// `sellerVerdicts{reason="slashable"}` staying at zero while the market grows is
+// the mechanism reporting that nobody is rigging their sales — or that the
+// thresholds are too high to notice. The other reasons are what tell them apart.
+
+export const sellerVerdicts = new Counter({
+  name: 'lootgrid_seller_verdicts_total',
+  help: 'Seller validation outcomes, by reason',
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
+export const sellerSlashClaims = new Counter({
+  name: 'lootgrid_seller_slash_claims_total',
+  help: 'Signed slash claims produced',
+  registers: [registry],
+});
+
 // ---- the director ----
 //
 // Phase 8 asks whether live difficulty beats deterministic generation. The
