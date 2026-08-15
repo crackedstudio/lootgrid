@@ -360,6 +360,26 @@ export const directiveDropped = new Counter({
   registers: [registry],
 });
 
+// ---- the treasury ----
+//
+// Phase 10 asks whether the economy can self-regulate. The band moving at all
+// is the answer: a `prizeBandCents` that never leaves its starting value means
+// inflow is not reaching the sizing, and the treasury is decorative.
+
+export const prizeBandCents = new Gauge({
+  name: 'lootgrid_prize_band_cents',
+  help: 'The prize in force for each difficulty',
+  labelNames: ['difficulty'] as const,
+  registers: [registry],
+});
+
+export const treasuryProposals = new Counter({
+  name: 'lootgrid_treasury_proposals_total',
+  help: 'Allocation proposals the treasury agent made',
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
 export const authFailures = new Counter({
   name: 'lootgrid_auth_failures_total',
   help: 'Rejected authentication attempts by reason',

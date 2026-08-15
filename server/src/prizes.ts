@@ -32,8 +32,23 @@ export const PRIZE_CENTS: Record<Difficulty, number> = {
 /** Hard ceiling, mirrored by the contract's `perHuntCap`. */
 export const MAX_PRIZE_CENTS = 500;
 
+/**
+ * The band in force, or the static table.
+ *
+ * Set by the treasury agent once phase 10 is running. A function rather than an
+ * import so that `prizes.ts` — which everything depends on — does not depend on
+ * the treasury in turn, and so that a treasury that is switched off leaves this
+ * module behaving exactly as it did in phase 3.
+ */
+let liveBand: (() => Record<Difficulty, number>) | null = null;
+
+export function setBandSource(source: (() => Record<Difficulty, number>) | null): void {
+  liveBand = source;
+}
+
 export function prizeCentsFor(difficulty: Difficulty): number {
-  return PRIZE_CENTS[difficulty] ?? PRIZE_CENTS.easy;
+  const band = liveBand?.() ?? PRIZE_CENTS;
+  return band[difficulty] ?? band.easy ?? PRIZE_CENTS.easy;
 }
 
 /**
