@@ -170,10 +170,10 @@ afterEach(() => {
  * `overlap` decides whether a deal is available at all: with it, the seller's
  * floor sits below the buyer's ceiling; without it, above.
  */
-function configure(overlap: boolean): { askCents: number; ceilingCents: number; floorCents: number } {
+async function configure(overlap: boolean): Promise<{ askCents: number; ceilingCents: number; floorCents: number }> {
   // List once to read the market's own valuation, then relist at a price chosen
   // against it.
-  const provisional = market.list(seller, hintId, market.MAX_ASK_CENTS);
+  const provisional = await market.list(seller, hintId, market.MAX_ASK_CENTS);
   const valuation = Math.max(2, provisional.suggestedCents);
   market.cancel(seller, provisional.id);
 
@@ -203,7 +203,7 @@ function configure(overlap: boolean): { askCents: number; ceilingCents: number; 
     minReliabilityBps: 0,
   });
 
-  market.list(seller, hintId, askCents);
+  await market.list(seller, hintId, askCents);
   return {
     askCents,
     ceilingCents,
@@ -225,7 +225,7 @@ describe('two agents reach a price', () => {
   it('opens a negotiation instead of walking past a listing it cannot afford', async () => {
     // Before this existed the agent skipped every listing above its limit
     // without ever finding out whether the price had to be that high.
-    configure(true);
+    await configure(true);
 
     await driver.tick();
 
@@ -238,7 +238,7 @@ describe('two agents reach a price', () => {
     // The listing asks 16c and the buyer's limit is 10c, so before this the
     // agent walked past it. The market values the hint at 9c and the seller's
     // floor is 8c, so a deal exists in [8, 9] — and has to actually be found.
-    const { askCents, ceilingCents, floorCents } = configure(true);
+    const { askCents, ceilingCents, floorCents } = await configure(true);
     expect(floorCents, 'fixture has no overlap to find').toBeLessThanOrEqual(ceilingCents);
 
     for (let i = 0; i < TICKS; i++) await driver.tick();
@@ -259,7 +259,7 @@ describe('two agents reach a price', () => {
     // The owner allows 10c; the market's own valuation of this hint is lower,
     // and that is the number that binds. A ceiling computed in the agent layer
     // would be a second opinion about what a hint is worth.
-    const { ceilingCents } = configure(true);
+    const { ceilingCents } = await configure(true);
     for (let i = 0; i < TICKS; i++) await driver.tick();
 
     const trades = market.myTrades(buyer);
@@ -273,7 +273,7 @@ describe('two agents reach a price', () => {
     // Ask 40c: the seller's floor lands above what the market says the hint is
     // worth, so there is nothing to find. Walking is the correct outcome, and a
     // negotiation that produced a trade here would be the buyer overpaying.
-    const { ceilingCents, floorCents } = configure(false);
+    const { ceilingCents, floorCents } = await configure(false);
     expect(floorCents, 'fixture accidentally left an overlap').toBeGreaterThan(ceilingCents);
 
     for (let i = 0; i < TICKS; i++) await driver.tick();
@@ -285,7 +285,7 @@ describe('two agents reach a price', () => {
   it('never agrees above the owner’s configured limit', async () => {
     // The limit is the owner's, and no sequence of messages from a stranger may
     // argue an agent past it.
-    const { ceilingCents } = configure(true);
+    const { ceilingCents } = await configure(true);
 
     for (let i = 0; i < TICKS; i++) await driver.tick();
 
@@ -307,7 +307,7 @@ describe('two agents reach a price', () => {
     // gone, which would make this pass for the wrong reason. A walked thread
     // stays until it expires, so it is the one that proves a second was never
     // opened on top of it.
-    configure(false);
+    await configure(false);
     const listingId = market.browse(hunt.zoneId)[0]!.id;
 
     for (let i = 0; i < 5; i++) await driver.tick();
@@ -322,7 +322,7 @@ describe('two agents reach a price', () => {
     // A person has no inbox. A thread nobody can answer would sit open until it
     // expired while the buyer believed it had a negotiation running.
     agentRepo.setStatus(sellerAgent, 'killed');
-    configure(true);
+    await configure(true);
 
     await driver.tick();
 
@@ -342,7 +342,7 @@ describe('what a rival can reach', () => {
       return { ok: true, text: '{"kind":"probe","value":{"kind":"parity","parity":"even"}}' };
     });
 
-    configure(true);
+    await configure(true);
     for (let i = 0; i < 4; i++) await driver.tick();
 
     for (const prompt of prompts) {
@@ -371,7 +371,7 @@ describe('what a rival can reach', () => {
 
   it('survives a rival flooding it', async () => {
     // The tick must keep working while somebody is abusing the mailbox.
-    configure(true);
+    await configure(true);
     for (let i = 0; i < 50; i++) {
       mailbox.send(sellerAgent, buyerAgent, { garbage: true });
     }

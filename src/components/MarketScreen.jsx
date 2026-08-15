@@ -285,7 +285,12 @@ export default function MarketScreen({ state }) {
     } catch (err) {
       // Unlike a published record, a failed payment must be visible: a player
       // who thinks they bought a hint and did not is worse off than one told so.
-      setNote(err?.code || err?.message || 'that did not work');
+      //
+      // The server's prose wins over its code where it wrote any — `not_bonded`
+      // tells a seller nothing, "post a seller bond before listing hints" tells
+      // them what to do. `ApiError.message` falls back to the code itself, so
+      // routes that send no message behave exactly as before.
+      setNote(err?.message || err?.code || 'that did not work');
     } finally {
       setBusy(false);
     }

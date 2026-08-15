@@ -669,7 +669,7 @@ export function registerRoutes(app: App): void {
     const player = await requirePlayer(req);
     const { hintId, askCents } = parse(listingBody, req.body);
     limit(`market:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'market');
-    return { listing: market.list(player, hintId, askCents) };
+    return { listing: await market.list(player, hintId, askCents) };
   });
 
   app.get('/market/listings/mine', async req => {

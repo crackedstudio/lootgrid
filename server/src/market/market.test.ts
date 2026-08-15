@@ -1,6 +1,7 @@
 import type { Hex } from 'viem';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as attestor from '../chain/attestor';
+import * as bondRead from '../chain/hintBond';
 import * as escrowRead from '../chain/hintEscrow';
 import { OnChainStatus } from '../chain/hintEscrow';
 import * as hintRepo from '../db/repos/hints';
@@ -36,6 +37,8 @@ const mut = env as {
   ESCROW_PRIVATE_KEY?: string;
   LOOTGRID_ESCROW_ADDRESS?: string;
   HINT_ESCROW_ADDRESS?: string;
+  HINT_BOND_ADDRESS?: string;
+  RPC_URL?: string;
   HINT_TOKEN_ADDRESS?: string;
   HINT_MARKET_ENABLED: boolean;
   CHAIN: 'celo' | 'celoSepolia';
@@ -91,6 +94,8 @@ afterEach(() => {
   Object.assign(mut, original);
   attestor.reset();
   escrowRead.setReaderForTests(null);
+  bondRead.setReaderForTests(null);
+  bondRead.reset();
   teardownWorld();
 });
 
@@ -113,7 +118,7 @@ function settleOnChain(quote: market.Quote): void {
 }
 
 async function sell(askCents = 10): Promise<market.Quote> {
-  market.list(seller, hintId, askCents);
+  await market.list(seller, hintId, askCents);
   const listing = market.browse(hunt.zoneId)[0]!;
   return market.buy(buyer, listing.id);
 }
@@ -121,8 +126,8 @@ async function sell(askCents = 10): Promise<market.Quote> {
 // ── listing ──────────────────────────────────────────────────────────────────
 
 describe('listing a hint', () => {
-  it('publishes the claim without publishing the hint', () => {
-    market.list(seller, hintId, 10);
+  it('publishes the claim without publishing the hint', async () => {
+    await market.list(seller, hintId, 10);
     const [listing] = market.browse(hunt.zoneId);
 
     expect(listing).toBeDefined();
@@ -134,24 +139,24 @@ describe('listing a hint', () => {
     expect(listing).not.toHaveProperty('payload');
   });
 
-  it('refuses a hint the seller does not hold', () => {
+  it('refuses a hint the seller does not hold', async () => {
     const other = hints.forHunt(hunt)[1]!.id;
-    expect(() => market.list(seller, other, 10)).toThrow(/not_your_hint/);
+    await expect(market.list(seller, other, 10)).rejects.toThrow(/not_your_hint/);
   });
 
-  it('refuses dust', () => {
-    expect(() => market.list(seller, hintId, 0)).toThrow();
+  it('refuses dust', async () => {
+    await expect(market.list(seller, hintId, 0)).rejects.toThrow();
   });
 
-  it('refuses to sell hints about a hunt that is over', () => {
+  it('refuses to sell hints about a hunt that is over', async () => {
     // A hint about a settled hunt is worth nothing, and selling one is the
     // clearest possible way to poison a market this young.
     store.setHuntStatus(store.getHunt(hunt.id)!, 'resolved', seller.id);
-    expect(() => market.list(seller, hintId, 10)).toThrow(/hunt_not_live/);
+    await expect(market.list(seller, hintId, 10)).rejects.toThrow(/hunt_not_live/);
   });
 
   it('refuses to quote against a hunt that ends mid-trade', async () => {
-    market.list(seller, hintId, 10);
+    await market.list(seller, hintId, 10);
     const listing = market.browse(hunt.zoneId)[0]!;
     store.setHuntStatus(store.getHunt(hunt.id)!, 'expired');
 
@@ -160,18 +165,18 @@ describe('listing a hint', () => {
     await expect(market.buy(buyer, listing.id)).rejects.toThrow(/hunt_not_live/);
   });
 
-  it('relists rather than duplicating', () => {
-    market.list(seller, hintId, 10);
-    market.list(seller, hintId, 20);
+  it('relists rather than duplicating', async () => {
+    await market.list(seller, hintId, 10);
+    await market.list(seller, hintId, 20);
     const listings = market.browse(hunt.zoneId);
     expect(listings).toHaveLength(1);
     expect(listings[0]!.askCents).toBe(20);
   });
 
-  it('is off when the market is not configured', () => {
+  it('is off when the market is not configured', async () => {
     mut.HINT_MARKET_ENABLED = false;
     expect(market.enabled()).toBe(false);
-    expect(() => market.list(seller, hintId, 10)).toThrow(/market_disabled/);
+    await expect(market.list(seller, hintId, 10)).rejects.toThrow(/market_disabled/);
   });
 });
 
@@ -179,7 +184,7 @@ describe('listing a hint', () => {
 
 describe('bidding', () => {
   it('takes an offer below the ask and lets the seller accept it', async () => {
-    market.list(seller, hintId, 20);
+    await market.list(seller, hintId, 20);
     const listing = market.browse(hunt.zoneId)[0]!;
 
     const bid = market.bid(buyer, listing.id, 12);
@@ -191,21 +196,21 @@ describe('bidding', () => {
     expect(marketRepo.getTrade(quote.tradeId)!.buyerId).toBe(buyer.id);
   });
 
-  it('refuses a bid at or above the ask', () => {
-    market.list(seller, hintId, 20);
+  it('refuses a bid at or above the ask', async () => {
+    await market.list(seller, hintId, 20);
     const listing = market.browse(hunt.zoneId)[0]!;
     // There is nothing to negotiate at the ask — take it instead.
     expect(() => market.bid(buyer, listing.id, 20)).toThrow(/bid_at_or_above_ask/);
   });
 
-  it('refuses a bid on your own listing', () => {
-    market.list(seller, hintId, 20);
+  it('refuses a bid on your own listing', async () => {
+    await market.list(seller, hintId, 20);
     const listing = market.browse(hunt.zoneId)[0]!;
     expect(() => market.bid(seller, listing.id, 5)).toThrow(/own_listing/);
   });
 
-  it('keeps the book private to the seller', () => {
-    market.list(seller, hintId, 20);
+  it('keeps the book private to the seller', async () => {
+    await market.list(seller, hintId, 20);
     const listing = market.browse(hunt.zoneId)[0]!;
     market.bid(buyer, listing.id, 12);
 
@@ -215,8 +220,8 @@ describe('bidding', () => {
     expect(() => market.bidsFor(rival, listing.id)).toThrow(/not_your_listing/);
   });
 
-  it('moves an existing bid rather than stacking them', () => {
-    market.list(seller, hintId, 20);
+  it('moves an existing bid rather than stacking them', async () => {
+    await market.list(seller, hintId, 20);
     const listing = market.browse(hunt.zoneId)[0]!;
     market.bid(buyer, listing.id, 5);
     market.bid(buyer, listing.id, 9);
@@ -245,20 +250,20 @@ describe('buying', () => {
   });
 
   it('refuses to sell you your own listing', async () => {
-    market.list(seller, hintId, 10);
+    await market.list(seller, hintId, 10);
     const listing = market.browse(hunt.zoneId)[0]!;
     await expect(market.buy(seller, listing.id)).rejects.toThrow(/own_listing/);
   });
 
   it('refuses to sell a hint the buyer already holds', async () => {
     hintRepo.grant(buyer.id, hintId, 'reveal');
-    market.list(seller, hintId, 10);
+    await market.list(seller, hintId, 10);
     const listing = market.browse(hunt.zoneId)[0]!;
     await expect(market.buy(buyer, listing.id)).rejects.toThrow(/already_held/);
   });
 
   it('reuses an unfunded quote instead of issuing a second trade id', async () => {
-    market.list(seller, hintId, 10);
+    await market.list(seller, hintId, 10);
     const listing = market.browse(hunt.zoneId)[0]!;
 
     const first = await market.buy(buyer, listing.id);
@@ -276,7 +281,7 @@ describe('buying', () => {
    * market would be free.
    */
   it('issues a fresh trade when the price changes', async () => {
-    market.list(seller, hintId, 20);
+    await market.list(seller, hintId, 20);
     const listing = market.browse(hunt.zoneId)[0]!;
     const atAsk = await market.buy(buyer, listing.id);
 
@@ -445,7 +450,7 @@ describe('a trade the chain does not agree with', () => {
 
 describe('the rake ledger', () => {
   async function tradeAt(cents: number, hint: string, buyerPlayer: Player): Promise<void> {
-    market.list(seller, hint, cents);
+    await market.list(seller, hint, cents);
     const listing = market.browse(hunt.zoneId).find(l => l.hintId === hint)!;
     const quote = await market.buy(buyerPlayer, listing.id);
     fundOnChain(quote);
@@ -496,5 +501,108 @@ describe('the rake ledger', () => {
     const totalMills = zone!.collectedCents * 1_000 + zone!.accruedMills;
     expect(totalMills).toBe(6 * 175);
     expect(zone!.collectedCents).toBe(1);
+  });
+});
+
+/**
+ * The seller bond, at the door.
+ *
+ * Slashing only means something if a listing costs something to make, so this is
+ * the gate that turns the bond from a contract into a requirement. The two things
+ * that can quietly go wrong: refusing everybody when the RPC hiccups without
+ * saying so, and letting everybody through for the same reason.
+ */
+describe('listing requires a bond', () => {
+  const bondOn = (answer: (seller: string) => Promise<boolean>) => {
+    mut.HINT_BOND_ADDRESS = '0x00000000000000000000000000000000000000bb';
+    mut.RPC_URL = 'http://localhost:0';
+    bondRead.reset();
+    bondRead.setReaderForTests(async seller => answer(seller));
+  };
+
+  it('changes nothing when no bond contract is configured', async () => {
+    // The same switch every other chain-backed feature here uses. An operator
+    // who has not deployed one must see phase 5's market exactly as it was.
+    expect(bondRead.enabled()).toBe(false);
+    await expect(market.list(seller, hintId, 10)).resolves.toBeDefined();
+  });
+
+  it('lets a bonded seller list', async () => {
+    bondOn(async () => true);
+    await expect(market.list(seller, hintId, 10)).resolves.toBeDefined();
+  });
+
+  it('refuses a seller with nothing at risk', async () => {
+    bondOn(async () => false);
+    await expect(market.list(seller, hintId, 10)).rejects.toMatchObject({ code: 'not_bonded' });
+    expect(market.browse(hunt.zoneId)).toHaveLength(0);
+  });
+
+  it('refuses rather than admits when the chain cannot be reached', async () => {
+    // Fails closed. Failing open would make the requirement bypassable by
+    // anyone able to make this read fail, and listing is not time-critical —
+    // nobody is racing a clock to publish a hint for sale.
+    bondOn(async () => {
+      throw new Error('connect ECONNREFUSED');
+    });
+    await expect(market.list(seller, hintId, 10)).rejects.toMatchObject({
+      code: 'bond_unavailable',
+      statusCode: 503,
+    });
+    expect(market.browse(hunt.zoneId)).toHaveLength(0);
+  });
+
+  it('does not tell a bonded seller they are unbonded', async () => {
+    // "You have no bond" and "we could not find out" must not look the same.
+    // Reporting our outage as their problem sends a seller off to post a bond
+    // they already have.
+    bondOn(async () => {
+      throw new Error('timeout');
+    });
+    // A retryable 503, never the seller-facing 403.
+    await expect(market.list(seller, hintId, 10)).rejects.toMatchObject({
+      code: 'bond_unavailable',
+      statusCode: 503,
+    });
+  });
+
+  it('asks the chain only about a listing that would otherwise succeed', async () => {
+    // Every check the server can answer itself comes first, so a malformed
+    // listing costs no RPC round trip — and a stranger cannot make the server
+    // dial out by posting junk.
+    let asked = 0;
+    bondOn(async () => {
+      asked += 1;
+      return true;
+    });
+
+    await expect(market.list(seller, hintId, 0)).rejects.toThrow();
+    await expect(market.list(buyer, hintId, 10)).rejects.toThrow(/not_your_hint/);
+    expect(asked).toBe(0);
+
+    await market.list(seller, hintId, 10);
+    expect(asked).toBe(1);
+  });
+
+  it('remembers a yes but never a no', async () => {
+    // A seller who has just posted a bond lists immediately; making them wait
+    // out a cache TTL for money they have already committed is the kind of
+    // small cruelty that makes a feature feel broken. The cost is that a seller
+    // slashed seconds ago may list once more.
+    let allowed = false;
+    let asked = 0;
+    bondOn(async () => {
+      asked += 1;
+      return allowed;
+    });
+
+    await expect(market.list(seller, hintId, 10)).rejects.toMatchObject({ code: 'not_bonded' });
+    allowed = true;
+    await expect(market.list(seller, hintId, 10)).resolves.toBeDefined();
+    expect(asked).toBe(2);
+
+    // The yes is cached: a second listing does not ask again.
+    await market.list(seller, hintId, 12);
+    expect(asked).toBe(2);
   });
 });

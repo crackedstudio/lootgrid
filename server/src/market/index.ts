@@ -1,11 +1,12 @@
 import type { Address, Hex } from 'viem';
 import * as attestor from '../chain/attestor';
+import * as bondRead from '../chain/hintBond';
 import * as escrowRead from '../chain/hintEscrow';
 import { OnChainStatus } from '../chain/hintEscrow';
 import * as hintRepo from '../db/repos/hints';
 import * as repo from '../db/repos/market';
 import { env } from '../env';
-import { badRequest, conflict, forbidden, notFound } from '../errors';
+import { badRequest, conflict, forbidden, notFound, unavailable } from '../errors';
 import * as hints from '../hints';
 import type { Hint } from '../hints/types';
 import { logger } from '../logger';
@@ -131,8 +132,20 @@ function toView(l: repo.Listing, hint: Hint | null, sold: number): ListingView {
   };
 }
 
-/** Offer a hint for sale. The seller keeps it either way. */
-export function list(player: Player, hintId: string, askCents: number, now = Date.now()): ListingView {
+/**
+ * Offer a hint for sale. The seller keeps it either way.
+ *
+ * Asynchronous because of the bond check, which is a chain read. Everything the
+ * server can answer for itself is checked first, so a seller who is not holding
+ * the hint or is pricing it illegally is refused without an RPC round trip —
+ * only a listing that would otherwise succeed costs a call.
+ */
+export async function list(
+  player: Player,
+  hintId: string,
+  askCents: number,
+  now = Date.now(),
+): Promise<ListingView> {
   requireEnabled();
 
   const hint = hintRepo.get(hintId);
@@ -149,6 +162,8 @@ export function list(player: Player, hintId: string, askCents: number, now = Dat
     throw badRequest('ask_too_low', `minimum trade is ${MIN_TRADE_CENTS}c`);
   }
   if (askCents > MAX_ASK_CENTS) throw badRequest('ask_too_high');
+
+  await requireBond(player.id);
 
   const listing = repo.putListing(
     {
@@ -167,6 +182,39 @@ export function list(player: Player, hintId: string, askCents: number, now = Dat
 
   metrics.marketListings.inc({ tier: String(hint.tier) });
   return toView(listing, hints.toPublic(hint), repo.deliveredCount(hintId));
+}
+
+/**
+ * Refuse a seller with nothing at risk.
+ *
+ * The bond is what makes a slash mean anything, so a market that let unbonded
+ * sellers list would have built the enforcement and then declined to use it.
+ * Off entirely when no bond contract is configured, which is the same switch
+ * every other chain-backed feature here uses.
+ *
+ * The two failure modes get different errors on purpose. `not_bonded` is the
+ * seller's problem and tells them what to do about it; `bond_unavailable` is
+ * ours, and quietly reporting it as the first would send a seller off to post a
+ * bond they already have.
+ */
+async function requireBond(sellerId: string): Promise<void> {
+  if (!bondRead.enabled()) return;
+
+  let allowed: boolean;
+  try {
+    allowed = await bondRead.canList(sellerId);
+  } catch (err) {
+    // Fails closed. Failing open would make the requirement bypassable by
+    // anyone able to make this read fail, and listing is not time-critical.
+    logger.warn({ err, sellerId }, 'bond check failed — refusing the listing');
+    metrics.marketListingRefusals.inc({ reason: 'bond_unavailable' });
+    throw unavailable('bond_unavailable', 'could not check your seller bond — try again');
+  }
+
+  if (!allowed) {
+    metrics.marketListingRefusals.inc({ reason: 'not_bonded' });
+    throw forbidden('not_bonded', 'post a seller bond before listing hints');
+  }
 }
 
 export function cancel(player: Player, listingId: string, now = Date.now()): void {

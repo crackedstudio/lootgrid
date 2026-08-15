@@ -201,6 +201,19 @@ export const marketListings = new Counter({
   registers: [registry],
 });
 
+/**
+ * Listings refused before they existed.
+ *
+ * `not_bonded` rising is the requirement working. `bond_unavailable` rising is
+ * an RPC problem being paid for by sellers, and is the one to alert on.
+ */
+export const marketListingRefusals = new Counter({
+  name: 'lootgrid_market_listing_refusals_total',
+  help: 'Listings refused, by reason',
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
 export const marketBids = new Counter({
   name: 'lootgrid_market_bids_total',
   help: 'Bids placed below an ask',
