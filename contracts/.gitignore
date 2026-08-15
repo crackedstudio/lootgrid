@@ -1,5 +1,8 @@
 out/
 cache/
-lib/
 broadcast/
 .env
+
+# fizz runtime state — corpora, coverage reports and regenerable metadata.
+# The suite itself (test/fizz/) and PROPERTIES.md ARE tracked.
+fizz_data/
