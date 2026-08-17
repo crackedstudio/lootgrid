@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { CASH_PER_ZONE } from './config';
 import {
+  AGENT_DIFFICULTY_WEIGHTS,
   DIFFICULTY_WEIGHTS,
   MAX_PRIZE_CENTS,
+  MIN_VIABLE_PRIZE_CENTS,
   PRIZE_CENTS,
   difficultyForBlock,
   formatPrize,
@@ -35,9 +38,23 @@ describe('prize band', () => {
 
   it('formats for humans without floating point drift', () => {
     expect(formatPrize(1)).toBe('$0.01');
-    expect(formatPrize(50)).toBe('$0.50');
+    expect(formatPrize(60)).toBe('$0.60');
     expect(formatPrize(500)).toBe('$5.00');
-    expect(prizeLabelFor('med')).toBe('$0.50');
+    expect(prizeLabelFor('med')).toBe('$1.20');
+  });
+
+  /**
+   * No tier may pay so little that its hints cannot be sold.
+   *
+   * This is the constraint the 1c tier violated, and it is the reason the
+   * market looked dead: a prize's hint ceiling is 25% of it, so anything under
+   * ~4c cannot clear `MIN_TRADE_CENTS` at all. Sixty percent of hunts were
+   * drawn in a tier whose inventory was unsellable by arithmetic.
+   */
+  it('keeps every tier above the market floor', () => {
+    for (const [tier, cents] of Object.entries(PRIZE_CENTS)) {
+      expect(cents, tier).toBeGreaterThanOrEqual(MIN_VIABLE_PRIZE_CENTS);
+    }
   });
 
   it('falls back to the cheapest prize for an unknown difficulty', () => {
@@ -125,17 +142,45 @@ describe('drawing a difficulty', () => {
     }
   });
 
-  it('keeps the expected prize close to the flat tier it replaced', () => {
-    // The distribution IS the burn rate: a hard hunt is 500x an easy one, so a
-    // third of hunts at $5 would be a different business, not a harder game.
-    const expected = DIFFICULTY_WEIGHTS.reduce(
-      (sum, [difficulty, weight]) => sum + (weight / 100) * prizeCentsFor(difficulty),
-      0,
-    );
-    expect(expected).toBeCloseTo(56.6, 1);
-    // Sixteen live hunts on a 24h TTL, against the escrow's example $100/day
-    // claim cap. A cap that binds turns a legitimate win into a revert.
-    expect(16 * MAX_PRIZE_CENTS).toBeLessThan(10_000);
+  /**
+   * The treasury has to survive its own grid.
+   *
+   * This is the check the phase 2 resize turns on. Twenty-four treasures per
+   * zone is the density a 3,600-cell map needs to feel inhabited, and twenty-
+   * four *funded* hunts per zone would burn about $168/day against a
+   * self-funded floor of $100–300 a MONTH. `CASH_PER_ZONE` is what reconciles
+   * them, so its value is a solvency parameter rather than a game-feel one and
+   * belongs under test.
+   */
+  it('funds the grid inside the self-funded monthly floor', () => {
+    const evFor = (weights: typeof DIFFICULTY_WEIGHTS) => {
+      const total = weights.reduce((sum, [, w]) => sum + w, 0);
+      return weights.reduce((sum, [d, w]) => sum + (w / total) * prizeCentsFor(d), 0);
+    };
+
+    expect(evFor(DIFFICULTY_WEIGHTS)).toBeCloseTo(114.4, 1);
+
+    // Cash hunts created per day = zones × CASH_PER_ZONE ÷ TTL in days.
+    // Four human zones on a 24h TTL, one agent zone on 72h — see store's
+    // ZONE_SEED and config's ASYNC block.
+    const perDayCents =
+      (4 * CASH_PER_ZONE) / 1 * evFor(DIFFICULTY_WEIGHTS) +
+      (1 * CASH_PER_ZONE) / 3 * evFor(AGENT_DIFFICULTY_WEIGHTS);
+    const perMonth = (perDayCents * 30) / 100;
+
+    expect(perMonth).toBeGreaterThan(100);
+    expect(perMonth).toBeLessThan(300);
+    // Deliberately in the lower half: the headline prize is meant to be
+    // concentrated into one weekly final, and routine hunts should not have
+    // spent the whole budget before that exists.
+    expect(perMonth).toBeLessThan(200);
+  });
+
+  it('leaves headroom under the escrow per-day claim cap', () => {
+    // Worst case is every live cash hunt drawn hard AND claimed on the same
+    // day. A cap that binds turns a legitimate win into a revert.
+    const liveCash = 5 * CASH_PER_ZONE;
+    expect(liveCash * MAX_PRIZE_CENTS).toBeLessThan(10_000);
   });
 
   it('never draws a prize above the per-hunt cap', () => {

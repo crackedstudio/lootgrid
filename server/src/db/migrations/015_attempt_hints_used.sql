@@ -1,0 +1,27 @@
+-- How many hints a player held about the hunt when they committed their answer.
+--
+-- The Crack's tiebreak: correct pick first, then FEWER HINTS USED. It is the
+-- third of the four anti-pay-to-win rules and the only one that lives in the
+-- scoring rather than in a cap — the player who reached the answer on fewer
+-- purchased hints beats the one who bought their way to the same answer, so
+-- spending actively costs you the close ones.
+--
+-- ─────────────────────────── why "held", not "applied" ──────────────────────
+--
+-- There is deliberately no "apply this hint" endpoint. Applying a hint is a
+-- client-side view filter over `cellMatches` and always has been; an endpoint
+-- that mutated nothing would be noise, and one that mattered would be a lie,
+-- because a player who has *seen* a hint cannot un-see it before picking.
+--
+-- So the count is what the player held about that hunt at the moment they
+-- locked. That cannot be gamed by declining to declare, and it measures the
+-- thing the rule is actually about: how much information you bought before
+-- answering.
+--
+-- Persisted rather than recomputed at resolution for two reasons. It is a fact
+-- about the moment of the decision, and hints can arrive in the fifteen seconds
+-- between locking and the reveal — recomputing later could cost someone a
+-- tiebreak for a hint that reached them after they had already committed. And
+-- it is the raw material for the post-game report card the shop sells.
+
+ALTER TABLE attempts ADD COLUMN hints_used INTEGER;

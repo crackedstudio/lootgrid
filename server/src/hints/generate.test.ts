@@ -6,6 +6,7 @@ import {
   HINTS_PER_HUNT,
   TIER_RELIABILITY_BPS,
   candidateCells,
+  candidateCount,
   cellMatches,
   parsePayload,
   quadrantOf,
@@ -87,16 +88,44 @@ describe('payloads are well formed', () => {
   });
 
   it('never describes a cell outside the grid', () => {
-    for (let i = 0; i < 200; i++) {
+    // Reduced from 200 hunts and rewritten to assert once per payload rather
+    // than once per candidate cell. `candidateCells` walks the whole map, so on
+    // a 3,600-cell grid the old shape ran ~4.3M assertions and timed out — the
+    // test was measuring vitest, not the generator.
+    for (let i = 0; i < 40; i++) {
       for (const h of hintsForHunt(makeHunt({ id: `h${i}`, salt: `s${i}` }))) {
         const cells = candidateCells(h.payload);
         expect(cells.length).toBeGreaterThan(0);
-        for (const cell of cells) {
-          expect(cell.r).toBeGreaterThanOrEqual(0);
-          expect(cell.r).toBeLessThan(GRID.rows);
-          expect(cell.c).toBeGreaterThanOrEqual(0);
-          expect(cell.c).toBeLessThan(GRID.cols);
-        }
+        const outside = cells.filter(
+          cell => cell.r < 0 || cell.r >= GRID.rows || cell.c < 0 || cell.c >= GRID.cols,
+        );
+        expect(outside, JSON.stringify(h.payload)).toEqual([]);
+      }
+    }
+  });
+
+  /**
+   * The closed-form count has to agree with the enumeration it replaced.
+   *
+   * `sharpness` is what the market prices every hint with, and it moved from
+   * walking the map to arithmetic when the grid went to 3,600 cells. That is
+   * only safe while the two definitions cannot drift, so this compares them on
+   * every shape the generator can emit — including the clamped edge cases,
+   * which is where a closed form is most likely to be wrong.
+   */
+  it('counts candidates in closed form exactly as it enumerates them', () => {
+    for (let i = 0; i < 60; i++) {
+      const hunt = makeHunt({
+        id: `count${i}`,
+        salt: `cs${i}`,
+        // Walk the corners and edges, not just the middle.
+        r: (i * 7) % GRID.rows,
+        c: (i * 11) % GRID.cols,
+      });
+      for (const h of hintsForHunt(hunt)) {
+        expect(candidateCount(h.payload), JSON.stringify(h.payload)).toBe(
+          candidateCells(h.payload).length,
+        );
       }
     }
   });

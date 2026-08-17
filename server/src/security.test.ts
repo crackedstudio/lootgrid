@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { App } from './appTypes';
+import { GRID } from './config';
 import { MODULES } from './games';
 import { tileType } from './grid';
 import { registerRoutes } from './http';
@@ -77,8 +78,39 @@ describe('map secrecy', () => {
     for (const z of zones) expect(z.seedCommit).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  const gridFor = (who: string) =>
+    app.inject({ method: 'GET', url: '/zones/ridge/grid', headers: { 'x-player': who } });
+
+  /**
+   * A cell that opens exactly one tile: no hunt on it, and not a mystery.
+   *
+   * Two sources of nondeterminism to dodge, both from randomised worlds rather
+   * than from anything these tests are about. A hunt on the cell answers 409
+   * `is_hunt`. A mystery tile opens a free neighbour, so the reveal count comes
+   * back 2 — correct behaviour that would read here as a fog leak.
+   */
+  function freeCell(): { r: number; c: number } {
+    const zone = store.getZone('ridge')!;
+    const taken = new Set(store.liveHuntsIn(zone).map(h => `${h.r},${h.c}`));
+    for (let r = 0; r < GRID.rows; r++) {
+      for (let c = 0; c < GRID.cols; c++) {
+        if (taken.has(`${r},${c}`)) continue;
+        if (tileType(zone, r, c) === 'mystery') continue;
+        return { r, c };
+      }
+    }
+    throw new Error('no plain free cell in the zone');
+  }
+
+  const open = (who: string, at: { r: number; c: number }) =>
+    app.inject({
+      method: 'POST',
+      url: `/zones/ridge/tiles/${at.r}/${at.c}/open`,
+      headers: { 'x-player': who },
+    });
+
   it('returns no unrevealed cells in the grid', async () => {
-    const res = await app.inject({ method: 'GET', url: '/zones/ridge/grid' });
+    const res = await gridFor(PLAYER);
     const grid = res.json() as { cols: number; rows: number; reveals: unknown[] };
     // A fresh zone has nothing uncovered, so the payload must describe nothing.
     expect(grid.reveals).toHaveLength(0);
@@ -86,19 +118,39 @@ describe('map secrecy', () => {
   });
 
   it('reveals a cell only after somebody spends energy on it', async () => {
-    const before = await app.inject({ method: 'GET', url: '/zones/ridge/grid' });
-    expect((before.json() as { reveals: unknown[] }).reveals).toHaveLength(0);
+    expect((await gridFor(PLAYER)).json().reveals).toHaveLength(0);
 
-    await app.inject({
-      method: 'POST',
-      url: '/zones/ridge/tiles/4/4/open',
-      headers: { 'x-player': PLAYER },
-    });
+    const cell = freeCell();
+    expect((await open(PLAYER, cell)).statusCode).toBe(200);
 
-    const after = await app.inject({ method: 'GET', url: '/zones/ridge/grid' });
-    const reveals = (after.json() as { reveals: Array<{ r: number; c: number }> }).reveals;
+    const reveals = (await gridFor(PLAYER)).json().reveals as Array<{ r: number; c: number }>;
     expect(reveals).toHaveLength(1);
-    expect(reveals[0]).toMatchObject({ r: 4, c: 4 });
+    expect(reveals[0]).toMatchObject(cell);
+  });
+
+  /**
+   * The fog is private.
+   *
+   * A shared map was a standing free hint: every tile anyone uncovered told
+   * everyone else where treasure was *not*. It also made finding treasure
+   * charity, and made fifty burner wallets cheap — one account could solve a
+   * map and the rest could ride it. Digging is now something you pay for and
+   * something only you learn from.
+   */
+  it('does not show one player what another has uncovered', async () => {
+    const OTHER = '0x00000000000000000000000000000000000000b2';
+
+    expect((await open(PLAYER, freeCell())).statusCode).toBe(200);
+
+    expect((await gridFor(PLAYER)).json().reveals).toHaveLength(1);
+    // The other player pays their own way or sees nothing.
+    expect((await gridFor(OTHER)).json().reveals).toHaveLength(0);
+  });
+
+  it('will not serve a map to an unauthenticated caller', async () => {
+    // There is no longer any such thing as "the zone's map" to serve anonymously.
+    const res = await app.inject({ method: 'GET', url: '/zones/ridge/grid' });
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
   });
 
   it('never serves a live hunt salt', async () => {
@@ -134,7 +186,9 @@ describe('game secrecy', () => {
 
   it('never returns the secret through publicSpec', () => {
     for (const [type, mod] of Object.entries(MODULES)) {
-      const { spec, secret } = mod.generate('a-salt', 'med');
+      // The cell is only meaningful to `crack`, whose answer IS the treasure;
+      // every other module ignores it.
+      const { spec, secret } = mod.generate('a-salt', 'med', { cell: { r: 12, c: 20 } });
       const pub = JSON.stringify(mod.publicSpec(spec, secret));
       if (secret !== null) {
         // Math is the only module with a secret, and it must survive this.

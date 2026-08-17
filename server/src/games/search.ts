@@ -1,4 +1,4 @@
-import { GRID, RACE, SEARCH } from '../config';
+import { RACE, SEARCH } from '../config';
 import { hashInt } from '../hash';
 import type { Difficulty } from '../types';
 import type { GameModule, StepResult } from './types';
@@ -90,8 +90,8 @@ export function evaderMove(
   probe: { r: number; c: number },
   seed: string,
   index: number,
-  rows: number = GRID.rows,
-  cols: number = GRID.cols,
+  rows: number = SEARCH.board.rows,
+  cols: number = SEARCH.board.cols,
   step: number = SEARCH.evaderStep,
 ): { r: number; c: number } {
   const options: Array<{ r: number; c: number }> = [];
@@ -127,15 +127,15 @@ export const searchModule: GameModule<SearchSpec, SearchSecret, SearchState, Sea
     const probes = SEARCH.probes[difficulty] ?? SEARCH.probes.med;
     return {
       spec: {
-        rows: GRID.rows,
-        cols: GRID.cols,
+        rows: SEARCH.board.rows,
+        cols: SEARCH.board.cols,
         probes,
         step: SEARCH.evaderStep,
         limitMs: SEARCH.limitMs,
       },
       secret: {
-        r: hashInt(seed, 'search:r') % GRID.rows,
-        c: hashInt(seed, 'search:c') % GRID.cols,
+        r: hashInt(seed, 'search:r') % SEARCH.board.rows,
+        c: hashInt(seed, 'search:c') % SEARCH.board.cols,
         seed,
       },
       limitMs: SEARCH.limitMs,

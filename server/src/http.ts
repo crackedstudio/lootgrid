@@ -10,9 +10,12 @@ import * as director from './director';
 import * as attestor from './chain/attestor';
 import * as escrowChain from './chain/escrow';
 import * as relayer from './chain/relayer';
-import { GRID } from './config';
+import { ENERGY, GRID, SURVEY, TILES } from './config';
 import { getDb } from './db/index';
 import * as energy from './energy';
+import * as funnel from './funnel';
+import * as keys from './keys';
+import * as rank from './rank';
 import { stdev } from './games/tap';
 import { inBounds, tileType } from './grid';
 import * as hints from './hints';
@@ -27,8 +30,11 @@ import * as metrics from './metrics';
 import * as ratelimit from './ratelimit';
 import * as referee from './referee';
 import * as rooms from './rooms';
+import * as shop from './shop';
 import * as store from './store';
-import type { Player } from './types';
+import * as tutorial from './tutorial';
+import * as survey from './survey';
+import type { Player, Zone } from './types';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -44,6 +50,8 @@ const tileParams = zoneParams.extend({
   c: z.coerce.number().int().min(0).max(GRID.cols - 1),
 });
 const idParams = z.object({ id: z.string().min(1).max(128) });
+const skuParams = z.object({ sku: z.string().min(1).max(64) });
+const aimBody = z.object({ huntId: z.string().min(1).max(128) });
 const hexAddress = z.string().regex(/^0x[a-fA-F0-9]{40}$/, 'must be a 0x-prefixed address');
 
 // Prices are whole cents, always. A float here would be a rounding error with a
@@ -114,6 +122,20 @@ async function requirePlayer(req: FastifyRequest): Promise<Player> {
     // A global bucket per identity, so one account cannot monopolise the box
     // no matter which mix of endpoints it hits.
     limit(`global:${player.id}`, env.RATE_GLOBAL_PER_MIN, 60_000, 'global');
+
+    // Every authenticated request passes through here, which is exactly why the
+    // activity record goes here and nowhere else — a funnel that only counts
+    // players who happened to hit an instrumented route measures the route.
+    //
+    // Costs one write per player per day, not one per request: the day row's
+    // primary key rejects the repeats. Swallows its own errors, because a
+    // measurement must never be able to fail a request it is only observing.
+    try {
+      store.markSeen(player);
+    } catch (err) {
+      logger.warn({ err, playerId: player.id }, 'activity not recorded');
+    }
+
     return player;
   } catch (err) {
     if (isAppError(err) && err.statusCode === 401) {
@@ -209,6 +231,17 @@ export function registerRoutes(app: App): void {
       handle: player.handle,
       energy: energy.view(player, Date.now()),
       trustScore: player.trustScore,
+      xp: player.xp,
+      /**
+       * The two currencies, side by side on purpose.
+       *
+       * Energy is the product and can be bought. Keys are entries and cannot
+       * be, by anyone, at any price — see keys.ts. Showing them together is
+       * what makes the boundary legible rather than a rule buried in a FAQ.
+       */
+      keys: keys.balance(player.id),
+      /** Standing, and what is still missing to climb. See rank.ts. */
+      rank: rank.rankOf(player.id),
     };
   });
 
@@ -230,7 +263,15 @@ export function registerRoutes(app: App): void {
     })),
   }));
 
+  /**
+   * One player's view of a zone.
+   *
+   * Authenticated, where it used to be public — there is no longer any such
+   * thing as "the zone's map" to serve anonymously. The hunts are common
+   * knowledge (everyone is hunting the same treasure); the fog is not.
+   */
   app.get('/zones/:id/grid', async req => {
+    const player = await requirePlayer(req);
     const { id } = parse(zoneParams, req.params);
     const zone = store.getZone(id);
     if (!zone) throw notFound('no_such_zone');
@@ -239,10 +280,21 @@ export function registerRoutes(app: App): void {
       cols: GRID.cols,
       rows: GRID.rows,
       epoch: zone.epoch,
-      // Only what has actually been uncovered. Everything else is absent and
-      // the client renders fog — the map itself never leaves the server.
-      reveals: store.revealsFor(zone),
-      hunts: store.liveHuntsIn(zone).map(h => ({
+      // Only what THIS PLAYER has uncovered. Everything else is absent and the
+      // client renders fog — the map itself never leaves the server, and one
+      // player's digs never reach another.
+      reveals: store.revealsFor(zone, player.id),
+      /**
+       * Where the player is in the first-run script, or null once it is done.
+       *
+       * Served with the grid rather than from its own endpoint because it is a
+       * property of this player's view of this map, and because a tutorial that
+       * needs a second round trip is a tutorial that stutters on 3G.
+       */
+      tutorial: tutorial.stateFor(player, zone, (r, c) => !!store.getReveal(zone, player.id, r, c)),
+      // The shared map, plus anything reserved for this player. Owned hunts are
+      // invisible to everyone else — see migration 016.
+      hunts: [...store.liveHuntsIn(zone), ...store.ownedHuntsIn(zone, player.id)].map(h => ({
         id: h.id,
         r: h.r,
         c: h.c,
@@ -252,11 +304,83 @@ export function registerRoutes(app: App): void {
         // player choosing between two hunts is choosing between those.
         difficulty: h.difficulty,
         prizeLabel: h.prizeLabel,
+        // What game this block runs, before anyone commits energy to it.
+        //
+        // The type was hidden until you had already entered, so a player chose
+        // between hunts with no idea what they were walking into. It is a
+        // property of the block, fixed by the salt at creation and checkable
+        // afterwards — hiding it protected nothing. Hide the answer, not the
+        // shape.
+        gameType: store.blockGame(store.getHunt(h.id) ?? h).type,
+        /** Non-null means this one was placed for you and only you can enter it. */
+        ownerId: h.ownerId,
         status: h.status,
         chasers: store.chaserCount(h.id),
       })),
     };
   });
+
+  /**
+   * Open free neighbours around a mystery tile.
+   *
+   * Free means free: no energy, and no hint either. A mystery that also paid
+   * hints would be strictly better than a clue at a lower rarity, and the
+   * distribution has clue at 17% against mystery at 9% precisely because a hint
+   * is meant to be the more common reward. What this buys is *map*, which is
+   * the scarce thing on a 3,600-cell grid.
+   *
+   * Skips cells holding a hunt. Handing someone a treasure they did not dig for
+   * would make the mystery tile the best thing on the board by a wide margin,
+   * and would do it invisibly.
+   */
+  function openNeighbours(
+    zone: Zone,
+    player: Player,
+    r: number,
+    c: number,
+    now: number,
+  ): Array<{ r: number; c: number; type: string; byHandle: string; at: number }> {
+    const out: Array<{ r: number; c: number; type: string; byHandle: string; at: number }> = [];
+
+    // Deterministic order, so the same mystery tile always opens the same
+    // neighbour — it is a property of the map, not of when you happened to tap.
+    const around = [
+      [-1, 0],
+      [0, 1],
+      [1, 0],
+      [0, -1],
+      [-1, -1],
+      [-1, 1],
+      [1, 1],
+      [1, -1],
+    ] as const;
+
+    for (const [dr, dc] of around) {
+      if (out.length >= TILES.mystery.freeNeighbours) break;
+      const nr = r + dr;
+      const nc = c + dc;
+      if (!inBounds(nr, nc, GRID.rows, GRID.cols)) continue;
+      if (store.huntAt(zone, nr, nc)) continue;
+      if (store.getReveal(zone, player.id, nr, nc)) continue;
+
+      const neighbour = {
+        r: nr,
+        c: nc,
+        type: tileType(zone, nr, nc),
+        byHandle: player.handle,
+        at: now,
+      };
+      // A neighbour that is itself a trap or a mystery does NOT chain. One free
+      // tile is a bonus; a cascade is an exploit, and on a map this size an
+      // unbounded chain could uncover a meaningful fraction of it for 2 energy.
+      if (store.addReveal(zone, { ...neighbour, playerId: player.id })) {
+        metrics.tilesRevealed.inc({ type: neighbour.type });
+        out.push(neighbour);
+      }
+    }
+
+    return out;
+  }
 
   app.post('/zones/:id/tiles/:r/:c/open', async req => {
     const player = await requirePlayer(req);
@@ -271,51 +395,290 @@ export function registerRoutes(app: App): void {
 
     if (store.huntAt(zone, r, c)) throw conflict('is_hunt', 'open this one from the hunt sheet');
 
-    const existing = store.getReveal(zone, r, c);
+    const existing = store.getReveal(zone, player.id, r, c);
     if (existing) return { cell: existing, energy: energy.view(player, now), alreadyOpen: true };
 
-    const spent = energy.spend(player, 1, now);
+    // The tile's type is known before it is paid for, because a trap costs
+    // double. That is the first thing in this handler that has ever read the
+    // type for anything but a label.
+    const type = tileType(zone, r, c);
+    const cost = ENERGY.costFog * (type === 'trap' ? TILES.trap.energyMultiplier : 1);
+
+    const spent = energy.spend(player, cost, now, 'dig');
     if (!spent.ok) throw conflict('insufficient_energy', 'out of energy', spent.energy);
     store.savePlayerEnergy(player);
 
-    const cell = { r, c, type: tileType(zone, r, c), byHandle: player.handle, at: now };
-    const won = store.addReveal(zone, { ...cell, playerId: player.id });
+    const cell = { r, c, type, byHandle: player.handle, at: now };
+    const opened = store.addReveal(zone, { ...cell, playerId: player.id });
 
-    if (!won) {
-      // Someone opened it between our read and our write — give the energy back.
-      const refunded = energy.refund(player, 1, now);
+    if (!opened) {
+      // The same player double-tapped: the read above missed it, the write hit
+      // the primary key. Not a lost race — under private fog there is nobody to
+      // race — so give the energy back and serve what they already had.
+      const refunded = energy.refund(player, cost, now);
       store.savePlayerEnergy(player);
-      return { cell: store.getReveal(zone, r, c), energy: refunded, alreadyOpen: true };
+      return { cell: store.getReveal(zone, player.id, r, c), energy: refunded, alreadyOpen: true };
     }
 
     metrics.tilesRevealed.inc({ type: cell.type });
 
-    // Published after the reveal is committed, never before: the chain records
-    // what happened, and a relay failure must not undo a tile the player has
-    // already paid energy for. The dedupe key is the reveal's own primary key.
-    relayer.enqueue('reveal', `reveal:${zone.id}:${zone.epoch}:${r}:${c}`, {
-      player: player.id as `0x${string}`,
-      zoneId: relayer.toBytes32Id(zone.id),
-      epoch: zone.epoch,
-      r,
-      c,
-      tileType: relayer.tileTypeCode(cell.type),
-    });
+    // ─────────────────────── no reveal goes on chain ───────────────────────
+    //
+    // This used to publish every dig, deduped on (zone, epoch, r, c). Private
+    // fog is incompatible with that in both directions: the dedupe key now
+    // collides between players who legitimately open the same tile, and — the
+    // real problem — a public per-player reveal log republishes the map, which
+    // is exactly what this phase exists to stop. A chain record of who dug
+    // where would hand any observer the pooled map we just took away.
+    //
+    // The claims that carry the audit story are untouched: hunt commitments,
+    // hint sets and their truth flags, entries, resolutions and payouts. What
+    // is lost is "every dig is on chain", the weakest of them, and the only one
+    // private fog contradicts.
 
     // Awarded after the reveal is committed, and never allowed to throw: the
     // player has already paid energy for this tile, so a hint that fails to
     // generate is a missing bonus rather than a failed request.
+    //
+    // A clue always pays; a trap pays a hint drawn from the false ones. Both
+    // draw from the hunt's committed set, so neither disturbs the published
+    // honesty numbers — see hints/index.ts.
+    // A trap is guaranteed too, not only a clue. A tile that charges double and
+    // then rolls 35% for anything at all is pure punishment — the player pays
+    // more and may learn nothing, which teaches avoidance rather than caution.
+    // Guaranteed-but-false is a real cost with a real consequence, and it is
+    // survivable: a hint that contradicts your others is itself information.
     const hint = hints.awardForReveal(
       zone.seedSecret,
       player.id,
       r,
       c,
-      store.liveHuntsIn(zone),
+      // Own hunts included, so the tutorial's first clue is about the treasure
+      // the tutorial is walking you towards. Hints target the NEAREST hunt, and
+      // the placed one is two tiles away.
+      [...store.liveHuntsIn(zone), ...store.ownedHuntsIn(zone, player.id)],
       now,
+      {
+        targetHuntId: shop.targetFor(player.id, now),
+        guaranteed:
+          type === 'clue'
+            ? TILES.clue.guaranteedHint
+            : type === 'trap'
+              ? TILES.trap.guaranteedHint
+              : false,
+        wantTrue: type === 'trap' && TILES.trap.falseHint ? false : undefined,
+      },
     );
 
-    rooms.broadcast(rooms.zoneRoom(zone.id), { t: 'tile:revealed', ...cell });
-    return { cell, energy: spent.energy, hint };
+    // A Compass charge is spent only when it actually delivered — a hint that
+    // was granted AND was about the treasure it was aimed at. A charge burned
+    // on a dig that turned up nothing would be selling five hints and handing
+    // over fewer.
+    const aimedAt = shop.targetFor(player.id, now);
+    if (hint && aimedAt && hint.huntId === aimedAt) shop.consumeCharge(player.id, now);
+
+    // A mystery tile opens a neighbour on the house. Only coherent because the
+    // fog is per-player: under a shared map this would have been spending
+    // someone else's tile.
+    const bonus = type === 'mystery' ? openNeighbours(zone, player, r, c, now) : [];
+
+    // A puzzle tile pays XP. Small — it is a garnish on exploring, not a reason
+    // to hunt for puzzle tiles specifically.
+    if (type === 'puzzle') store.awardXp(player, TILES.puzzle.xp);
+
+    // Deliberately NOT broadcast to the zone. Telling the room which tile just
+    // opened is the free-riding leak in socket form — it was how a player who
+    // spent nothing learned where treasure was not.
+    rooms.toPlayer(player.id, { t: 'tile:revealed', ...cell });
+    for (const b of bonus) rooms.toPlayer(player.id, { t: 'tile:revealed', ...b });
+
+    return {
+      cell,
+      energy: spent.energy,
+      hint,
+      bonus,
+      xp: type === 'puzzle' ? { gained: TILES.puzzle.xp, total: player.xp } : null,
+    };
+  });
+
+  /**
+   * Survey: spend energy to learn how close the nearest treasure is.
+   *
+   * Uncovers nothing. That is the point rather than a limitation — it is the
+   * only energy sink in the game that does not permanently consume part of the
+   * map, which is what lets a zone survive being played hard. See the SURVEY
+   * block in config.ts.
+   *
+   * Deliberately allowed on a cell that already holds a hunt or has already
+   * been dug: you are reading the ground from a position, not interacting with
+   * the tile, and forbidding it would leak which cells are special.
+   */
+  app.post('/zones/:id/survey/:r/:c', async req => {
+    const player = await requirePlayer(req);
+    const { id, r, c } = parse(tileParams, req.params);
+    limit(`tile:${player.id}`, env.RATE_TILE_PER_MIN, 60_000, 'tile');
+
+    const zone = store.getZone(id);
+    if (!zone) throw notFound('no_such_zone');
+    if (!inBounds(r, c, GRID.rows, GRID.cols)) throw badRequest('out_of_bounds');
+
+    const now = Date.now();
+    // The player's own reserved treasure counts. It is on the map, it is theirs
+    // to find, and a detector that could not see it would report a reading
+    // about something else — which would make the tutorial's second step a lie
+    // at exactly the moment it is teaching what Survey means.
+    const live = [...store.liveHuntsIn(zone), ...store.ownedHuntsIn(zone, player.id)];
+    // Read before charging. A zone with nothing in it would answer "cold",
+    // which implies a treasure is out there somewhere — charging six energy for
+    // a misleading answer is worse than refusing.
+    const reading = survey.read(live, r, c, now);
+    if (!reading) throw conflict('nothing_to_find', 'this zone has no live treasure');
+
+    const spent = energy.spend(player, SURVEY.cost, now, 'survey');
+    if (!spent.ok) throw conflict('insufficient_energy', 'out of energy', spent.energy);
+    store.savePlayerEnergy(player);
+
+    metrics.surveysTaken.inc({ band: reading.band });
+    return { reading, energy: spent.energy };
+  });
+
+  /**
+   * What to do when the bar is empty.
+   *
+   * ─────────────────────────── the moment this exists for ─────────────────────
+   *
+   * An empty bar is the highest-intent moment in the session — someone who has
+   * been narrowing down a patch of map and has just been stopped — and it was
+   * dead air. 108 seconds of nothing, with no prompt and no reason to come back.
+   * Phase 2 made the bar four hours, which turns a shrug into a departure
+   * unless the moment says something.
+   *
+   * So it says two things: how close the nearest treasure is, and when the bar
+   * returns. The first is a reason to come back; the second is a time to come
+   * back. Neither costs the player anything, and the warmth reading is free
+   * here on purpose — charging six energy to a player with none would be a joke
+   * at their expense.
+   *
+   * The refill offer belongs here too and is not built: there is no shop until
+   * phase 7. That is the one thing this endpoint is shaped for and does not yet
+   * do.
+   */
+  app.get('/zones/:id/stuck', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(zoneParams, req.params);
+    const zone = store.getZone(id);
+    if (!zone) throw notFound('no_such_zone');
+
+    const now = Date.now();
+    const view = energy.view(player, now);
+    const live = [...store.liveHuntsIn(zone), ...store.ownedHuntsIn(zone, player.id)];
+
+    // Warmth from the last place they dug, which is where their attention is.
+    // Falling back to the middle of the map is honest but much less useful, so
+    // it is only for someone who has not dug at all.
+    const mine = store.revealsFor(zone, player.id);
+    const from = mine.length > 0
+      ? mine.reduce((latest, r) => (r.at > latest.at ? r : latest))
+      : { r: Math.floor(GRID.rows / 2), c: Math.floor(GRID.cols / 2) };
+
+    const reading = survey.read(live, from.r, from.c, now);
+
+    return {
+      energy: view,
+      /** Where the reading was taken from, so the client can point at it. */
+      from: { r: from.r, c: from.c },
+      /** Null only when the zone holds nothing at all. */
+      nearest: reading ? { band: reading.band } : null,
+      /** Enough energy for one dig — what "come back" actually means. */
+      digCostEnergy: ENERGY.costFog,
+      // Time until a DIG is affordable, not until the next single point lands.
+      // At two energy a dig and one point every six minutes, "next regen" would
+      // routinely promise the bar back twice as soon as it is actually usable.
+      msUntilPlayable:
+        view.value >= ENERGY.costFog
+          ? 0
+          : view.nextRegenMs + (ENERGY.costFog - view.value - 1) * ENERGY.regenMs,
+      /** XP hunts stay open when cash ones do not; say so rather than imply it. */
+      hintsHeld: hints.countForPlayer(player.id, now),
+    };
+  });
+
+  /**
+   * The five numbers, in one place.
+   *
+   * Prometheus carries all of these and is the right home for graphing them,
+   * but a funnel nobody can read without a Grafana login is a funnel nobody
+   * reads. This is the version you can curl during a playtest.
+   */
+  app.get('/audit/funnel', async () => funnel.report());
+
+  // ---- shop ----
+
+  /**
+   * What is for sale, and what this player already holds.
+   *
+   * The catalogue is a constant in code rather than a table, and served from
+   * there — see shop/catalogue.ts for why the set of sellable things is closed.
+   */
+  app.get('/shop', async req => {
+    const player = await requirePlayer(req);
+    return shop.stateFor(player.id);
+  });
+
+  /**
+   * Buy something.
+   *
+   * Payment goes through the same x402 path entry fees use: a 402 carrying the
+   * terms and a ready-to-sign payload, then the client signs and retries. When
+   * fees are switched off — the default — the shop still works and records the
+   * purchase at its listed price, which is what lets the whole flow be exercised
+   * without a facilitator.
+   */
+  app.post('/shop/:sku/buy', async (req, reply) => {
+    const player = await requirePlayer(req);
+    const { sku } = parse(skuParams, req.params);
+    limit(`shop:${player.id}`, env.RATE_ATTEMPT_PER_MIN, 60_000, 'shop');
+
+    const item = shop.itemFor(sku);
+    if (!item) throw notFound('no_such_item');
+
+    let paymentRef: string | null = null;
+    if (x402.enabled()) {
+      const terms = x402.termsFor(`shop/${item.sku}`, item.priceCents);
+      const settled = await x402.settleEntry(terms, headerOrNull(req, 'x-payment'));
+      if (!settled.ok) {
+        const challenge = x402.challengeFor(terms, player.id as `0x${string}`);
+        return reply.code(402).send(x402.paymentRequiredBody(terms, challenge));
+      }
+      paymentRef = settled.reference;
+    }
+
+    return shop.fulfil(player, item, paymentRef);
+  });
+
+  /** Spend a banked refill. Free — it was paid for when it was bought. */
+  app.post('/shop/refill/use', async req => {
+    const player = await requirePlayer(req);
+    const now = Date.now();
+    if (!shop.useRefillCredit(player, now)) throw conflict('no_refills_left');
+    return { energy: energy.view(player, now) };
+  });
+
+  /**
+   * Point a Compass at a treasure.
+   *
+   * Free and separate from buying one: choosing a target at the checkout would
+   * mean choosing before you had a reason to prefer any.
+   */
+  app.post('/shop/compass/aim', async req => {
+    const player = await requirePlayer(req);
+    const { huntId } = parse(aimBody, req.body);
+
+    const hunt = store.getHunt(huntId);
+    if (!hunt || hunt.status !== 'live') throw notFound('no_such_hunt');
+    if (!shop.aim(player.id, huntId)) throw conflict('no_compass');
+
+    return { aimedAt: huntId, entitlements: shop.stateFor(player.id).entitlements };
   });
 
   /**
@@ -394,7 +757,14 @@ export function registerRoutes(app: App): void {
     }
 
     const result = referee.openAttempt(player, hunt);
-    if (!result.ok) throw conflict(result.error);
+    if (!result.ok) {
+      // The refusal's detail travels with it. A money-gate refusal that says
+      // only "no" reads as rigged; one that says "two more days" is something
+      // a player can act on, and it gives away nothing an attacker could not
+      // read in rank.ts. `shadow_banned` never reaches here — it is disguised
+      // as `hunt_not_live` inside the referee.
+      throw conflict(result.error, undefined, result.detail);
+    }
 
     return {
       attemptId: result.attempt.id,

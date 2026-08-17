@@ -22,10 +22,38 @@ import type { Difficulty, ZoneKind } from './types';
  * are 6dp — so `toTokenUnits` takes the decimals rather than assuming.
  */
 
-/** Prize in cents, per difficulty. */
+/**
+ * The floor a prize has to clear to have a hint market at all.
+ *
+ * ─────────────────────────── why 1c had to go ───────────────────────────
+ *
+ * `market/pricing.ts` caps what a hint may be worth at {@link MAX_VALUE_SHARE}
+ * — a quarter of the prize — because a hint governs *discovery*, not victory.
+ * On a 1c hunt that ceiling is a quarter of a cent, which is below
+ * `MIN_TRADE_CENTS`, so `suggestAsk` refused to price those hints at all. Sixty
+ * percent of every hunt drawn was in that tier.
+ *
+ * That is the whole reason the market looked dead. Three phases built listing,
+ * bonding, slashing, reputation and negotiation on top of an inventory that was
+ * mostly unsellable *by arithmetic* — not because nobody wanted it. Raising the
+ * floor is the one-line change that turns the market on.
+ *
+ * 60c is the lowest prize whose 25% ceiling (15c) leaves room for a real
+ * spread between a broad hint and a sharp one.
+ */
+export const MIN_VIABLE_PRIZE_CENTS = 60;
+
+/**
+ * Prize in cents, per difficulty.
+ *
+ * The 1c tier is deleted — not by removing `easy`, which is also the *game's*
+ * difficulty and still wants to exist for players who are new, but by lifting
+ * the cheapest prize to {@link MIN_VIABLE_PRIZE_CENTS}. An easy hunt is still
+ * an easy game; it is no longer a hunt whose hints cannot legally be sold.
+ */
 export const PRIZE_CENTS: Record<Difficulty, number> = {
-  easy: 1, // $0.01
-  med: 50, // $0.50
+  easy: MIN_VIABLE_PRIZE_CENTS, // $0.60
+  med: 120, // $1.20
   hard: 500, // $5.00
 };
 
@@ -56,28 +84,29 @@ export function prizeCentsFor(difficulty: Difficulty): number {
  *
  * ─────────────────────────── why not uniform ───────────────────────────
  *
- * The prize band spans two orders of magnitude — a hard hunt is 500× an easy
- * one — so the distribution *is* the treasury's burn rate. A third of hunts at
- * $5 would be a different business, not a harder game.
+ * The prize band spans an order of magnitude, so the distribution *is* the
+ * treasury's burn rate. A third of hunts at $5 would be a different business,
+ * not a harder game.
  *
- * At these weights a hunt costs 56.6c in expectation:
+ * At these weights a hunt costs 114.4c in expectation:
  *
- *     0.60 × 1c  +  0.32 × 50c  +  0.08 × 500c  =  56.6c
+ *     0.60 × 60c  +  0.32 × 120c  +  0.08 × 500c  =  114.4c
  *
- * Sixteen live hunts (4 zones × {@link HUNTS_PER_ZONE}) on a 24h TTL is roughly
- * $9/day of funding, against $8 for the flat `med` this replaces. Worst case —
- * every hunt hard, every one claimed — is $80/day, which still sits under the
- * escrow's example per-day claim cap of $100. A cap that binds turns a
- * legitimate win into a revert, so leaving that headroom is the point.
+ * Burn is now governed by how many hunts carry money at all rather than by how
+ * many exist — see `CASH_PER_ZONE` in config.ts, which carries the full
+ * arithmetic. Four cash hunts a day across the world lands near $156/month,
+ * inside the $100–300 self-funded floor with room left for a concentrated
+ * weekly prize.
  *
- * ─────────────────────────── the tension ───────────────────────────
+ * ─────────────────────────── the tension, resolved ──────────────────────────
  *
- * `easy` is the knob with two opposite pulls, and it is worth knowing which way
- * you are turning it. Raising it lowers burn and keeps a no-risk hunt always on
- * the grid — but easy hunts have a 1c prize, and no hint price above zero is
- * rational against that (market/pricing.ts), so their hints are unsellable and
- * a high `easy` share thins the hint market. Lowering it does the reverse.
- * Phase 10 replaces this table with sizing driven by real deposit inflow.
+ * `easy` used to be a knob with two opposite pulls: raising it lowered burn but
+ * thinned the hint market, because an easy hunt paid 1c and no hint price above
+ * zero was rational against that. Lifting the floor to
+ * {@link MIN_VIABLE_PRIZE_CENTS} removes the conflict — every tier now clears
+ * the market's floor, so the weights are purely a burn-rate decision and can be
+ * tuned as one. Phase 10 replaces this table with sizing driven by real deposit
+ * inflow.
  */
 export const DIFFICULTY_WEIGHTS: ReadonlyArray<readonly [Difficulty, number]> = [
   ['easy', 60],
@@ -88,12 +117,12 @@ export const DIFFICULTY_WEIGHTS: ReadonlyArray<readonly [Difficulty, number]> = 
 /**
  * The same table for agent zones, with `easy` removed.
  *
- * Not a balance choice — arithmetic. An easy hunt pays 1c, and a hunt's worth of
- * agent thinking costs roughly 0.3c at measured DeepSeek pricing (agents/
- * budget.ts). That is 27% of the prize on the cheap model and 83% on the
- * expensive one, so at more than two entrants an agent that enters is paying to
- * lose. A rational one refuses, and a house that keeps offering hunts no
- * rational player will enter is just leaving dead squares on the grid.
+ * This was arithmetic when an easy hunt paid 1c against ~0.3c of agent thinking
+ * — an agent that entered was paying to lose, and a house offering hunts no
+ * rational player enters is just leaving dead squares on the grid. At the
+ * raised floor a 60c hunt clears that bar comfortably, so `easy` is now
+ * excluded for a softer reason: an agent zone exists to pose problems worth
+ * reasoning about, and the easy table is four probes of slack.
  *
  * Weighted toward `med` rather than mirroring the human split: hard hunts are
  * $5, and one agent zone drawing them a third of the time would cost more per

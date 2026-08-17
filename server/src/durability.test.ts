@@ -45,6 +45,7 @@ function seedAttempt(over: Partial<Attempt> = {}, who = PLAYER): Attempt {
     lastSeq: 0,
     state: null,
     elapsedMs: null,
+    hintsUsed: null,
     failReason: null,
     progress: 0,
     intervals: [],

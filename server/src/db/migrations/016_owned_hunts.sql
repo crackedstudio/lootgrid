@@ -1,0 +1,41 @@
+-- A hunt reserved for one player.
+--
+-- ─────────────────────────── what this is for ───────────────────────────
+--
+-- The first eight minutes are where players quit, and the measured reason is
+-- that four out of five never find anything at all. A new player's first bar
+-- bought a handful of taps against twenty-four treasures on 3,600 tiles; the
+-- odds of stumbling onto one in the first minute are about two percent.
+--
+-- Every top-grossing mobile game hands you the fantasy inside sixty seconds and
+-- none of them leave it to chance. Clash Royale's tutorial battle cannot be
+-- lost; Candy Crush level one cannot be failed. So the first treasure is not
+-- found, it is *placed* — next to where the player starts, reachable in three
+-- directed taps.
+--
+-- ─────────────────────────── why a column and not a zone ────────────────────
+--
+-- A separate tutorial zone would need its own map, its own replenishment and
+-- its own bots, and would teach the game somewhere the game is not. A nullable
+-- owner is one column and one predicate: an owned hunt is invisible to everyone
+-- else and enterable only by its owner, and it sits on the real map among the
+-- real treasures, which is the thing being taught.
+--
+-- It is also the mechanism a sponsored or personal hunt would want later, which
+-- is a reason to get the shape right now rather than special-casing "tutorial"
+-- everywhere.
+--
+-- ─────────────────────────── the money boundary ─────────────────────────────
+--
+-- Owned hunts are XP-only, enforced in code rather than here. The review asks
+-- for a tutorial that "pays a real prize", but §7a is the later and stronger
+-- rule: no real money in a zone until the gate is live, and a tutorial cash
+-- prize is real money handed to an ungated brand-new wallet — fifty wallets,
+-- fifty prizes. What the tutorial actually has to deliver is the *fantasy* of
+-- finding treasure and winning, which energy and XP deliver without reopening
+-- the sybil hole phase 5 just closed.
+
+ALTER TABLE hunts ADD COLUMN owner_id TEXT;
+
+-- Every hunt read is either "the shared map" (owner_id IS NULL) or "mine".
+CREATE INDEX idx_hunts_owner ON hunts (owner_id) WHERE owner_id IS NOT NULL;

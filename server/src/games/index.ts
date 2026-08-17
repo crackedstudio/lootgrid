@@ -1,5 +1,6 @@
 import { hashInt } from '../hash';
 import type { GameType, HuntKind, ZoneKind } from '../types';
+import { crackModule } from './crack';
 import { deductionModule } from './deduction';
 import { mathModule } from './math';
 import { memoryModule } from './memory';
@@ -11,6 +12,7 @@ import type { AnyGameModule } from './types';
 
 /** Register a module here and the rest of the system picks it up unchanged. */
 export const MODULES: Record<GameType, AnyGameModule> = {
+  crack: crackModule,
   tap: tapModule,
   math: mathModule,
   sequence: sequenceModule,
@@ -27,11 +29,27 @@ export function moduleFor(type: GameType): AnyGameModule {
 }
 
 /**
- * Memory is deliberately absent. The client has to be told the sequence in
- * order to play it back, so it is the easiest of the four to automate — it
- * guards XP only, never money.
+ * One way to win money, and it is not tapping speed.
+ *
+ * This was `['tap', 'math', 'sequence']` — reflex and arithmetic games where
+ * the prize went to whoever was fastest. Every deep competitive game has
+ * exactly one way to win (poker: best hand; chess: checkmate) and puts all its
+ * variety upstream of that. The variety here is the map, the hints and the
+ * market; the decision is The Crack.
+ *
+ * The four reflex modules are not deleted. They move to puzzle hunts, where
+ * they guard XP — flavour that costs nobody a prize when their phone stutters.
  */
-const HUMAN_CASH_GAMES: GameType[] = ['tap', 'math', 'sequence'];
+const HUMAN_CASH_GAMES: GameType[] = ['crack'];
+
+/**
+ * XP games. Reflexes and arithmetic, where losing to a slow phone costs pride.
+ *
+ * Memory is here rather than in any cash pool for the reason it always was: the
+ * client must be told the sequence in order to play it back, so it is the
+ * easiest of the four to automate.
+ */
+const PUZZLE_GAMES: GameType[] = ['tap', 'math', 'sequence', 'memory'];
 
 /**
  * Cash games for agent zones — the phase 6 modules, and only those.
@@ -80,8 +98,13 @@ export function gameTypeForBlock(
   zoneKind: ZoneKind = 'human',
 ): GameType {
   // Puzzle hunts guard XP, never money, so the automation argument does not
-  // apply and both zone kinds share the module.
-  if (huntKind === 'puzzle') return 'memory';
+  // apply and both zone kinds share the pool. Drawn from the salt like
+  // everything else about a block, rather than hardcoded to `memory` — three of
+  // the four modules had never once been served since the cash pool stopped
+  // drawing them.
+  if (huntKind === 'puzzle') {
+    return PUZZLE_GAMES[hashInt(salt, huntId, 'puzzlegame') % PUZZLE_GAMES.length]!;
+  }
 
   const pool = cashGamesFor(zoneKind);
   if (pool.length === 0) {

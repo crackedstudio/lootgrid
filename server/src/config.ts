@@ -3,18 +3,309 @@
  * expect to change them once real humans on real Android hardware have played.
  */
 
+/**
+ * The map.
+ *
+ * ─────────────────────────── why it got big ───────────────────────────
+ *
+ * 216 cells with four treasures on them is 1.85% density: a new player's first
+ * energy bar bought twelve taps and a one-in-five chance of finding anything.
+ * Brute force was not just viable, it was the *dominant* strategy — and a game
+ * whose best line is "tap everything" has no use for the deduction, the hints
+ * or the market that three phases were spent building.
+ *
+ * At 3,600 cells a full cycle's energy uncovers a few percent of the map.
+ * Sweeping stops working, and reading the hints becomes the only way to play.
+ * The grid is not big to be impressive; it is big to make information the
+ * scarce thing.
+ *
+ * ─────────────────────────── what scales with it ───────────────────────────
+ *
+ * This is not a number you can change alone, and everything downstream of it is
+ * now *derived* rather than hand-tuned, so the next change is a one-liner:
+ *
+ *   * hint band widths and distance radii — see hints/types.ts. They were
+ *     constants picked against 216 cells, and carried over unchanged they would
+ *     have turned every tier-3 hint into a near-exact answer.
+ *   * `DEDUCTION.budget`, which is a function of ⌈log₂ cells⌉ (below).
+ *   * `hints/types.ts` MID_ROW / MID_COL, already derived.
+ *
+ * {@link SEARCH} deliberately does NOT scale with it. See the note there.
+ */
 export const GRID = {
-  cols: 12,
-  rows: 18,
+  cols: 60,
+  rows: 60,
 } as const;
 
+/** Cells on the map. The quantity most of the derivations below are about. */
+export const GRID_CELLS = GRID.rows * GRID.cols;
+
+/**
+ * How long a map lives before it is torn up and reprinted.
+ *
+ * ─────────────────────────── why a world needs an end ───────────────────────
+ *
+ * Reveals are permanent within an epoch, so without rotation a zone is a
+ * consumable: every dig removes a tile from the world and none ever come back.
+ * One player working through an energy bar every 108 seconds strips a 216-cell
+ * grid in about half an hour, and nothing in the system replaces what they
+ * took. The schema has been ready for this since phase 0 — `zones.rotates_at`
+ * and `zone_seed_history` were written for it — but nothing ever bumped the
+ * epoch, so the fog only ever thinned.
+ *
+ * ─────────────────────────── per zone, not global ───────────────────────────
+ *
+ * `rotates_at` is a per-zone column and rotation reads it per zone, so this is
+ * only the default for a freshly seeded world. Staggering zones is the point:
+ * every map resetting on the same tick would empty the whole game at once.
+ */
+export const EPOCH = {
+  /** Default lifetime of a map. Three days — long enough to be worth learning. */
+  rotateMs: 3 * 24 * 60 * 60 * 1000,
+} as const;
+
+/**
+ * Energy.
+ *
+ * ─────────────────────────── it has to be a real limit ──────────────────────
+ *
+ * A full bar used to refill in **108 seconds**. Nobody has ever paid money to
+ * skip under two minutes, so the thing the business plans to sell could not be
+ * sold — and nothing carried between sessions, so there was no reason to come
+ * back tomorrow. A four-hour refill makes the bar something you spend
+ * deliberately and something a Cycle Pass can meaningfully accelerate.
+ *
+ * 40 at 4h is one point every six minutes: 240/day, 720 over a three-day cycle.
+ * Against 3,600 cells that is a few percent of the map per cycle even before
+ * Survey starts competing for the same bar — which is the point. You cannot
+ * sweep your way to a treasure any more.
+ *
+ * `costFog` is 2 now that Survey exists to compete with it. The two prices are
+ * the whole choice the player makes each turn: a dig at 2 buys one tile of
+ * certainty, a survey at 6 buys a reading over the whole neighbourhood and
+ * consumes no map. Three digs to one survey is the exchange rate, and it is
+ * meant to make surveying the obvious opener and digging the way you finish.
+ */
 export const ENERGY = {
-  max: 12,
-  start: 9,
-  regenMs: 9_000,
-  costFog: 1,
+  max: 40,
+  /** 75% of a bar, as before — enough to matter, short of full. */
+  start: 30,
+  /** 4h ÷ 40. */
+  regenMs: 360_000,
+  costFog: 2,
   costCashHunt: 3,
   costPuzzleHunt: 2,
+} as const;
+
+/**
+ * What the five tile types actually do.
+ *
+ * ─────────────────────────── the first tap taught a lie ─────────────────────
+ *
+ * `grid.ts` has labelled tiles empty / clue / trap / mystery / puzzle since
+ * phase 0, and **none of them did anything**. A trap cost nothing. A clue gave
+ * no clue. The onboarding copy promised "clues run warm when treasure is near"
+ * about a mechanic that did not exist anywhere in the game. A new player's very
+ * first tap was a lesson that our words are decorative — which is an expensive
+ * thing to teach in the first fifteen seconds.
+ *
+ * The distribution is unchanged (56/17/12/9/6). Only the consequences are new,
+ * and each is chosen to push toward the same thing: knowing more about *where*
+ * rather than getting more of *what*.
+ */
+export const TILES = {
+  /** A clue always pays a hint. The 35% drop roll is skipped, not improved. */
+  clue: { guaranteedHint: true },
+  /**
+   * A trap costs double and hands you a hint drawn from the false ones.
+   *
+   * The hint comes out of the hunt's already-committed set, so the published
+   * honesty numbers are untouched — see `pickFrom` in hints/index.ts. It is a
+   * real cost with a real consequence, and it is survivable: a false hint that
+   * contradicts your others is itself information, which is why traps make the
+   * deduction better rather than merely more expensive.
+   */
+  trap: { energyMultiplier: 2, falseHint: true, guaranteedHint: true },
+  /** Opens one neighbour for free. Only coherent because fog is per-player. */
+  mystery: { freeNeighbours: 1 },
+  /** Pays XP. Not cash — see the four rules in §7b of the review. */
+  puzzle: { xp: 10 },
+} as const;
+
+/** XP for finding a treasure that carries no money. Most of them. */
+export const PUZZLE_HUNT_XP = 50;
+
+/**
+ * Survey: the hot/cold detector.
+ *
+ * ─────────────────────────── why this exists ───────────────────────────
+ *
+ * There was exactly one thing to do in this game — uncover a tile — and that
+ * was the poverty at the centre of it. Digging is a slot machine: you pay, you
+ * mostly get nothing, and nothing you learn compounds. Survey is the thinking
+ * move. Three readings from different places triangulate a location the way
+ * three people pointing at a sound locate its source, which is a puzzle rather
+ * than a pull of the lever.
+ *
+ * It does four jobs at once, and the last two are the ones that make it worth
+ * its cost:
+ *
+ *   1. It is the actual deduction the whole economy is priced around.
+ *   2. **It burns energy without consuming map.** On a 3,600-cell grid that is
+ *      what lets a zone survive being played hard — see EPOCH. Every other
+ *      energy sink takes a tile out of the world permanently.
+ *   3. It makes the onboarding true. "Clues run warm when treasure is near" has
+ *      been on the tutorial card since phase 0 describing a mechanic that did
+ *      not exist. Survey *is* warmth.
+ *   4. It always tells you something. There is no wasted spend, which is what a
+ *      35% hint drop cannot say.
+ *
+ * ─────────────────────────── the vagueness is the knob ──────────────────────
+ *
+ * Bands, not distances. A number would collapse the game: two readings and a
+ * little arithmetic give an exact answer, and the map stops mattering. Coarse
+ * bands mean a reading narrows the field without solving it, so three or four
+ * of them from different places are worth more than one precise one.
+ *
+ * The review left "how vague" explicitly open and said to start coarse and tune
+ * from real data. These are deliberately wide — it is far easier to sharpen a
+ * detector players find useless than to blunt one that has already taught them
+ * the game is trivial.
+ */
+export const SURVEY = {
+  /** Three times a dig. It has to compete with digging, not replace it. */
+  cost: 6,
+  /**
+   * Chebyshev distance to the nearest treasure, in bands. Upper bounds,
+   * inclusive; anything past the last is `cold`.
+   *
+   * Scaled to the map: `burning` is a 5-cell reach on a 60-wide grid, so a
+   * burning reading leaves ~121 candidate cells — narrow enough to be thrilling
+   * and wide enough to still need work.
+   */
+  bands: [
+    { name: 'burning', within: 5 },
+    { name: 'hot', within: 12 },
+    { name: 'warm', within: 25 },
+    { name: 'cool', within: 40 },
+  ],
+  /** Everything beyond the last band. */
+  coldest: 'cold',
+} as const;
+
+/**
+ * Keys — the second currency, and the one that cannot be bought.
+ *
+ * Energy buys digging and surveying: exploration and information, sold freely,
+ * and the actual product. Keys buy entry to a cash hunt, and nothing buys keys
+ * — not money, not referrals, not a streak.
+ *
+ * See keys.ts for why there is deliberately no balance to credit. The numbers
+ * here are the entire configuration surface, and `perDay` is meant to be
+ * invisible: there are about four cash treasures on the whole map in a day, so
+ * a normal player never approaches five. A good cap is invisible to normal
+ * players and painful to abusers.
+ */
+export const KEYS = {
+  perDay: 5,
+  /** Fixed UTC days rather than a rolling window — see the escrow's daily cap
+   *  for the same reasoning: a sliding window needs stored history to prove the
+   *  same property, and the cap exists to bound damage, not to be precise. */
+  dayMs: 24 * 60 * 60 * 1000,
+} as const;
+
+/**
+ * Prospector rank, and what a cash hunt requires of it.
+ *
+ * The numbers are deliberately modest. This gate exists to make a *farm*
+ * expensive, not to make a first cash hunt hard to reach — a real player who
+ * digs for two or three days clears it without noticing, while fifty burner
+ * wallets need fifty times that in energy and, crucially, the same two or three
+ * days each. Time is the axis an attacker cannot buy.
+ *
+ * See rank.ts for why the gate is time-and-volume while the ladder above it is
+ * accuracy, and why conflating the two would break both.
+ */
+export const RANK = {
+  /** Hints that have resolved — held on hunts which have since closed. */
+  minResolvedHints: 6,
+  /** Distinct UTC days on which hints were acquired. The part money cannot rush. */
+  minActiveDays: 2,
+  /** The tier a cash hunt demands. Everything below it is refused with a reason. */
+  minTierForCash: 'prospector' as const,
+
+  /** Above the gate the ladder is accuracy. 60% and 75% of held hints true. */
+  surveyor: { resolved: 20, accuracyBps: 6_000 },
+  cartographer: { resolved: 60, accuracyBps: 7_500 },
+} as const;
+
+/**
+ * Wallet age, and the tier a cash hunt demands.
+ *
+ * ─────────────────────────── what age actually buys ─────────────────────────
+ *
+ * An empty new wallet costs nothing to create — that is the whole sybil
+ * problem in one sentence. A wallet with history is a different object: it took
+ * real time, and in `AUTH_MODE=chain` it took real transactions someone paid
+ * for.
+ *
+ * The honest limitation, stated rather than hidden: this measures when the
+ * account first appeared *to us*, not the age of the wallet on chain. An
+ * attacker who registers fifty wallets today and waits two days defeats it, and
+ * the rank gate is what makes that wait expensive rather than merely long —
+ * they must also *play* on each of those days. Reading true wallet age from
+ * chain is the stronger check and belongs with the on-chain identity work; this
+ * is the part that can be enforced without an RPC on the entry path.
+ */
+export const WALLET = {
+  /** How long an account must have existed before it can win money. */
+  minAgeMs: 2 * 24 * 60 * 60 * 1000,
+  /** Mirrors RANK.minTierForCash; kept here so `admission.ts` reads one config. */
+  minTierForCash: 'prospector' as const,
+} as const;
+
+/**
+ * The first sixty seconds.
+ *
+ * Four out of five new players never found a single treasure in their first
+ * session, and that was on a grid a seventeenth of the current size. No
+ * top-grossing mobile game leaves the first win to chance — this one does not
+ * either. See tutorial.ts.
+ */
+export const TUTORIAL = {
+  /** Keep the start cell off the edges, so all eight neighbours exist. */
+  margin: 4,
+  /**
+   * Where the placed treasure sits relative to the start cell.
+   *
+   * Close enough to reach in one move after the survey, far enough that the
+   * survey is doing visible work rather than pointing at the tile you are
+   * standing on. Chebyshev distance 2 reads `burning` on the SURVEY bands.
+   */
+  treasureOffset: { r: 2, c: 1 },
+  /** Long enough to survive a session and a night's sleep. */
+  ttlMs: 48 * 60 * 60 * 1000,
+  /** What the placed treasure pays. Energy AND xp — see tutorial.ts on why not cash. */
+  reward: { xp: 100, energy: 10 },
+} as const;
+
+/**
+ * The Cycle Pass — the only subscription-shaped thing sold.
+ *
+ * It sells *tempo*, which is the category the review marks as freely sellable:
+ * it buys attempts at finding, never a chance at winning. A pass holder digs
+ * more; they do not get a sixth key, and their hints are not truer.
+ *
+ * Three days on purpose. That is one cycle, so a pass expires when the map
+ * does — one that straddled a reset would be selling speed on a board that no
+ * longer exists.
+ */
+export const PASS = {
+  /** Regen multiplier while active. Four hours to a full bar becomes two. */
+  regenMultiplier: 2,
+  /** A full bar once per UTC day, claimed on first sight rather than pushed. */
+  dailyTopUp: true,
+  dayMs: 24 * 60 * 60 * 1000,
 } as const;
 
 export const RACE = {
@@ -77,6 +368,48 @@ export const ASYNC = {
   },
 } as const;
 
+/**
+ * The Crack — the one way to win money.
+ *
+ * ─────────────────────────── what it replaces ───────────────────────────
+ *
+ * Every design decision in this codebase pointed at deduction, and then the
+ * prize went to whoever tapped fourteen times fastest. Someone who worked out
+ * the location and someone who wandered onto the tile by luck competed
+ * identically, on thumb speed. Worse than the unfairness is the *feeling*: "I
+ * lost because my phone is slow" is a belief no amount of server-side fairness
+ * can argue with, and it is the belief a reflex race on a cheap Android
+ * produces.
+ *
+ * Six doors, the same six for everyone, fifteen seconds, everyone locks, all
+ * reveal at once. Right pick wins.
+ *
+ * ─────────────────────────── what decides it ───────────────────────────
+ *
+ * Correctness first, then **fewer hints used**, then a deterministic hash of
+ * the hunt and player. Elapsed time appears nowhere, and neither does arrival
+ * order: both are proxies for hardware and connection. That is the whole point
+ * — phone speed and internet speed stop mattering entirely.
+ *
+ * The hint tiebreak is doing real work. It means the player who reached the
+ * answer on fewer purchased hints beats the one who bought their way to the
+ * same answer, so spending actively costs you the close ones. It is the third
+ * of the four anti-pay-to-win rules, and the only one that lives in the
+ * scoring rather than in a cap.
+ *
+ * ─────────────────────────── why six ───────────────────────────
+ *
+ * A blind guess is 1-in-6, which is a real chance and a poor plan. Three good
+ * hints typically leave two, which is a coin flip you earned. Fewer doors and
+ * hints would be decisive rather than helpful; more and a hintless player would
+ * never win at all, which removes the free path the legal argument rests on.
+ */
+export const CRACK = {
+  doors: 6,
+  /** Everyone gets the same fifteen seconds. Long enough to think, not to look up. */
+  limitMs: 15_000,
+} as const;
+
 export const TAP = {
   target: 14,
   limitMs: 6_000,
@@ -128,8 +461,48 @@ export const NET = {
   deadlineSweepMs: 100,
 } as const;
 
-/** How many cash hunts each zone seeds with. */
-export const HUNTS_PER_ZONE = 4;
+/**
+ * How many treasures a zone keeps live, and how many of them carry money.
+ *
+ * ─────────────────────────── why the split exists ───────────────────────────
+ *
+ * Twenty-four treasures on a 3,600-cell map is roughly the density the old
+ * 216-cell grid had — enough that exploring finds *something*, which is what
+ * keeps a huge map from feeling empty. But 24 cash hunts per zone at the prize
+ * band below would burn about **$168/day**, against a self-funded floor of
+ * $100–300 *per month*. The grid resize and the prize budget only reconcile if
+ * most treasures pay in XP rather than cash.
+ *
+ * `HuntKind` has had a 'puzzle' member since phase 0 — the energy cost, the
+ * module pool, the entry path all handle it — and `replenish` hardcoded 'cash',
+ * so it had never once been created. This turns it on.
+ *
+ * ─────────────────────────── the arithmetic ───────────────────────────
+ *
+ * Cash hunts created per day = zones × CASH_PER_ZONE ÷ TTL in days.
+ *
+ *   human: 4 zones × 1 ÷ 1 day  = 4.00/day × 95.2c = $3.81/day
+ *   agent: 1 zone  × 1 ÷ 3 days = 0.33/day × 112.8c = $0.38/day
+ *                                                     ─────────────
+ *                                                     $4.19/day
+ *                                                     ≈ $127/month
+ *
+ * That sits in the lower half of the $100–300/month band on purpose. The
+ * headline prize is meant to be *concentrated* — one large weekly final beats a
+ * hundred small hunts for the same money — so routine hunts should not spend
+ * the whole budget before that exists.
+ *
+ * Worst case (every hunt hard AND every one claimed) is ~$22/day, which is well
+ * over the floor but is the tail, not the mean; the escrow's per-day claim cap
+ * is the backstop that makes it survivable rather than a surprise.
+ *
+ * Four cash hunts a day across the world also matches the target density the
+ * review asked for — few enough that finding one is an event.
+ */
+export const HUNTS_PER_ZONE = 24;
+
+/** Of those, how many carry a prize. The rest are XP-only puzzle hunts. */
+export const CASH_PER_ZONE = 1;
 
 // ─────────────────────────── agent games ───────────────────────────
 //
@@ -138,16 +511,31 @@ export const HUNTS_PER_ZONE = 4;
 // perfectly is a cheat. Here a perfect player is the intended audience, so the
 // budget — how many questions you may ask — is what makes the game hard.
 
+/** Questions a perfect binary search needs to isolate one cell of the map. */
+const OPTIMAL_PROBES = Math.ceil(Math.log2(GRID_CELLS));
+
 export const DEDUCTION = {
   /**
    * Probes allowed, per difficulty.
    *
-   * The grid is 18×12 = 216 cells, so a perfect binary search needs
-   * ⌈log₂ 216⌉ = 8 questions. `hard` is exactly 8: nothing but optimal
+   * `hard` is exactly the information-theoretic optimum: nothing but perfect
    * information gain gets there, and a probe that fails to halve the remaining
-   * space is a probe you cannot afford. `easy` leaves room to be sloppy.
+   * space is a probe you cannot afford. `med` allows one wasted question and
+   * `easy` four, which is room to be sloppy without room to guess.
+   *
+   * **Derived, not written down.** This used to read `{ easy: 12, med: 9,
+   * hard: 8 }` with a comment explaining that 8 was ⌈log₂ 216⌉ — correct, and
+   * silently wrong the moment the grid changed. At 3,600 cells the optimum is
+   * 12, so the old `hard` was four questions short of winnable. The deduction
+   * game probes in the same vocabulary the fog's hints use (see
+   * `agents/validate.ts`), so its board genuinely IS the map and genuinely must
+   * scale with it.
    */
-  budget: { easy: 12, med: 9, hard: 8 },
+  budget: {
+    easy: OPTIMAL_PROBES + 4,
+    med: OPTIMAL_PROBES + 1,
+    hard: OPTIMAL_PROBES,
+  },
   /** Minutes. An agent is expected to think between probes, not react. */
   limitMs: 10 * 60 * 1000,
 } as const;
@@ -179,6 +567,24 @@ export const NEGOTIATION = {
 } as const;
 
 export const SEARCH = {
+  /**
+   * The board this game is played on — **deliberately not the map**.
+   *
+   * Every other grid-derived number in this file scales with {@link GRID}.
+   * This one must not, and the reason is that the budgets below are an
+   * *empirical* bound rather than a formula: they come from measuring how many
+   * probes a filter-based hunt needs against an evader that moves in response
+   * to being looked at. That analysis was done on an 18×12 board and does not
+   * survive being handed a 3,600-cell one — a pursuit problem does not scale
+   * like a search problem, and the honest position is that nobody has measured
+   * the big-board version.
+   *
+   * Nothing ties this game to the fog. Its probes are plain cells rather than
+   * the hint vocabulary deduction borrows, and the board size travels to the
+   * client in the block's spec, so keeping it at its tuned size costs nothing
+   * and keeps a tested game tested. Revisit only with fresh measurement.
+   */
+  board: { rows: 18, cols: 12 },
   /**
    * Probes allowed before the evader escapes for good.
    *

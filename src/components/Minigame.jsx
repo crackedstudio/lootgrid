@@ -1,4 +1,5 @@
 import Mascot from './Mascot';
+import { cellMatches } from '../api/hints';
 
 /** Server reason codes → player-facing copy. The UI switches on the code, never on prose. */
 const FAIL_COPY = {
@@ -18,6 +19,7 @@ const FAIL_COPY = {
 };
 
 const TITLES = {
+  crack: 'THE CRACK',
   tap: 'TAP CHALLENGE',
   memory: 'MEMORY DIG',
   math: 'MATH DASH',
@@ -240,9 +242,85 @@ function SeqGame({ game, locked, onTap }) {
   );
 }
 
+/* -------- THE CRACK -------- */
+
+/**
+ * Six doors, one right, fifteen seconds.
+ *
+ * Doors ruled out by the hints the player is holding are dimmed and labelled,
+ * never removed. A hint can be a lie — tier 3 is close to a coin flip — so
+ * hiding a door would let a false hint quietly delete the right answer. The
+ * player has to be able to pick a door their own hints argue against, because
+ * sometimes that is the correct read.
+ */
+function CrackGame({ game, spec, locked, hints, onLock }) {
+  const zoneHints = hints.filter(h => h.huntId === game.huntId);
+
+  return (
+    <>
+      <div style={{
+        fontFamily: "'Space Mono', monospace", fontSize: 10, fontWeight: 700,
+        color: 'var(--cream)', opacity: .7, textAlign: 'center', marginBottom: 4,
+      }}>
+        {zoneHints.length === 0
+          ? 'NO HINTS — THIS IS A 1-IN-6 GUESS'
+          : `${zoneHints.length} HINT${zoneHints.length === 1 ? '' : 'S'} · FEWER HINTS WINS A TIE`}
+      </div>
+
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginTop: 8,
+      }}>
+        {spec.candidates.map((cell, i) => {
+          const agrees = zoneHints.filter(h => cellMatches(h.payload, cell.r, cell.c, spec.rows, spec.cols));
+          const ruledOut = zoneHints.length > 0 && agrees.length === 0;
+          const picked = game.picked === i;
+
+          return (
+            <div
+              key={i}
+              onClick={() => !locked && onLock(i)}
+              style={{
+                aspectRatio: '1', border: `3px solid ${picked ? '#FFD51F' : '#0C0C10'}`,
+                background: picked ? '#FFD51F' : 'var(--card)',
+                boxShadow: picked ? '4px 4px 0 #0C0C10' : '2px 2px 0 #0C0C10',
+                display: 'flex', flexDirection: 'column', alignItems: 'center',
+                justifyContent: 'center', gap: 2,
+                cursor: locked ? 'default' : 'pointer',
+                // Dimmed, never hidden: a hint that rules this out may be lying.
+                opacity: ruledOut && !picked ? .35 : 1,
+              }}
+            >
+              <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 18, color: '#0C0C10' }}>
+                {cell.r},{cell.c}
+              </div>
+              {zoneHints.length > 0 && (
+                <div style={{
+                  fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700,
+                  color: '#0C0C10', opacity: .7,
+                }}>
+                  {ruledOut ? 'RULED OUT' : `${agrees.length}/${zoneHints.length} AGREE`}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{
+        fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700,
+        color: 'var(--cream)', opacity: .5, textAlign: 'center', marginTop: 12,
+      }}>
+        {locked || game.picked !== null
+          ? 'LOCKED — ALL REVEAL AT ONCE'
+          : 'SPEED DOES NOT COUNT. PICK WELL.'}
+      </div>
+    </>
+  );
+}
+
 /* -------- OVERLAY -------- */
-export default function Minigame({ state, onMgTap, onMemPad, onMathPick, onSeqTap, onExit }) {
-  const { attempt, game, rivals, chasers, outcome, failReason, lostTo } = state;
+export default function Minigame({ state, onMgTap, onMemPad, onMathPick, onSeqTap, onCrackLock, onExit }) {
+  const { attempt, game, rivals, chasers, outcome, failReason, lostTo, hints = [] } = state;
   if (!attempt || !game) return null;
 
   const title = TITLES[attempt.gameType] || 'CHALLENGE';
@@ -300,6 +378,9 @@ export default function Minigame({ state, onMgTap, onMemPad, onMathPick, onSeqTa
 
       {outcome === null && (
         <div className="lg-scroll" style={{ flex: 1, overflow: 'auto' }}>
+          {attempt.gameType === 'crack' && (
+            <CrackGame game={game} spec={attempt.spec} locked={locked} hints={hints} onLock={onCrackLock} />
+          )}
           {attempt.gameType === 'tap' && <TapGame game={game} spec={attempt.spec} locked={locked} onTap={onMgTap} />}
           {attempt.gameType === 'memory' && <MemGame game={game} locked={locked} onPad={onMemPad} />}
           {attempt.gameType === 'math' && <MathGame game={game} locked={locked} onPick={onMathPick} />}

@@ -60,6 +60,25 @@ function build() {
       VALUES (@playerId, @hintId, @source, @acquiredAt)
       ON CONFLICT (player_id, hint_id) DO NOTHING
     `),
+    /**
+     * A player's hint history on hunts that have CLOSED, plus how many distinct
+     * UTC days they were active on.
+     *
+     * Only resolved and expired hunts count. A live hunt's truth flags are the
+     * answer to a game in progress, so counting them would let rank leak what a
+     * player is still trying to work out — and would let a fresh account rank up
+     * on hints it has not had to be right about yet.
+     */
+    resolvedAccuracy: db.prepare(`
+      SELECT COUNT(*)                                     AS resolved,
+             COALESCE(SUM(h.is_true), 0)                  AS trueCount,
+             COUNT(DISTINCT ph.acquired_at / @dayMs)      AS activeDays
+        FROM player_hints ph
+        JOIN hints h  ON h.id = ph.hint_id
+        JOIN hunts hu ON hu.id = h.hunt_id
+       WHERE ph.player_id = @playerId
+         AND hu.status IN ('resolved', 'expired')
+    `),
     ofPlayer: db.prepare(`
       SELECT h.* FROM hints h
       JOIN player_hints ph ON ph.hint_id = h.id
@@ -176,6 +195,20 @@ export function ofPlayer(playerId: string, now = Date.now()): HintRecord[] {
   return (s().ofPlayer.all(playerId, now) as HintRow[])
     .map(toHint)
     .filter((h): h is HintRecord => h !== null);
+}
+
+export interface ResolvedAccuracy {
+  resolved: number;
+  trueCount: number;
+  activeDays: number;
+}
+
+/** Rank's raw material. See the statement above for why live hunts are excluded. */
+export function resolvedAccuracy(playerId: string, _now = Date.now()): ResolvedAccuracy {
+  return s().resolvedAccuracy.get({
+    playerId,
+    dayMs: 24 * 60 * 60 * 1000,
+  }) as ResolvedAccuracy;
 }
 
 export function holds(playerId: string, hintId: string): boolean {

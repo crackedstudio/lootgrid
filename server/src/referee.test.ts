@@ -3,7 +3,7 @@ import { ENERGY, RACE, TAP } from './config';
 import * as energy from './energy';
 import * as referee from './referee';
 import * as store from './store';
-import { freshWorld, huntOfType, makePlayer, teardownWorld } from './testing/harness';
+import { freshWorld, huntOfType, makePlayer, makeVeteran, teardownWorld } from './testing/harness';
 
 const T0 = 1_700_000_000_000;
 
@@ -49,17 +49,31 @@ describe('referee', () => {
 
   describe('opening an attempt', () => {
     it('charges energy and returns the block spec', () => {
-      const hunt = huntOfType('tap');
-      const player = makePlayer('0xaaa');
+      // A cash hunt, so the cash entry cost applies. `tap` is a puzzle game as
+      // of phase 4 — asking for it here charged the puzzle price and made this
+      // test quietly about something else.
+      const hunt = huntOfType('crack');
+      // A veteran: the money gate refuses new accounts from cash hunts, which
+      // is phase 5's whole point. See harness.makeVeteran.
+      const player = makeVeteran('0xaaa');
       const before = energy.currentEnergy(player, T0);
 
       const res = referee.openAttempt(player, hunt, T0);
       expect(res.ok).toBe(true);
       if (!res.ok) return;
 
-      expect(res.gameType).toBe('tap');
+      expect(res.gameType).toBe('crack');
       expect(energy.currentEnergy(player, T0)).toBe(before - ENERGY.costCashHunt);
       expect(res.attempt.startedAt).toBe(T0);
+    });
+
+    it('charges the puzzle price on a puzzle block', () => {
+      const hunt = huntOfType('tap');
+      const player = makePlayer('0xa11');
+      const before = energy.currentEnergy(player, T0);
+
+      expect(referee.openAttempt(player, hunt, T0).ok).toBe(true);
+      expect(energy.currentEnergy(player, T0)).toBe(before - ENERGY.costPuzzleHunt);
     });
 
     it('refuses a second attempt on the same block', () => {
@@ -93,8 +107,9 @@ describe('referee', () => {
     });
 
     it('keeps shadow-banned players out of cash blocks', () => {
-      const hunt = huntOfType('tap');
-      const player = makePlayer('0xbad');
+      const hunt = huntOfType('crack');
+      // Otherwise admissible — so the refusal below can only be the ban.
+      const player = makeVeteran('0xbad');
       player.shadowBanned = true;
       // Indistinguishable from the block having just closed — on purpose.
       expect(referee.openAttempt(player, hunt, T0)).toMatchObject({

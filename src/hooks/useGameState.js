@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { get, post, ApiError } from '../api/http';
 import { fetchHints } from '../api/hints';
+import { buyItem, fetchShop, spendRefillCredit } from '../api/shop';
 import { enterHunt } from '../api/entry';
 import { publishEntry, publishWin } from '../api/records';
 import { createSender, socket } from '../api/socket';
 import { ONB_CARDS } from '../data/gameData';
 
 /** Display-only: the server is authoritative and corrects us on every response. */
-const REGEN_MS = 9000;
+const REGEN_MS = 360000;
+/**
+ * Mirrors ENERGY.costFog and SURVEY.cost on the server.
+ *
+ * Used only to refuse an action the server would refuse anyway, so a stale
+ * value costs a wasted round trip and never a wrong charge — the server is
+ * authoritative and returns the true balance with every response.
+ */
+const DIG_COST = 2;
+const SURVEY_COST = 6;
 
 const INITIAL = {
   view: 'home',
@@ -15,12 +25,24 @@ const INITIAL = {
   mapZone: null,
   /** Hints the player holds. Directions toward a hunt — some of them lie. */
   hints: [],
+  /** The empty-bar screen's payload, or null. See fetchStuck. */
+  stuck: null,
+  /** { catalogue, entitlements, pass } once loaded. */
+  shop: null,
+  /** True while a purchase is in flight, so the button cannot be double-tapped. */
+  buying: false,
+  /** Survey readings by cell key. Kept so several can be compared at once. */
+  surveys: {},
+  /** Tap a tile to survey it rather than dig it. */
+  surveyMode: false,
+  /** Total XP. Paid by puzzle tiles and by the treasures that carry no cash. */
+  xp: 0,
 
   // session
   status: 'connecting', // connecting | online | offline
   fatal: null, // { code, message } — unrecoverable, blocks the app
   player: null,
-  energy: { value: 0, max: 12, nextRegenMs: 0 },
+  energy: { value: 0, max: 40, nextRegenMs: 0 },
 
   // world (all of it from the server; the client has no map of its own)
   zones: [],
@@ -54,8 +76,12 @@ const INITIAL = {
 const cellKey = (r, c) => `${r},${c}`;
 
 /** Fresh render state for whichever game the block handed us. */
-function initGame(gameType, spec) {
+function initGame(gameType, spec, huntId) {
   switch (gameType) {
+    case 'crack':
+      // `huntId` rides along so the panel can filter to hints about THIS hunt.
+      // A hint about another treasure says nothing about these six doors.
+      return { picked: null, doors: spec.candidates.length, huntId };
     case 'tap':
       return { taps: 0, target: spec.target, remainingMs: spec.limitMs };
     case 'sequence':
@@ -117,9 +143,19 @@ export function useGameState() {
 
     (async () => {
       try {
-        const [me, zones] = await Promise.all([get('/me'), get('/zones')]);
+        // The shop rides along at boot rather than being fetched when the shop
+        // screen opens. The offer that matters is the one on the empty-bar
+        // screen, and that moment must not wait on a round trip — it arrives
+        // exactly when the player has just been stopped.
+        const [me, zones, shop] = await Promise.all([get('/me'), get('/zones'), fetchShop().catch(() => null)]);
         if (cancelled) return;
-        set({ player: { playerId: me.playerId, handle: me.handle }, energy: me.energy, zones: zones.zones });
+        set({
+          player: { playerId: me.playerId, handle: me.handle },
+          energy: me.energy,
+          zones: zones.zones,
+          xp: me.xp ?? 0,
+          shop,
+        });
         socket.connect();
       } catch (err) {
         if (cancelled) return;
@@ -150,6 +186,10 @@ export function useGameState() {
         case 'energy':
           return set({ energy: { value: msg.value, max: msg.max, nextRegenMs: msg.nextRegenMs } });
 
+        // Your own dig, and only ever your own. This used to be broadcast to
+        // everyone in the zone, which is how a player who spent nothing learned
+        // where treasure was not. The fog is private now — the server sends
+        // this to the opener alone.
         case 'tile:revealed':
           return set(s =>
             s.grid
@@ -161,6 +201,29 @@ export function useGameState() {
                 }
               : null,
           );
+
+        /**
+         * The map was torn up and reprinted.
+         *
+         * Everything on screen now describes an epoch that no longer exists —
+         * the fog, the hunts, and the tile types underneath them. Clear it
+         * immediately rather than waiting for the refetch, so nobody spends
+         * energy tapping a map that is already gone.
+         */
+        case 'zone:rotated': {
+          if (stateRef.current.mapZone !== msg.zoneId) return;
+          set(s =>
+            s.grid ? { grid: { ...s.grid, epoch: msg.epoch, reveals: {}, hunts: [] } } : null,
+          );
+          get(`/zones/${msg.zoneId}/grid`)
+            .then(grid => {
+              const reveals = {};
+              for (const cell of grid.reveals) reveals[cellKey(cell.r, cell.c)] = cell;
+              set(s => (s.mapZone === msg.zoneId ? { grid: { ...grid, reveals } } : null));
+            })
+            .catch(() => {});
+          return;
+        }
 
         case 'zone:hunts':
           return set(s => (s.grid ? { grid: { ...s.grid, hunts: msg.hunts } } : null));
@@ -328,10 +391,142 @@ export function useGameState() {
 
   // ---------------------------------------------------------------- tiles
 
+  /**
+   * Re-read the first-run script's current step.
+   *
+   * Best-effort: a tutorial pointer that fails to refresh is a missing hint
+   * arrow, never a broken board.
+   */
+  const refreshTutorial = useCallback(async () => {
+    const zoneId = stateRef.current.mapZone;
+    if (!zoneId) return;
+    try {
+      const g = await get(`/zones/${zoneId}/grid`);
+      set(s => (s.grid && s.mapZone === zoneId ? { grid: { ...s.grid, tutorial: g.tutorial } } : null));
+    } catch {
+      /* ignore */
+    }
+  }, [set]);
+
+  /**
+   * What to do when the bar is empty.
+   *
+   * The highest-intent moment in the session, and it used to be dead air. Asked
+   * for when the player actually runs out rather than polled, so it costs
+   * nothing until it matters.
+   */
+  const fetchStuck = useCallback(async () => {
+    const zoneId = stateRef.current.mapZone;
+    if (!zoneId) return;
+    try {
+      set({ stuck: await get(`/zones/${zoneId}/stuck`) });
+    } catch {
+      /* ignore */
+    }
+  }, [set]);
+
+  const dismissStuck = useCallback(() => set({ stuck: null }), [set]);
+
+  const loadShop = useCallback(async () => {
+    try {
+      set({ shop: await fetchShop() });
+    } catch {
+      toast('SHOP UNAVAILABLE');
+    }
+  }, [set, toast]);
+
+  /**
+   * Buy something.
+   *
+   * The 402 path is the server's; if payment is switched off the purchase
+   * completes directly. Either way the response carries the resulting energy
+   * and entitlements, so nothing here has to guess at what the player now has.
+   */
+  const buy = useCallback(
+    async sku => {
+      if (stateRef.current.buying) return;
+      set({ buying: true });
+      try {
+        const res = await buyItem(sku);
+        set(s => ({
+          energy: res.energy ?? s.energy,
+          shop: s.shop ? { ...s.shop, entitlements: res.entitlements } : s.shop,
+          // A purchase that filled the bar ends the stuck screen — the thing
+          // that was blocking them is no longer true.
+          stuck: res.energy && res.energy.value > 0 ? null : s.stuck,
+        }));
+        toast('PURCHASED');
+      } catch (err) {
+        if (err.status === 402) return toast('PAYMENT REQUIRED');
+        if (err.code === 'no_such_item') return toast('NO LONGER SOLD');
+        toast('PURCHASE FAILED');
+      } finally {
+        set({ buying: false });
+      }
+    },
+    [set, toast],
+  );
+
+  /** Spend a banked refill. The cheapest way out of an empty bar. */
+  const spendRefill = useCallback(async () => {
+    try {
+      const res = await spendRefillCredit();
+      set({ energy: res.energy, stuck: null });
+      toast('BAR REFILLED');
+    } catch {
+      toast('NO REFILLS BANKED');
+    }
+  }, [set, toast]);
+
+  /**
+   * Survey a cell: spend energy to learn how close the nearest treasure is.
+   *
+   * Uncovers nothing, which is why it is a separate action rather than a mode
+   * of digging. Readings accumulate on the grid so several can be compared —
+   * one reading is nearly useless and three around the same spot are the game.
+   */
+  const onSurvey = useCallback(
+    async cell => {
+      const s = stateRef.current;
+      if (!s.mapZone) return;
+      if (s.energy.value < SURVEY_COST) return toast(`NEED ${SURVEY_COST} ENERGY TO SURVEY`);
+
+      try {
+        const res = await post(`/zones/${s.mapZone}/survey/${cell.r}/${cell.c}`);
+        set(prev => ({
+          energy: res.energy,
+          surveys: { ...prev.surveys, [cellKey(cell.r, cell.c)]: res.reading },
+        }));
+        toast(String(res.reading.band).toUpperCase());
+      } catch (err) {
+        if (err.code === 'insufficient_energy') {
+          if (err.body?.details) set({ energy: err.body.details });
+          return toast('OUT OF ENERGY — REGENERATING');
+        }
+        if (err.code === 'nothing_to_find') return toast('NOTHING LIVE IN THIS ZONE');
+        toast('SURVEY FAILED');
+      }
+    },
+    [set, toast],
+  );
+
+  /** Digging and surveying are different actions on the same tile. */
+  const toggleSurveyMode = useCallback(
+    () => set(s => ({ surveyMode: !s.surveyMode })),
+    [set],
+  );
+
   const onTile = useCallback(
     async cell => {
       const s = stateRef.current;
-      if (!s.grid || cell.opened) return;
+      if (!s.grid) return;
+
+      // Survey reads the ground from a position, so it works on any cell —
+      // already dug, or holding a hunt. Checked before the `opened` guard for
+      // exactly that reason.
+      if (s.surveyMode) return onSurvey(cell);
+
+      if (cell.opened) return;
 
       if (cell.hunt) {
         const cost = cell.hunt.kind === 'cash' ? 3 : 2;
@@ -339,16 +534,20 @@ export function useGameState() {
         return set({ huntPreview: cell.hunt });
       }
 
-      if (s.energy.value < 1) return toast('OUT OF ENERGY — REGENERATING');
+      // A trap costs double, but its type is fog until it is opened — so this
+      // checks the cheapest possible price and lets the server refuse the rest.
+      if (s.energy.value < DIG_COST) return toast('OUT OF ENERGY — REGENERATING');
 
       try {
         const res = await post(`/zones/${s.mapZone}/tiles/${cell.r}/${cell.c}/open`);
-        set(prev => ({
-          energy: res.energy,
-          grid: prev.grid
-            ? { ...prev.grid, reveals: { ...prev.grid.reveals, [cellKey(cell.r, cell.c)]: res.cell } }
-            : null,
-        }));
+        set(prev => {
+          if (!prev.grid) return { energy: res.energy };
+          const reveals = { ...prev.grid.reveals, [cellKey(cell.r, cell.c)]: res.cell };
+          // A mystery tile opens neighbours on the house.
+          for (const b of res.bonus ?? []) reveals[cellKey(b.r, b.c)] = b;
+          return { energy: res.energy, grid: { ...prev.grid, reveals } };
+        });
+
         // A reveal can pay out a hint. Prepend so the newest is first, and
         // guard against a duplicate if the same grant arrives twice.
         if (res.hint) {
@@ -357,18 +556,35 @@ export function useGameState() {
               ? prev.hints
               : [res.hint, ...prev.hints],
           }));
-          toast('HINT FOUND');
         }
-        if (res.alreadyOpen) toast('SOMEONE BEAT YOU TO IT');
+
+        // Say what the tile actually did. The whole point of phase 3 is that
+        // these labels stopped being decorative — a player who is not told
+        // "that cost double" learns nothing from having paid it.
+        if (res.cell.type === 'trap') toast('TRAP — DOUBLE COST, AND THE HINT LIES');
+        else if (res.cell.type === 'clue') toast('CLUE FOUND');
+        else if (res.bonus?.length) toast(`MYSTERY — ${res.bonus.length} FREE TILE`);
+        else if (res.xp) toast(`PUZZLE — +${res.xp.gained} XP`);
+        else if (res.hint) toast('HINT FOUND');
+
+        if (res.xp) set({ xp: res.xp.total });
+        if (res.alreadyOpen) toast('ALREADY OPEN');
+
+        // Advance the first-run pointer. Derived server-side from what is
+        // actually on the board, so it cannot drift out of step with the map —
+        // the cost is one cheap request after a dig, and only while the script
+        // is still running.
+        if (stateRef.current.grid?.tutorial?.step) void refreshTutorial();
       } catch (err) {
         if (err.code === 'insufficient_energy') {
           if (err.body?.details) set({ energy: err.body.details });
-          return toast('OUT OF ENERGY — REGENERATING');
+          void fetchStuck();
+          return;
         }
         toast('COULD NOT OPEN TILE');
       }
     },
-    [set, toast],
+    [set, toast, onSurvey, fetchStuck, refreshTutorial],
   );
 
   /**
@@ -428,7 +644,7 @@ export function useGameState() {
         huntId: hunt.id,
         huntPrize: hunt.prizeLabel,
         attempt: { attemptId: res.attemptId, gameType: res.gameType, spec: res.spec, limitMs: res.limitMs },
-        game: initGame(res.gameType, res.spec),
+        game: initGame(res.gameType, res.spec, hunt.id),
         rivals: [],
         outcome: null,
         failReason: null,
@@ -444,6 +660,22 @@ export function useGameState() {
       if (err.code === 'insufficient_energy') return toast('NOT ENOUGH ENERGY');
       if (err.code === 'already_attempted') return toast('YOU ALREADY TRIED THIS ONE');
       if (err.code === 'hunt_not_live') return toast('ALREADY CRACKED');
+
+      // The money gate. Each refusal says what it is and what would fix it — a
+      // player turned away with no reason assumes the game is rigged, and this
+      // is the one moment where that assumption is most expensive.
+      //
+      // `shadow_banned` is deliberately absent: it arrives as `hunt_not_live`
+      // above and must stay indistinguishable from a closed hunt.
+      if (err.code === 'wallet_too_new') return toast('ACCOUNT TOO NEW FOR CASH HUNTS');
+      if (err.code === 'rank_too_low') {
+        const short = err.body?.details?.shortfall;
+        if (short?.activeDays > 0) return toast(`PROSPECT ${short.activeDays} MORE DAY(S) FIRST`);
+        if (short?.resolved > 0) return toast(`NEED ${short.resolved} MORE RESOLVED HINTS`);
+        return toast('RANK TOO LOW FOR CASH HUNTS');
+      }
+      if (err.code === 'no_keys_left') return toast('NO KEYS LEFT TODAY — XP HUNTS ARE OPEN');
+      if (err.code === 'not_your_hunt') return toast('THAT ONE IS SOMEBODY ELSE\u2019S');
       toast('COULD NOT ENTER HUNT');
     }
   }, [set, toast]);
@@ -482,6 +714,26 @@ export function useGameState() {
     senderRef.current?.add('tap', undefined, taps >= s.game.target);
     set({ game: { ...s.game, taps } });
   }, [set]);
+
+  /**
+   * Commit a door.
+   *
+   * Optimistic like every other input, but final in a way the others are not:
+   * one lock per attempt, and the server refuses a second. The pick is sent as
+   * the cell rather than the index so the server validates against its own copy
+   * of the doors rather than trusting a number the client chose.
+   */
+  const onCrackLock = useCallback(
+    door => {
+      const s = stateRef.current;
+      if (!s.game || s.outcome || s.game.picked !== null) return;
+      const cell = s.attempt?.spec?.candidates?.[door];
+      if (!cell) return;
+      senderRef.current?.add('lock', cell, true);
+      set({ game: { ...s.game, picked: door } });
+    },
+    [set],
+  );
 
   const onSeqTap = useCallback(
     tile => {
@@ -531,6 +783,12 @@ export function useGameState() {
     backZones,
     backToMap,
     onTile,
+    onSurvey,
+    dismissStuck,
+    loadShop,
+    buy,
+    spendRefill,
+    toggleSurveyMode,
     closeHunt,
     confirmHunt,
     acceptQuote,
@@ -539,6 +797,7 @@ export function useGameState() {
     onSeqTap,
     onMemPad,
     onMathPick,
+    onCrackLock,
     setField,
     doShare,
     toast,
