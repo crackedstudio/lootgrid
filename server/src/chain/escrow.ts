@@ -38,24 +38,42 @@ import * as metrics from '../metrics';
 
 export const ESCROW_ABI = parseAbi([
   'function fundHunt(bytes32 huntId, uint256 amount, uint64 expiresAt)',
+  'function refund(bytes32 huntId)',
   'function owed(address) view returns (uint256)',
   'function withdrawableAt(address) view returns (uint64)',
 ]);
 
+/**
+ * Which way the money is travelling.
+ *
+ * 'fund' fills a pot at hunt creation; 'refund' returns an unclaimed one to the
+ * treasury once its epoch has closed. They share this queue because they share
+ * everything that is hard about it — durability, backoff, receipt watching and
+ * the dead-row alarm — and differ only in which contract call gets made.
+ */
+export type EscrowKind = 'fund' | 'refund';
+
 interface Row {
   id: number;
   hunt_id: string;
+  kind: string;
   amount: string;
   expires_at: number;
   attempts: number;
 }
 
 export interface FundingJob {
+  kind: EscrowKind;
   huntId: Hex;
+  /** Zero on a refund — the contract returns whatever the pot holds. */
   amount: bigint;
   /**
    * MILLISECOND epoch, as everywhere else in this server. Converted to seconds
    * at the chain boundary — see {@link chainSend}.
+   *
+   * On a refund this is the moment the pot becomes refundable rather than the
+   * moment it stops being claimable. They are the same number; the sign of the
+   * comparison against it is what differs.
    */
   expiresAt: number;
 }
@@ -91,21 +109,51 @@ export function enabled(): boolean {
  * not a failed one.
  */
 export function enqueue(huntId: string, amount: bigint, expiresAt: number): void {
+  queue('fund', huntId, amount, expiresAt, Date.now());
+}
+
+/**
+ * Queue an expired pot for return to the treasury.
+ *
+ * Called when a hunt expires or when its epoch closes underneath it. Safe to
+ * call on a hunt that was never funded, was already claimed, or has been queued
+ * before: the row is deduped on (hunt_id, kind), and the contract itself rejects
+ * a refund of a settled or unfunded pot. Being wrong here costs one reverted
+ * transaction, while *not* calling it strands real money on a dead map.
+ *
+ * `refundableAt` is a **millisecond** epoch — the hunt's own expiry. The worker
+ * will not send before it, because `refund` reverts with NotExpired until
+ * `block.timestamp` passes it.
+ */
+export function enqueueRefund(huntId: string, refundableAt: number): void {
+  // A second past the on-chain expiry, not on it: `refund` requires strictly
+  // greater than, and the two clocks are only loosely aligned. Sending early
+  // wastes a transaction and burns an attempt off the retry budget.
+  queue('refund', huntId, 0n, refundableAt, refundableAt + 1_000);
+}
+
+function queue(
+  kind: EscrowKind,
+  huntId: string,
+  amount: bigint,
+  expiresAt: number,
+  nextAt: number,
+): void {
   if (!enabled()) return;
   try {
     const now = Date.now();
     const res = getDb()
       .prepare(
         `INSERT OR IGNORE INTO escrow_queue
-           (hunt_id, amount, expires_at, status, next_at, created_at, updated_at)
-         VALUES (?, ?, ?, 'pending', ?, ?, ?)`,
+           (hunt_id, kind, amount, expires_at, status, next_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
       )
-      .run(huntId, amount.toString(), expiresAt, now, now, now);
+      .run(huntId, kind, amount.toString(), expiresAt, nextAt, now, now);
 
     if (res.changes > 0) metrics.escrowEnqueued.inc();
     else metrics.escrowDeduped.inc();
   } catch (err) {
-    logger.warn({ err, huntId }, 'escrow enqueue failed — hunt opens unfunded');
+    logger.warn({ err, huntId, kind }, 'escrow enqueue failed');
   }
 }
 
@@ -156,11 +204,26 @@ function clients() {
 
 const chainSend: SendFn = async job => {
   const { wallet: w, from } = clients();
-  return w.writeContract({
+  const contract = {
     account: from,
     address: env.LOOTGRID_ESCROW_ADDRESS as Address,
     abi: ESCROW_ABI,
     chain: null,
+  } as const;
+
+  if (job.kind === 'refund') {
+    return w.writeContract({
+      ...contract,
+      functionName: 'refund',
+      // Clears two slots and makes one transfer — strictly less work than
+      // funding, but the same fixed-gas discipline applies.
+      args: [job.huntId],
+      gas: 120_000n,
+    });
+  }
+
+  return w.writeContract({
+    ...contract,
     functionName: 'fundHunt',
     args: [job.huntId, job.amount, toChainSeconds(job.expiresAt)],
     // fundHunt is one SSTORE-heavy write plus a transfer; fixed rather than
@@ -233,7 +296,7 @@ export function readBalance(winner: Address): Promise<Balance> {
 function claimDue(limit: number): Row[] {
   return getDb()
     .prepare(
-      `SELECT id, hunt_id, amount, expires_at, attempts FROM escrow_queue
+      `SELECT id, hunt_id, kind, amount, expires_at, attempts FROM escrow_queue
        WHERE status = 'pending' AND next_at <= ?
        ORDER BY id LIMIT ?`,
     )
@@ -281,8 +344,13 @@ function markFailed(row: Row, err: unknown, terminal = false): void {
 
   if (dead) {
     metrics.escrowDead.inc();
-    // A dead row is a hunt that will never carry a prize. Someone has to look.
-    logger.error({ huntId: row.hunt_id, attempts, err }, 'escrow funding abandoned');
+    // A dead fund row is a hunt that will never carry a prize; a dead refund row
+    // is money left sitting in a pot nobody can win. Both need a human, and the
+    // second is the one that quietly accumulates.
+    logger.error(
+      { huntId: row.hunt_id, kind: row.kind, attempts, err },
+      row.kind === 'refund' ? 'escrow refund abandoned — pot stranded' : 'escrow funding abandoned',
+    );
   }
 }
 
@@ -333,6 +401,7 @@ export async function drain(): Promise<number> {
     for (const row of rows) {
       try {
         const hash = await sendFn({
+          kind: row.kind === 'refund' ? 'refund' : 'fund',
           huntId: row.hunt_id as Hex,
           amount: BigInt(row.amount),
           expiresAt: row.expires_at,

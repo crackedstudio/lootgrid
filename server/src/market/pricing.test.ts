@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { GRID } from '../config';
 import { prizeCentsFor } from '../prizes';
 import { TIER_RELIABILITY_BPS, type HintPayload } from '../hints/types';
 import { MIN_TRADE_CENTS } from './fees';
@@ -33,7 +34,12 @@ describe('information value', () => {
   });
 
   it('is zero for a hint that rules nothing out', () => {
-    const useless = { payload: { kind: 'rowBand', from: 0, to: 17 } as HintPayload, reliabilityBps: 9_000 };
+    // Spans every row, whatever the grid is. Written as `to: 17` when the grid
+    // had 18 rows, which stopped meaning "the whole map" the moment it grew.
+    const useless = {
+      payload: { kind: 'rowBand', from: 0, to: GRID.rows - 1 } as HintPayload,
+      reliabilityBps: 9_000,
+    };
     expect(informationValue(useless)).toBe(0);
   });
 });
@@ -66,16 +72,29 @@ describe('suggested ask', () => {
     expect(suggestAsk(broad, prizeCentsFor('hard'), 500).cents).toBe(MIN_TRADE_CENTS);
   });
 
-  it('reports that the easy band has no market at all', () => {
-    // A 1c prize cannot cover a 1c hint at any share, so the honest answer is
-    // that this hunt's hints are unsellable — not a price at the floor.
-    const suggestion = suggestAsk(broad, prizeCentsFor('easy'));
-    expect(suggestion.rational).toBe(false);
-    expect(suggestion.ceilingCents).toBeLessThan(MIN_TRADE_CENTS);
+  /**
+   * Every tier now clears the market's floor. This is the point of raising it.
+   *
+   * The cheapest tier used to pay 1c, whose 25% ceiling is a quarter of a cent
+   * — below `MIN_TRADE_CENTS` — so `suggestAsk` correctly refused to price its
+   * hints, and 60% of all hunts drawn were in that tier. The market was not
+   * quiet because nobody wanted hints; it was quiet because most of the
+   * inventory was unsellable by arithmetic.
+   */
+  it('reports every prize tier as tradeable', () => {
+    for (const tier of ['easy', 'med', 'hard'] as const) {
+      const suggestion = suggestAsk(broad, prizeCentsFor(tier));
+      expect(suggestion.rational, tier).toBe(true);
+      expect(suggestion.ceilingCents, tier).toBeGreaterThanOrEqual(MIN_TRADE_CENTS);
+    }
   });
 
-  it('reports the mid band as tradeable', () => {
-    expect(suggestAsk(broad, prizeCentsFor('med')).rational).toBe(true);
+  it('still refuses to price a hint about a prize below the floor', () => {
+    // The guard has not been removed, only made unreachable by the prize table.
+    // A sponsor-funded or hand-created hunt could still land under it.
+    const suggestion = suggestAsk(broad, 1);
+    expect(suggestion.rational).toBe(false);
+    expect(suggestion.ceilingCents).toBeLessThan(MIN_TRADE_CENTS);
   });
 });
 

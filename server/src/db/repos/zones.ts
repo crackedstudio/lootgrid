@@ -44,6 +44,7 @@ const toZone = (r: ZoneRow): Zone => ({
   epoch: r.epoch,
   seedSecret: r.seed_secret,
   seedCommit: r.seed_commit,
+  rotatesAt: r.rotates_at,
 });
 
 const toReveal = (r: RevealRow): Reveal => ({
@@ -65,18 +66,27 @@ function build() {
       VALUES (@id, @name, @accent, @kind, @epoch, @seedSecret, @seedCommit, @rotatesAt, @createdAt)
     `),
     getReveal: db.prepare(
-      'SELECT * FROM reveals WHERE zone_id = ? AND epoch = ? AND r = ? AND c = ?',
+      'SELECT * FROM reveals WHERE zone_id = ? AND epoch = ? AND player_id = ? AND r = ? AND c = ?',
     ),
-    // ON CONFLICT DO NOTHING makes a concurrent double-open idempotent; the
-    // caller checks `changes` and refunds the energy if it lost the race.
+    // ON CONFLICT DO NOTHING keeps a double-tap idempotent. Under private fog
+    // this can only ever be the SAME player opening the same tile twice — a
+    // fast double-click or a retried request — never a race between two
+    // players, because they no longer share a key.
     addReveal: db.prepare(`
-      INSERT INTO reveals (zone_id, epoch, r, c, type, player_id, handle, at)
-      VALUES (@zoneId, @epoch, @r, @c, @type, @playerId, @handle, @at)
-      ON CONFLICT (zone_id, epoch, r, c) DO NOTHING
+      INSERT INTO reveals (zone_id, epoch, player_id, r, c, type, handle, at)
+      VALUES (@zoneId, @epoch, @playerId, @r, @c, @type, @handle, @at)
+      ON CONFLICT (zone_id, epoch, player_id, r, c) DO NOTHING
     `),
-    revealsFor: db.prepare('SELECT * FROM reveals WHERE zone_id = ? AND epoch = ?'),
+    revealsFor: db.prepare(
+      'SELECT * FROM reveals WHERE zone_id = ? AND epoch = ? AND player_id = ?',
+    ),
+    // Across every zone and epoch: "taps to first treasure" is a fact about the
+    // player's whole life, not about one map.
+    countRevealsBefore: db.prepare(
+      'SELECT COUNT(*) AS n FROM reveals WHERE player_id = ? AND at <= ?',
+    ),
     revealCount: db.prepare(
-      'SELECT COUNT(*) AS n FROM reveals WHERE zone_id = ? AND epoch = ?',
+      'SELECT COUNT(*) AS n FROM reveals WHERE zone_id = ? AND epoch = ? AND player_id = ?',
     ),
     archiveSeed: db.prepare(`
       INSERT INTO zone_seed_history (zone_id, epoch, seed_secret, seed_commit, revealed_at)
@@ -85,6 +95,19 @@ function build() {
     `),
     history: db.prepare(
       'SELECT * FROM zone_seed_history WHERE zone_id = ? ORDER BY epoch DESC',
+    ),
+    rotate: db.prepare(`
+      UPDATE zones
+         SET epoch = epoch + 1,
+             seed_secret = @seedSecret,
+             seed_commit = @seedCommit,
+             rotates_at = @rotatesAt
+       WHERE id = @zoneId
+    `),
+    // `rotates_at IS NOT NULL` rather than a coalesce: a zone that opts out of
+    // rotation must never be swept up by a comparison against a default.
+    dueForRotation: db.prepare(
+      'SELECT * FROM zones WHERE rotates_at IS NOT NULL AND rotates_at <= ? ORDER BY rowid',
     ),
   };
 }
@@ -103,16 +126,50 @@ export function list(): Zone[] {
   return (s().list.all() as ZoneRow[]).map(toZone);
 }
 
-export function insert(z: Zone, rotatesAt: number | null, now = Date.now()): void {
-  s().insert.run({ ...z, rotatesAt, createdAt: now });
+export function insert(z: Zone, now = Date.now()): void {
+  s().insert.run({ ...z, createdAt: now });
 }
 
-export function getReveal(zoneId: string, epoch: number, r: number, c: number): Reveal | undefined {
-  const row = s().getReveal.get(zoneId, epoch, r, c) as RevealRow | undefined;
+/**
+ * Turn the map over: new epoch, new secret, next rotation scheduled.
+ *
+ * One statement, so a zone can never be observed holding a new epoch against
+ * the old fog. The outgoing secret is archived by the caller *before* this runs
+ * — once it is overwritten here it is gone, and with it the ability to prove
+ * what last epoch's map was.
+ */
+export function rotate(
+  zoneId: string,
+  seedSecret: string,
+  seedCommit: string,
+  rotatesAt: number | null,
+): void {
+  s().rotate.run({ zoneId, seedSecret, seedCommit, rotatesAt });
+}
+
+/** Zones whose map is due to be reprinted. Null `rotates_at` never comes due. */
+export function dueForRotation(now = Date.now()): Zone[] {
+  return (s().dueForRotation.all(now) as ZoneRow[]).map(toZone);
+}
+
+export function getReveal(
+  zoneId: string,
+  epoch: number,
+  playerId: string,
+  r: number,
+  c: number,
+): Reveal | undefined {
+  const row = s().getReveal.get(zoneId, epoch, playerId, r, c) as RevealRow | undefined;
   return row ? toReveal(row) : undefined;
 }
 
-/** Returns false when the cell was already open — the caller refunds the energy. */
+/**
+ * Record a dig on one player's map.
+ *
+ * Returns false only when that same player had already opened this tile — a
+ * double-tap or a retried request. It is no longer possible to lose a race to
+ * another player, because there is no longer a shared key to contend for.
+ */
 export function addReveal(
   zoneId: string,
   epoch: number,
@@ -121,22 +178,27 @@ export function addReveal(
   const res = s().addReveal.run({
     zoneId,
     epoch,
+    playerId: reveal.playerId,
     r: reveal.r,
     c: reveal.c,
     type: reveal.type,
-    playerId: reveal.playerId,
     handle: reveal.byHandle,
     at: reveal.at,
   });
   return res.changes > 0;
 }
 
-export function revealsFor(zoneId: string, epoch: number): Reveal[] {
-  return (s().revealsFor.all(zoneId, epoch) as RevealRow[]).map(toReveal);
+/** One player's map. There is no longer any such thing as the zone's map. */
+export function revealsFor(zoneId: string, epoch: number, playerId: string): Reveal[] {
+  return (s().revealsFor.all(zoneId, epoch, playerId) as RevealRow[]).map(toReveal);
 }
 
-export function revealCount(zoneId: string, epoch: number): number {
-  return (s().revealCount.get(zoneId, epoch) as { n: number }).n;
+export function countRevealsBefore(playerId: string, before: number): number {
+  return (s().countRevealsBefore.get(playerId, before) as { n: number }).n;
+}
+
+export function revealCount(zoneId: string, epoch: number, playerId: string): number {
+  return (s().revealCount.get(zoneId, epoch, playerId) as { n: number }).n;
 }
 
 /** Publishes a finished epoch's seed so the map can be audited after the fact. */

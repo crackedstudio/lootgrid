@@ -59,11 +59,14 @@ describe('configured fees are payable', () => {
     }
   });
 
-  it('makes easy hunts free, because no positive fee could ever be rational', () => {
-    // A 1¢ prize split eight ways is an eighth of a cent. There is no fee above
-    // zero an agent would pay for that, so the config must not invent one.
+  it('keeps one tier free as a genuine no-cost path to a prize', () => {
+    // This used to hold by arithmetic — a 1¢ prize could not support any fee.
+    // The prize floor is now 60¢, so a small fee here *would* be rational and
+    // the zero is a deliberate choice rather than a forced one: a real free
+    // route to every prize is what keeps money buying information rather than
+    // buying a chance at the pot.
     expect(ENTRY_FEE_CENTS.easy).toBe(0);
-    expect(isRationalToEnter(1, prizeCentsFor('easy'), 8)).toBe(false);
+    expect(isRationalToEnter(0, prizeCentsFor('easy'), 8)).toBe(true);
   });
 });
 

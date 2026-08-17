@@ -59,7 +59,7 @@ export default function App() {
       )}
 
       {showGrid && (
-        <GridScreen state={state} onBackZones={game.backZones} onTile={game.onTile} />
+        <GridScreen state={state} onBackZones={game.backZones} onTile={game.onTile} onToggleSurvey={game.toggleSurveyMode} onDismissStuck={game.dismissStuck} onBuy={game.buy} onSpendRefill={game.spendRefill} />
       )}
 
       {state.view === 'market' && <MarketScreen state={state} />}
@@ -94,6 +94,7 @@ export default function App() {
           onMgTap={game.onMgTap}
           onMemPad={game.onMemPad}
           onMathPick={game.onMathPick}
+          onCrackLock={game.onCrackLock}
           onSeqTap={game.onSeqTap}
           onExit={game.exitMinigame}
         />

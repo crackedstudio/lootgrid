@@ -1,4 +1,4 @@
-import { ASYNC, GRID, HUNTS_PER_ZONE } from './config';
+import { ASYNC, CASH_PER_ZONE, EPOCH, GRID, HUNTS_PER_ZONE } from './config';
 import { migrate } from './db/migrate';
 import { tx } from './db/index';
 import * as attemptRepo from './db/repos/attempts';
@@ -15,7 +15,7 @@ import { hash, randomHex } from './hash';
 import { env } from './env';
 import { logger } from './logger';
 import { difficultyForBlock, prizeCentsFor, prizeLabelFor, toTokenUnits } from './prizes';
-import type { Attempt, BlockGame, Hunt, Player, Reveal, Zone, ZoneKind } from './types';
+import type { Attempt, BlockGame, Hunt, HuntKind, Player, Reveal, Zone, ZoneKind } from './types';
 
 /**
  * The seam between the referee and storage.
@@ -100,15 +100,61 @@ export function bootstrap(): void {
 }
 
 function seedZones(now = Date.now()): void {
-  for (const z of ZONE_SEED) {
+  ZONE_SEED.forEach((z, i) => {
     const seedSecret = randomHex(32);
     zoneRepo.insert(
-      { ...z, epoch: 1, seedSecret, seedCommit: hash(seedSecret).toString('hex') },
-      null,
+      {
+        ...z,
+        epoch: 1,
+        seedSecret,
+        seedCommit: hash(seedSecret).toString('hex'),
+        // Staggered across the rotation window rather than all landing on the
+        // same tick. Four zones resetting together would empty the whole world
+        // at once; spread out, there is always a map partway through its life.
+        rotatesAt: now + Math.round((EPOCH.rotateMs * (i + 1)) / ZONE_SEED.length),
+      },
       now,
     );
-  }
+  });
 }
+
+/**
+ * Turn a zone's map over.
+ *
+ * ─────────────────────────── order is the guarantee ─────────────────────────
+ *
+ * The outgoing secret is archived *first*. `zoneRepo.rotate` overwrites it, and
+ * once overwritten there is nothing left to prove what last epoch's map was —
+ * publishing it is the whole reason `zone_seed_history` exists. Archive then
+ * rotate, in one transaction, so a crash between the two cannot silently cost a
+ * player the ability to audit the map they just played.
+ *
+ * Live hunts do not survive. They are keyed by epoch, so leaving them alone
+ * would strand them on a map nobody can reach — and their pots are refundable
+ * precisely because `replenish` clamped their expiry to this moment.
+ */
+export function rotateZone(zone: Zone, now = Date.now()): Hunt[] {
+  const stranded = huntRepo.listLive(zone.id, zone.epoch);
+  const seedSecret = randomHex(32);
+
+  tx(() => {
+    zoneRepo.archiveSeed(zone, now);
+    zoneRepo.rotate(
+      zone.id,
+      seedSecret,
+      hash(seedSecret).toString('hex'),
+      zone.rotatesAt === null ? null : now + EPOCH.rotateMs,
+    );
+  });
+
+  logger.info(
+    { zoneId: zone.id, epoch: zone.epoch + 1, stranded: stranded.length },
+    'epoch rotated — map reprinted',
+  );
+  return stranded;
+}
+
+export const zonesDueForRotation = (now = Date.now()) => zoneRepo.dueForRotation(now);
 
 // ---------------------------------------------------------------- players
 
@@ -134,6 +180,51 @@ export function savePlayerEnergy(p: Player): void {
   playerRepo.saveEnergy(p.id, p.energyValue, p.energyAt);
 }
 
+/**
+ * Award XP. Incremented in SQL, then mirrored onto the cached player.
+ *
+ * Never throws. XP is a reward, not a settlement — a counter that fails to
+ * advance must not cost someone the tile they already paid energy for.
+ */
+export function awardXp(p: Player, amount: number): void {
+  if (amount <= 0) return;
+  try {
+    playerRepo.addXp(p.id, amount);
+    p.xp += amount;
+    playerCache.set(p.id, p);
+  } catch (err) {
+    logger.warn({ err, playerId: p.id, amount }, 'xp award failed — the action stands');
+  }
+}
+
+/** The Cycle Pass expiry. Mirrored onto the cached player — energy reads it. */
+/**
+ * Record that a player was here today. See `playerRepo.seen`.
+ *
+ * Mirrors onto the cached object so the write can be skipped for the rest of
+ * the day without a read — the primary key would reject it anyway, but not
+ * asking is cheaper than being rejected on every request.
+ */
+export function markSeen(p: Player, now = Date.now()): void {
+  const today = Math.floor(now / 86_400_000);
+  if (p.lastSeenDay === today) return;
+  playerRepo.seen(p.id, now);
+  p.lastSeenDay = today;
+  playerCache.set(p.id, p);
+}
+
+export function setPass(p: Player, until: number | null): void {
+  p.passUntil = until;
+  playerCache.set(p.id, p);
+  playerRepo.setPass(p.id, until);
+}
+
+export function setPassToppedUp(p: Player, at: number): void {
+  p.passToppedUpAt = at;
+  playerCache.set(p.id, p);
+  playerRepo.setToppedUp(p.id, at);
+}
+
 export function setSessionKey(p: Player, sessionKey: string | null): void {
   p.sessionKey = sessionKey;
   playerCache.set(p.id, p);
@@ -144,11 +235,13 @@ export function setSessionKey(p: Player, sessionKey: string | null): void {
 
 export const getZone = (id: string) => zoneRepo.get(id);
 export const listZones = () => zoneRepo.list();
-export const revealsFor = (z: Zone) => zoneRepo.revealsFor(z.id, z.epoch);
-export const getReveal = (z: Zone, r: number, c: number) => zoneRepo.getReveal(z.id, z.epoch, r, c);
+export const revealsFor = (z: Zone, playerId: string) =>
+  zoneRepo.revealsFor(z.id, z.epoch, playerId);
+export const getReveal = (z: Zone, playerId: string, r: number, c: number) =>
+  zoneRepo.getReveal(z.id, z.epoch, playerId, r, c);
 export const seedHistory = (zoneId: string) => zoneRepo.seedHistory(zoneId);
 
-/** False means someone else opened this cell first; the caller refunds energy. */
+/** False means this player had already opened this cell. See the repo. */
 export function addReveal(z: Zone, reveal: Reveal & { playerId: string }): boolean {
   return zoneRepo.addReveal(z.id, z.epoch, reveal);
 }
@@ -165,6 +258,9 @@ export function getHunt(id: string): Hunt | undefined {
 
 export const huntAt = (z: Zone, r: number, c: number) => huntRepo.at(z.id, z.epoch, r, c);
 export const liveHuntsIn = (z: Zone) => huntRepo.listLive(z.id, z.epoch);
+/** Hunts reserved for one player. Never part of the shared map — see types.Hunt. */
+export const ownedHuntsIn = (z: Zone, ownerId: string) =>
+  huntRepo.listOwned(z.id, z.epoch, ownerId);
 export const expiredHunts = (now?: number) => huntRepo.expired(now);
 
 export function setHuntStatus(
@@ -206,7 +302,12 @@ export function blockGame(hunt: Hunt): BlockGame {
   const zoneKind = getZone(hunt.zoneId)?.kind ?? 'human';
   const type = gameTypeForBlock(hunt.salt, hunt.id, hunt.kind, zoneKind);
   const mod = moduleFor(type);
-  const { spec, secret, limitMs } = mod.generate(hunt.salt, hunt.difficulty);
+  // The cell goes in because The Crack's answer must BE the treasure — hints
+  // describe its real position, so a door that is some other cell would make
+  // every hint noise. Every other module ignores it.
+  const { spec, secret, limitMs } = mod.generate(hunt.salt, hunt.difficulty, {
+    cell: { r: hunt.r, c: hunt.c },
+  });
   const game: BlockGame = { type, spec, secret, limitMs };
 
   hunt.game = game;
@@ -223,17 +324,40 @@ export function replenish(zoneId: string, now = Date.now()): number {
   if (!zone) return 0;
 
   let open = huntRepo.countOpen(zone.id, zone.epoch);
+  let openCash = huntRepo.countOpenCash(zone.id, zone.epoch);
   let created = 0;
   let guard = 0;
+
+  // No hunt outlives its epoch.
+  //
+  // This is not tidiness — it is what makes an abandoned pot recoverable. The
+  // escrow's `refund` reverts with NotExpired until `block.timestamp` passes the
+  // pot's `expiresAt`, so a hunt carrying a 24h TTL created an hour before
+  // rotation would be stranded on a dead map with its money locked for another
+  // 23 hours. Clamping here means the moment an epoch closes, every pot it left
+  // behind is already refundable.
+  const epochEnd = zone.rotatesAt;
+  const expiryFor = (from: number): number => {
+    const ttl = from + huntTtlFor(zone.kind);
+    return epochEnd === null ? ttl : Math.min(ttl, epochEnd);
+  };
 
   while (open < HUNTS_PER_ZONE && guard < 200) {
     guard += 1;
     const r = Math.floor(Math.random() * GRID.rows);
     const c = Math.floor(Math.random() * GRID.cols);
 
-    // Don't stack a hunt on an occupied or already-uncovered cell.
+    // Don't stack two hunts on one cell. There is deliberately no check for an
+    // already-uncovered cell any more: under private fog "uncovered" is a fact
+    // about one player, not about the zone, and a hunt is a property of the
+    // zone. Placing around whoever happened to dig there would leak their map
+    // into the placement — and would get harder to satisfy the more they dug,
+    // which is the shared-map problem wearing a different hat.
+    //
+    // The consequence is that a hunt can appear beneath a tile a player has
+    // already opened. They find it on their next visit, which is a good moment
+    // rather than a bug.
     if (huntRepo.at(zone.id, zone.epoch, r, c)) continue;
-    if (zoneRepo.getReveal(zone.id, zone.epoch, r, c)) continue;
 
     const salt = randomHex(32);
     const id = `${zone.id}-${zone.epoch}-${cellKey(r, c).replace(',', 'x')}-${randomHex(3)}`;
@@ -243,6 +367,16 @@ export function replenish(zoneId: string, now = Date.now()): number {
     // and hard tables since phase 0, and a hardcoded 'med' here was the reason
     // two thirds of them never ran.
     const difficulty = difficultyForBlock(salt, id, zone.kind);
+
+    // Cash first, then fill the rest of the zone with XP hunts.
+    //
+    // The count, not the coin flip, is what bounds the burn: a zone holds
+    // exactly CASH_PER_ZONE funded hunts no matter how many treasures are on
+    // it. `kind` has been on `Hunt` since phase 0 with the energy cost, the
+    // module pool and the entry path all handling 'puzzle' — and `replenish`
+    // hardcoded 'cash', so a puzzle hunt had never once existed.
+    const kind: HuntKind = openCash < CASH_PER_ZONE ? 'cash' : 'puzzle';
+
     const hunt: Hunt = {
       id,
       zoneId: zone.id,
@@ -251,15 +385,19 @@ export function replenish(zoneId: string, now = Date.now()): number {
       c,
       salt,
       cellCommit: hash(id, zone.id, r, c, salt).toString('hex'),
-      kind: 'cash',
+      kind,
+      // The shared map. Reserved tutorial hunts are created by tutorial.ts.
+      ownerId: null,
       difficulty,
       // Derived from difficulty rather than cycled through a fixed array, so a
-      // prize now means something about the hunt. See prizes.ts.
-      prizeLabel: prizeLabelFor(difficulty),
+      // prize now means something about the hunt. See prizes.ts. A puzzle hunt
+      // pays in XP and says so — showing "$0.00" would read as a broken prize
+      // rather than a different kind of reward.
+      prizeLabel: kind === 'cash' ? prizeLabelFor(difficulty) : 'XP',
       status: 'live',
       winnerId: null,
       game: null,
-      expiresAt: now + huntTtlFor(zone.kind),
+      expiresAt: expiryFor(now),
       createdAt: now,
     };
     // The hint set and its commitment are written in the same transaction as the
@@ -277,18 +415,24 @@ export function replenish(zoneId: string, now = Date.now()): number {
       // Queue the prize alongside the hunt, so a created hunt and its funding
       // intent are recorded together or not at all. The worker funds it out of
       // band — an unfunded hunt still plays, it just carries no money yet.
-      escrow.enqueue(
-        hunt.id,
-        toTokenUnits(prizeCentsFor(hunt.difficulty), env.ESCROW_TOKEN_DECIMALS),
-        hunt.expiresAt ?? now + huntTtlFor(zone.kind),
-      );
+      //
+      // Only cash hunts have anything to fund. A puzzle hunt with an escrow row
+      // would be a pot nobody can win, waiting to be refunded — pure gas.
+      if (hunt.kind === 'cash') {
+        escrow.enqueue(
+          hunt.id,
+          toTokenUnits(prizeCentsFor(hunt.difficulty), env.ESCROW_TOKEN_DECIMALS),
+          hunt.expiresAt ?? expiryFor(now),
+        );
+      }
     });
 
     open += 1;
+    if (hunt.kind === 'cash') openCash += 1;
     created += 1;
   }
 
-  if (created > 0) logger.info({ zoneId, created, open }, 'zone replenished');
+  if (created > 0) logger.info({ zoneId, created, open, cash: openCash }, 'zone replenished');
   return created;
 }
 
@@ -374,3 +518,16 @@ export function attemptHistory(playerId: string, limit = 50) {
 }
 
 export const attemptEvents = (attemptId: string) => attemptRepo.eventsFor(attemptId);
+
+/**
+ * Whether this is the player's very first attempt at anything.
+ *
+ * Read after the insert, so the attempt itself is counted — exactly one means
+ * this is the first. Asking before the insert would race two concurrent
+ * entries into both believing they were first.
+ */
+export const isFirstAttempt = (a: Attempt): boolean => attemptRepo.countForPlayer(a.playerId) === 1;
+
+/** Tiles this player dug before a given moment. The taps in taps-to-treasure. */
+export const digsBefore = (playerId: string, before: number): number =>
+  zoneRepo.countRevealsBefore(playerId, before);

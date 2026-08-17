@@ -1,10 +1,14 @@
-import { ASYNC, ENERGY, NET, RACE } from './config';
+import { ASYNC, CRACK, ENERGY, NET, PUZZLE_HUNT_XP, RACE, TUTORIAL } from './config';
+import * as admission from './admission';
+import * as escrow from './chain/escrow';
 import * as director from './director';
 import type { Directive } from './director/types';
 import * as energy from './energy';
 import { moduleFor } from './games';
+import { isCorrect } from './games/crack';
 import type { AnyGameModule, Timing } from './games/types';
 import { hashInt, randomHex } from './hash';
+import * as hints from './hints';
 import { logger } from './logger';
 import * as rooms from './rooms';
 import * as store from './store';
@@ -41,7 +45,8 @@ export const observers: {
 
 export type OpenResult =
   | { ok: true; attempt: Attempt; spec: unknown; limitMs: number; gameType: string }
-  | { ok: false; error: string };
+  /** `detail` carries what the player needs to fix a refusal they can fix. */
+  | { ok: false; error: string; detail?: Record<string, unknown> };
 
 /**
  * Resume attempts that survived a restart.
@@ -61,15 +66,27 @@ export function resume(attempts: Attempt[]): void {
 export function openAttempt(player: Player, hunt: Hunt, now = Date.now()): OpenResult {
   if (hunt.status !== 'live') return { ok: false, error: 'hunt_not_live' };
 
-  // Shadow-banned accounts stop matching into cash hunts. Deliberately
-  // indistinguishable from the block having just closed — telling a suspected
-  // botter exactly when they were caught only helps them iterate.
-  if (player.shadowBanned && hunt.kind === 'cash') return { ok: false, error: 'hunt_not_live' };
+  // The money gate. Keys, rank, wallet age and the shadow ban, asked in one
+  // place — see admission.ts for why they live together rather than being
+  // checked at whichever route happened to need them.
+  //
+  // Here rather than in the HTTP handler on purpose: every entry path reaches
+  // this function, including the agent driver, so a gate placed here cannot be
+  // walked around by a caller that did not know about it.
+  const admitted = admission.mayEnter(player, hunt, store.getZone(hunt.zoneId)?.kind ?? 'human', now);
+  if (!admitted.ok) {
+    // A shadow ban keeps its old disguise: it must stay indistinguishable from
+    // the block having just closed. Every other refusal says what it is,
+    // because a player who cannot see why they were turned away assumes the
+    // game is rigged.
+    if (admitted.code === 'shadow_banned') return { ok: false, error: 'hunt_not_live' };
+    return { ok: false, error: admitted.code!, detail: admitted.detail };
+  }
 
   if (store.attemptOf(hunt.id, player.id)) return { ok: false, error: 'already_attempted' };
 
   const cost = hunt.kind === 'cash' ? ENERGY.costCashHunt : ENERGY.costPuzzleHunt;
-  const spent = energy.spend(player, cost, now);
+  const spent = energy.spend(player, cost, now, hunt.kind === 'cash' ? 'cash_hunt' : 'puzzle_hunt');
   if (!spent.ok) return { ok: false, error: 'insufficient_energy' };
   store.savePlayerEnergy(player);
 
@@ -91,6 +108,7 @@ export function openAttempt(player: Player, hunt: Hunt, now = Date.now()): OpenR
     lastSeq: 0,
     state: mod.init(game.spec),
     elapsedMs: null,
+    hintsUsed: null,
     failReason: null,
     progress: 0,
     intervals: [],
@@ -240,6 +258,13 @@ function complete(attempt: Attempt, serverElapsed: number): void {
   const hunt = store.getHunt(attempt.huntId);
   if (!hunt) return;
 
+  // Snapshot the information the player had when they committed.
+  //
+  // At the decision, not at resolution: hints can arrive in the fifteen seconds
+  // between locking and the reveal, and recomputing later could cost someone a
+  // tiebreak for a hint that reached them after they had already answered.
+  attempt.hintsUsed = hints.countForHunt(attempt.playerId, hunt.id);
+
   if (!finishers.has(hunt.id)) finishers.set(hunt.id, []);
   finishers.get(hunt.id)!.push(attempt.id);
 
@@ -280,8 +305,58 @@ function complete(attempt: Attempt, serverElapsed: number): void {
  * before the grid replenishes. That is a real cost, paid for fairness.
  */
 function settlementWindowFor(hunt: Hunt): number {
+  // The Crack does not score on time, so the window is not about jitter — it is
+  // about giving everyone who was already thinking their full fifteen seconds.
+  // Anyone who started before the first lock finishes inside the game's own
+  // limit, so that is exactly how long the result stays open. A 400ms window
+  // would silently reintroduce the thing this game exists to remove: it would
+  // hand the prize to whoever answered first rather than whoever answered best.
+  if (store.blockGame(hunt).type === 'crack') return CRACK.limitMs + RACE.latencyGraceMs;
+
   const kind = store.getZone(hunt.zoneId)?.kind ?? 'human';
   return ASYNC.settlementWindowMs[kind];
+}
+
+/**
+ * Rank completed attempts, best first.
+ *
+ * ─────────────────────────── two different questions ────────────────────────
+ *
+ * Every other game asks "who did it fastest", and elapsed time is the answer.
+ * The Crack asks "who worked it out", and time is not merely irrelevant there —
+ * including it would undo the whole point, because elapsed time is a proxy for
+ * hardware and connection quality.
+ *
+ * So a crack hunt ranks on correctness, then on fewer hints used, then on a
+ * deterministic hash. `startedAt` is deliberately absent from that chain even
+ * as a tiebreak: arrival order is who loaded the page first, which is exactly
+ * the "I lost because my phone is slow" complaint wearing a different hat.
+ */
+function rankFinishers(hunt: Hunt, done: Attempt[]): Attempt[] {
+  const game = store.blockGame(hunt);
+
+  if (game.type !== 'crack') {
+    return [...done].sort((a, b) => {
+      if (a.elapsedMs !== b.elapsedMs) return a.elapsedMs! - b.elapsedMs!;
+      if (a.startedAt !== b.startedAt) return a.startedAt - b.startedAt;
+      // Deterministic, never random — the same inputs must always produce the
+      // same winner, or a result cannot be audited.
+      return hashInt(hunt.id, a.playerId) - hashInt(hunt.id, b.playerId);
+    });
+  }
+
+  // Wrong doors do not place at all. They are not slower answers, they are
+  // answers to a question that had one right response.
+  const correct = done.filter(a => isCorrect(a.state, game.secret));
+
+  return correct.sort((a, b) => {
+    const ha = a.hintsUsed ?? 0;
+    const hb = b.hintsUsed ?? 0;
+    // Fewer hints wins: the player who got there on less bought information
+    // beats the one who bought their way to the same answer.
+    if (ha !== hb) return ha - hb;
+    return hashInt(hunt.id, a.playerId) - hashInt(hunt.id, b.playerId);
+  });
 }
 
 function resolve(huntId: string, now = Date.now()): void {
@@ -300,15 +375,36 @@ function resolve(huntId: string, now = Date.now()): void {
     return;
   }
 
-  done.sort((a, b) => {
-    if (a.elapsedMs !== b.elapsedMs) return a.elapsedMs! - b.elapsedMs!;
-    if (a.startedAt !== b.startedAt) return a.startedAt - b.startedAt;
-    // Deterministic, never random — the same inputs must always produce the
-    // same winner, or a result cannot be audited.
-    return hashInt(huntId, a.playerId) - hashInt(huntId, b.playerId);
-  });
+  const ranked = rankFinishers(hunt, done);
 
-  const winner = done[0]!;
+  if (ranked.length === 0) {
+    // Everyone picked a wrong door.
+    //
+    // The treasure goes back on the board. A funded prize must not be destroyed
+    // by a wrong guess — the money is escrowed for whoever actually finds it,
+    // and burning it because the first people to try were wrong would be the
+    // house keeping a pot nobody won.
+    //
+    // The players who tried do not get another go: UNIQUE (hunt_id, player_id)
+    // still holds, and one shot per block is what stops a prize going to
+    // whoever could afford the most attempts.
+    for (const a of store.attemptsFor(huntId)) {
+      if (a.status !== 'active') continue;
+      a.status = 'lost';
+      wheel.cancel(a.id);
+      rooms.toPlayer(a.playerId, { t: 'attempt:lost', attemptId: a.id, winner: null });
+      store.finishAttempt(a, now);
+      observers.onAttemptFinished?.(a, 'lost');
+    }
+
+    store.setHuntStatus(hunt, 'live');
+    finishers.delete(huntId);
+    rooms.broadcast(rooms.huntRoom(huntId), { t: 'hunt:reopened', huntId });
+    logger.info({ huntId, tried: done.length }, 'nobody cracked it — hunt reopened');
+    return;
+  }
+
+  const winner = ranked[0]!;
   const racers = store.attemptsFor(huntId).length;
 
   for (const a of store.attemptsFor(huntId)) {
@@ -326,6 +422,28 @@ function resolve(huntId: string, now = Date.now()): void {
 
   store.setHuntStatus(hunt, 'resolved', winner.playerId, now);
   finishers.delete(huntId);
+
+  // A puzzle hunt pays XP, because it carries no pot to pay from. Most
+  // treasures are these — see CASH_PER_ZONE — so without this, winning the
+  // overwhelming majority of what is on the map rewarded nothing at all.
+  if (hunt.kind === 'puzzle') {
+    const player = store.getPlayer(winner.playerId);
+    if (player) {
+      // A placed first treasure pays more, and pays in energy as well as XP.
+      //
+      // Energy because the moment after a first win is exactly when a new
+      // player wants to keep going and the four-hour bar is about to stop them.
+      // Not cash: a prize handed to a brand-new ungated wallet is the sybil
+      // hole phase 5 closed. See tutorial.ts.
+      const placed = hunt.ownerId === winner.playerId;
+      store.awardXp(player, placed ? TUTORIAL.reward.xp : PUZZLE_HUNT_XP);
+      if (placed) {
+        const view = energy.refund(player, TUTORIAL.reward.energy, now);
+        store.savePlayerEnergy(player);
+        rooms.toPlayer(player.id, { t: 'energy', ...view });
+      }
+    }
+  }
 
   rooms.broadcast(rooms.huntRoom(huntId), {
     t: 'hunt:resolved',
@@ -378,13 +496,77 @@ export function sweepExpiredHunts(now = Date.now()): number {
   for (const h of expiredHunts) {
     const hunt = store.getHunt(h.id);
     if (!hunt || hunt.status !== 'live') continue;
-    store.setHuntStatus(hunt, 'expired', null, now);
-    rooms.broadcast(rooms.zoneRoom(hunt.zoneId), { t: 'hunt:expired', huntId: hunt.id, r: hunt.r, c: hunt.c });
-    store.evictHunt(hunt.id);
+    closeUncracked(hunt, now);
     store.replenish(hunt.zoneId, now);
   }
   if (expiredHunts.length > 0) logger.info({ n: expiredHunts.length }, 'expired hunts swept');
   return expiredHunts.length;
+}
+
+/**
+ * Retire a hunt nobody won, and start its pot on the way home.
+ *
+ * The refund is queued rather than sent: `escrow.enqueueRefund` will not
+ * dispatch before the pot's on-chain expiry, and the contract rejects a refund
+ * of a pot that was claimed or never funded. So this is safe to call on every
+ * hunt that closes without a winner, which is exactly what makes it correct to
+ * call from both paths below.
+ */
+function closeUncracked(hunt: Hunt, now: number): void {
+  store.setHuntStatus(hunt, 'expired', null, now);
+  rooms.broadcast(rooms.zoneRoom(hunt.zoneId), {
+    t: 'hunt:expired',
+    huntId: hunt.id,
+    r: hunt.r,
+    c: hunt.c,
+  });
+  // Nobody cracked it, so the money in it belongs back in the treasury. Before
+  // rotation existed this was a slow leak nobody had to think about; now that
+  // maps close on a schedule it is the routine case.
+  if (hunt.expiresAt !== null) escrow.enqueueRefund(hunt.id, hunt.expiresAt);
+  store.evictHunt(hunt.id);
+}
+
+/**
+ * Reprint the maps whose time is up.
+ *
+ * ─────────────────────────── what rotation is for ───────────────────────────
+ *
+ * A reveal is permanent within an epoch, so without this a zone is consumed
+ * rather than played: every dig takes a tile out of the world and nothing puts
+ * one back. Rotation is the only thing that makes a zone survivable — see
+ * config's EPOCH block.
+ *
+ * Hunts in the outgoing epoch do not carry over. They are keyed by epoch, so a
+ * survivor would sit on a map no player can reach; and because `replenish`
+ * clamped their expiry to this moment, their pots are refundable the instant
+ * they close. That clamp is what makes rotation safe to do on a timer rather
+ * than something an operator has to supervise.
+ */
+export function sweepRotations(now = Date.now()): number {
+  const due = store.zonesDueForRotation(now);
+
+  for (const zone of due) {
+    try {
+      for (const h of store.rotateZone(zone, now)) {
+        const hunt = store.getHunt(h.id);
+        if (!hunt || hunt.status !== 'live') continue;
+        closeUncracked(hunt, now);
+      }
+
+      // The zone object we hold still describes the epoch that just ended, so
+      // re-read it — `replenish` must stock the new map, not the dead one.
+      rooms.broadcast(rooms.zoneRoom(zone.id), { t: 'zone:rotated', zoneId: zone.id, epoch: zone.epoch + 1 });
+      store.replenish(zone.id, now);
+    } catch (err) {
+      // One zone failing to rotate must not hold up the others, and it is
+      // recoverable by nature: `rotates_at` is unchanged, so it comes due again
+      // on the next sweep.
+      logger.error({ err, zoneId: zone.id }, 'zone rotation failed — will retry next sweep');
+    }
+  }
+
+  return due.length;
 }
 
 // ---------------------------------------------------------------- fan-out
@@ -456,6 +638,15 @@ export function start(): void {
       sweepExpiredHunts();
     } catch (err) {
       logger.error({ err }, 'hunt expiry sweep failed');
+    }
+    // Same tick rather than a timer of its own. Rotation is a three-day event
+    // checked once a minute — it does not need its own cadence, and running it
+    // after the expiry sweep means a hunt that expired on its own is already
+    // closed by the time its map is torn up.
+    try {
+      sweepRotations();
+    } catch (err) {
+      logger.error({ err }, 'zone rotation sweep failed');
     }
   }, 60_000);
 }

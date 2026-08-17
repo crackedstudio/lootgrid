@@ -3,6 +3,7 @@ import * as vaultChain from '../chain/agentVault';
 import * as agentRepo from '../db/repos/agents';
 import { env } from '../env';
 import * as store from '../store';
+import { GRID } from '../config';
 import { freshWorld, makePlayer, teardownWorld } from '../testing/harness';
 import { candidates, type DeductionState } from '../games/deduction';
 import * as driver from './driver';
@@ -165,7 +166,10 @@ describe('an agent actually plays', () => {
     if (store.blockGame(store.getHunt(attempt.huntId)!).type === 'deduction') {
       const state = attempt.state as DeductionState;
       expect(state.used).toBeGreaterThan(0);
-      expect(candidates(state.answers).length).toBeLessThan(18 * 12);
+      // Narrowed at all, against whatever the map currently is. Written as
+      // `18 * 12` when that was the grid, which stopped meaning "the whole
+      // board" the moment it grew.
+      expect(candidates(state.answers).length).toBeLessThan(GRID.rows * GRID.cols);
     }
   });
 

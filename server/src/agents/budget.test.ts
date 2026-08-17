@@ -178,14 +178,34 @@ describe('whether a hunt is worth entering at all', () => {
    * The finding that changed `prizes.ts`. Inference belongs on the cost side of
    * architecture §1's EV, and on the easy tier it dominates.
    */
-  it('rules the easy tier out for agents', () => {
-    // A 1c prize is 1,000 mills. Ten calls cost 10 (flash) or 20 (pro). Split
-    // three ways the share is 333 mills — but the prize is so small that any
-    // real contention makes it a loss once thinking is counted.
-    expect(budget.viableFor('easy', 1, FLASH)).toBe(true);
-    expect(budget.viableFor('easy', 100, FLASH)).toBe(false);
-    // The expensive model gives up sooner.
-    expect(budget.viableFor('easy', 100, PRO)).toBe(false);
+  /**
+   * Raising the prize floor bought the cheap tier back.
+   *
+   * This test used to assert the opposite, and it was right to: a 1c prize is
+   * 1,000 mills against ~10–20 mills of thinking, so any real contention made
+   * an easy hunt a loss once inference was counted, and a rational agent
+   * refused. That was the finding that shaped `prizes.ts`.
+   *
+   * At a 60c floor the same arithmetic runs the other way — the tier is viable
+   * against contention an order of magnitude past anything realistic. Agent
+   * zones still do not *offer* it (see `AGENT_DIFFICULTY_WEIGHTS`), but that is
+   * now a judgement about what makes an interesting problem rather than an
+   * arithmetic necessity, and the two should not be confused again.
+   */
+  it('makes the cheap tier viable now that the prize floor has risen', () => {
+    for (const entrants of [1, 8, 40, 100]) {
+      expect(budget.viableFor('easy', entrants, FLASH), `flash/${entrants}`).toBe(true);
+      expect(budget.viableFor('easy', entrants, PRO), `pro/${entrants}`).toBe(true);
+    }
+  });
+
+  it('still refuses a hunt once contention makes thinking cost more than the share', () => {
+    // The mechanism is intact, just an order of magnitude further out. This is
+    // the property that actually matters — an agent that enters anything is an
+    // agent that loses money — and the expensive model still gives up first.
+    expect(budget.viableFor('easy', 4_000, PRO)).toBe(false);
+    expect(budget.viableFor('easy', 4_000, FLASH)).toBe(true);
+    expect(budget.viableFor('easy', 10_000, FLASH)).toBe(false);
   });
 
   it('leaves the paying tiers comfortably viable', () => {
@@ -195,10 +215,12 @@ describe('whether a hunt is worth entering at all', () => {
     }
   });
 
-  it('is why agent zones never draw easy hunts', () => {
-    // The consequence, encoded where the hunts are actually created. A house
-    // that keeps offering hunts no rational player enters is leaving dead
-    // squares on the grid.
+  it('agent zones still never draw easy hunts', () => {
+    // Encoded where the hunts are actually created. Note the reason has moved:
+    // this was forced while an easy hunt paid 1c and no rational agent would
+    // enter one, and it is now a judgement that an agent zone should pose
+    // problems worth reasoning about. The assertion is the same; do not
+    // re-derive the old justification from it.
     expect(AGENT_DIFFICULTY_WEIGHTS.map(([d]) => d)).not.toContain('easy');
   });
 });

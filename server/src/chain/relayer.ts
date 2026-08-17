@@ -41,11 +41,28 @@ import * as metrics from '../metrics';
  * against silently losing a record.
  */
 
+/**
+ * ─────────────────────────── reveals are not relayed ─────────────────────────
+ *
+ * `LootGridActions` still exposes `recordReveal` and `recordRevealBatch`, and
+ * this server no longer calls either. Private fog is the reason: a public,
+ * per-player log of who uncovered which tile republishes the very map that
+ * making the fog private was meant to withhold. An observer could reassemble
+ * the pooled map from chain data and hand it back to everyone, which restores
+ * free-riding, restores the standing subsidy against the hint market, and makes
+ * fifty burner wallets cheap again.
+ *
+ * The deployed contract keeps the functions — it is immutable and other
+ * deployments may want them — but nothing here can reach them, and `RelayKind`
+ * has no 'reveal' member so nothing can start doing so by accident.
+ *
+ * What is still published is every claim the audit story actually rests on:
+ * hunt commitments, hint sets and their truth flags, entries, resolutions and
+ * payouts. Digs were the weakest of those and the only one that conflicts.
+ */
 export const ACTIONS_ABI = parseAbi([
-  'function recordReveal(address player, bytes32 zoneId, uint32 epoch, uint8 r, uint8 c, uint8 tileType)',
   'function recordEntry(address player, bytes32 huntId, uint8 gameType)',
   'function recordResolution(address winner, bytes32 huntId, uint32 elapsedMs, uint16 racers)',
-  'function recordRevealBatch(address[] players, bytes32[] zoneIds, uint32[] epochs, uint8[] rs, uint8[] cs, uint8[] tileTypes)',
 ]);
 
 // ------------------------------------------------------------------ encoding
@@ -64,29 +81,17 @@ export function toBytes32Id(id: string): Hex {
 }
 
 /** Stable numeric codes for the on-chain enums. Append only — never reorder. */
-const TILE_TYPES = ['empty', 'clue', 'trap', 'mystery', 'puzzle'] as const;
 const GAME_TYPES = ['math', 'memory', 'sequence', 'tap'] as const;
 
 /** Unknown values map to 255 rather than throwing — an odd log beats a lost one. */
-export const tileTypeCode = (t: string): number => {
-  const i = (TILE_TYPES as readonly string[]).indexOf(t);
-  return i === -1 ? 255 : i;
-};
 export const gameTypeCode = (t: string): number => {
   const i = (GAME_TYPES as readonly string[]).indexOf(t);
   return i === -1 ? 255 : i;
 };
 
-export type RelayKind = 'reveal' | 'entry' | 'resolution';
+/** See the ABI note above for why there is no 'reveal'. */
+export type RelayKind = 'entry' | 'resolution';
 
-export interface RevealPayload {
-  player: Address;
-  zoneId: Hex;
-  epoch: number;
-  r: number;
-  c: number;
-  tileType: number;
-}
 export interface EntryPayload {
   player: Address;
   huntId: Hex;
@@ -99,7 +104,7 @@ export interface ResolutionPayload {
   racers: number;
 }
 
-type Payload = RevealPayload | EntryPayload | ResolutionPayload;
+type Payload = EntryPayload | ResolutionPayload;
 
 interface Row {
   id: number;
@@ -184,14 +189,14 @@ async function resyncNonce(): Promise<void> {
 }
 
 /**
- * Fixed gas limits rather than an `eth_estimateGas` per transaction. These calls
+ * Fixed gas limit rather than an `eth_estimateGas` per transaction. These calls
  * emit a log and bump a counter — the cost is known and bounded, and skipping
  * estimation removes a round trip from the hot path.
+ *
+ * One number now that reveals are gone: the variable term existed only for
+ * `recordRevealBatch`, and entries and resolutions are one row per transaction.
  */
-function gasFor(kind: RelayKind, batch: number): bigint {
-  if (kind === 'reveal' && batch > 1) return 60_000n + 8_000n * BigInt(batch);
-  return 120_000n;
-}
+const RELAY_GAS = 120_000n;
 
 // ------------------------------------------------------------------ worker
 
@@ -258,24 +263,15 @@ function markFailed(rows: Row[], err: unknown): void {
   })();
 }
 
-/** Groups consecutive same-kind rows so reveals can batch when configured to. */
-function chunk(rows: Row[]): Row[][] {
-  const out: Row[][] = [];
-  for (const row of rows) {
-    const last = out[out.length - 1];
-    const canBatch =
-      row.kind === 'reveal' &&
-      env.RELAY_BATCH_SIZE > 1 &&
-      last !== undefined &&
-      last[0]!.kind === 'reveal' &&
-      last.length < env.RELAY_BATCH_SIZE;
-    if (canBatch) last!.push(row);
-    else out.push([row]);
-  }
-  return out;
-}
-
-/** The real transport. One transaction, nonce supplied locally. */
+/**
+ * The real transport. One transaction, nonce supplied locally.
+ *
+ * `payloads` is still an array and every branch reads `payloads[0]`. Batching
+ * went out with the reveal relay — `recordRevealBatch` was the only multi-row
+ * call the contract offers — but the queue's group-oriented shape is kept
+ * because dead-lettering, receipt watching and requeueing all operate on groups,
+ * and collapsing them to single rows would be a larger change than it looks.
+ */
 const chainSend: SendFn = async (kind, payloads) => {
   const { wallet: w, from } = clients();
   const n = nonce!;
@@ -286,32 +282,11 @@ const chainSend: SendFn = async (kind, payloads) => {
     abi: ACTIONS_ABI,
     chain: null,
     nonce: n,
-    gas: gasFor(kind, payloads.length),
+    gas: RELAY_GAS,
   } as const;
 
   let hash: Hex;
-  if (kind === 'reveal' && payloads.length > 1) {
-    const ps = payloads as RevealPayload[];
-    hash = await w.writeContract({
-      ...common,
-      functionName: 'recordRevealBatch',
-      args: [
-        ps.map(p => p.player),
-        ps.map(p => p.zoneId),
-        ps.map(p => p.epoch),
-        ps.map(p => p.r),
-        ps.map(p => p.c),
-        ps.map(p => p.tileType),
-      ],
-    });
-  } else if (kind === 'reveal') {
-    const p = payloads[0] as RevealPayload;
-    hash = await w.writeContract({
-      ...common,
-      functionName: 'recordReveal',
-      args: [p.player, p.zoneId, p.epoch, p.r, p.c, p.tileType],
-    });
-  } else if (kind === 'entry') {
+  if (kind === 'entry') {
     const p = payloads[0] as EntryPayload;
     hash = await w.writeContract({
       ...common,
@@ -399,7 +374,8 @@ export async function drain(): Promise<number> {
     const rows = claimDue(env.RELAY_MAX_IN_FLIGHT);
     if (rows.length === 0) return 0;
 
-    for (const group of chunk(rows)) {
+    // One row per transaction. See `chainSend` — nothing batches any more.
+    for (const group of rows.map(r => [r])) {
       try {
         const hash = await sendFn(
           group[0]!.kind,
@@ -469,7 +445,7 @@ export function start(): void {
   // the first reveal — but only the real transport has one.
   const from = sendFn === chainSend ? clients().from : null;
   logger.info(
-    { relayer: from, contract: env.LOOTGRID_ACTIONS_ADDRESS, batch: env.RELAY_BATCH_SIZE },
+    { relayer: from, contract: env.LOOTGRID_ACTIONS_ADDRESS },
     'relay started',
   );
 

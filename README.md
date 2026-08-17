@@ -133,6 +133,7 @@ maps into SVG.
 | Fairness proof | ✅ Zone seed commits; salt revealed on resolution |
 | Persistence | ✅ SQLite; survives restarts |
 | Auth | ⚠️ Dev mode locally; `PlayerRegistry` signing ready but needs deployment |
+| On-chain game log | ✅ Built, off by default — `LootGridActions` + a durable relay outbox |
 | Prize escrow | ❌ Not built — `prizeLabel` is a display string |
 | Creating hunts | ❌ Needs escrow; the screen says so rather than faking it |
 | Leaderboard / profile activity | ❌ Still static arrays |
@@ -160,6 +161,15 @@ leaderboard from real results; make the layout responsive.
 
 **Then** — `LootGridEscrow`, the chain indexer and the settlement relayer, so prizes actually
 pay out. Audit before mainnet.
+
+**Optional at any point after `PlayerRegistry`** — flip `RELAY_ENABLED=true` to publish hunt
+entries and hunt resolutions to `LootGridActions`, one transaction per action, with no wallet
+prompt for the player. Tile reveals are deliberately *not* published: the fog is per-player, and
+a public log of who dug where would hand any observer the pooled map back.
+
+Gameplay itself can't go on chain: Tap Challenge is 14 inputs in 6 seconds against ~1s blocks,
+so block inclusion order would decide races instead of reflexes. The chain records; the referee
+still decides.
 
 ### MiniPay constraints that shape all of it
 

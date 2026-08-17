@@ -43,10 +43,52 @@ export const PROFILE_FINDS = [
   { type:'found',  label:'CRACKED A HUNT', meta:'$5.50 · beat 12 · 2d ago',  color:'#FFD51F' },
 ];
 
+/**
+ * Two cards, and every sentence in them has to be true.
+ *
+ * ─────────────────────────── what these used to say ─────────────────────────
+ *
+ * Three cards, and by the end of phase 5 all three were lying:
+ *
+ *   1. "Clues run warm when treasure is near" — described a mechanic that did
+ *      not exist anywhere in the game until Survey shipped in phase 3, and even
+ *      now it is Survey that runs warm, not clues.
+ *   2. "First to crack it wins — speed and skill" — phase 4 removed speed from
+ *      the deciding entirely, on purpose. This was the promise the game most
+ *      needed to stop making.
+ *   3. "Cash someone else put up... pre-funded and locked on-chain" — jargon
+ *      aimed at people who use MiniPay as a money app rather than a crypto one,
+ *      and, since phase 5, a promise a new player cannot collect on for two
+ *      days.
+ *
+ * An onboarding card is the first thing anyone reads, so a false one is the
+ * most expensive sentence in the product: it teaches, in the first ten seconds,
+ * that the words here are decorative.
+ *
+ * ─────────────────────────── the rules for editing these ────────────────────
+ *
+ *   * No crypto vocabulary. Not "on-chain", not "escrow", not "wallet-native".
+ *   * No promise the game cannot keep in the next sixty seconds.
+ *   * Say what the player will DO, not what the system is.
+ *
+ * Cash is deliberately not mentioned. It exists, it is real, and a brand-new
+ * account cannot touch it for two days — so putting it on card one would be
+ * selling something we then refuse to hand over, which is worse than not
+ * mentioning it.
+ */
 export const ONB_CARDS = [
-  { bg:'#FF7A1A', kick:'01 — HUNT',    title:'A LIVING MAP OF HIDDEN PRIZES', body:'Tap to uncover fog tiles. Clues run warm when treasure is near. Spend energy, follow the trail.' },
-  { bg:'#29E6E6', kick:'02 — COMPETE', title:'FIRST TO CRACK IT WINS',        body:'Treasure tiles glow with the spectrum. Beat everyone else to the mini-game — speed and skill, not luck.' },
-  { bg:'#FFD51F', kick:'03 — WIN REAL',title:'CASH SOMEONE ELSE PUT UP',      body:'Every hunt is pre-funded and locked on-chain. Win it and it pays straight to your MiniPay wallet.' },
+  {
+    bg: '#FF7A1A',
+    kick: '01 — LOOK',
+    title: 'TREASURE IS BURIED HERE',
+    body: 'Dig a tile to see what is under it. Survey to feel how close treasure is without digging. Both cost energy, and energy comes back.',
+  },
+  {
+    bg: '#29E6E6',
+    kick: '02 — WORK IT OUT',
+    title: 'THE HINTS NARROW IT DOWN',
+    body: 'Digging turns up hints about where treasure is. Some of them lie — we tell you how often. Stack enough of them and you know where to look.',
+  },
 ];
 
 export const HOME_COINS = [

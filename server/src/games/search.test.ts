@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { GRID, SEARCH } from '../config';
+import { SEARCH } from '../config';
+
+/**
+ * The board this game is played on, which is deliberately NOT the map — the
+ * probe budgets are an empirical pursuit bound measured against this size and
+ * do not survive being handed a 3,600-cell grid. See the note on SEARCH.board.
+ */
+const GRID = SEARCH.board;
 import {
   chebyshev,
   evaderMove,

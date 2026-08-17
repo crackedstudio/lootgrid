@@ -16,20 +16,32 @@ import { get } from './http';
 
 export const fetchHints = () => get('/hints').then(r => r.hints ?? []);
 
-const MID_ROW = 9; // GRID.rows / 2
-const MID_COL = 6; // GRID.cols / 2
-
-export function quadrantOf(r, c) {
-  return `${r < MID_ROW ? 'N' : 'S'}${c < MID_COL ? 'W' : 'E'}`;
+/**
+ * Quadrants split at the midpoint of the grid **as served**.
+ *
+ * These were `const MID_ROW = 9` and `const MID_COL = 6` — the midpoint of the
+ * 18×12 grid, written down. When the map grew to 60×60 that quietly became a
+ * split at row 9 of 60, so every `region` and `exclusion` hint shaded the wrong
+ * quarter of the board while looking perfectly plausible. The client is told
+ * `rows` and `cols` with every grid it loads; the geometry has to come from
+ * there, not from a constant that agrees with the server only by coincidence.
+ *
+ * Mirrors `MID_ROW` / `MID_COL` in server/src/hints/types.ts, which derive the
+ * same way.
+ */
+export function quadrantOf(r, c, rows, cols) {
+  const midRow = Math.floor(rows / 2);
+  const midCol = Math.floor(cols / 2);
+  return `${r < midRow ? 'N' : 'S'}${c < midCol ? 'W' : 'E'}`;
 }
 
 /** Whether a cell is consistent with a hint, taken at face value. */
-export function cellMatches(payload, r, c) {
+export function cellMatches(payload, r, c, rows, cols) {
   switch (payload.kind) {
     case 'region':
-      return quadrantOf(r, c) === payload.quadrant;
+      return quadrantOf(r, c, rows, cols) === payload.quadrant;
     case 'exclusion':
-      return quadrantOf(r, c) !== payload.quadrant;
+      return quadrantOf(r, c, rows, cols) !== payload.quadrant;
     case 'rowBand':
       return r >= payload.from && r <= payload.to;
     case 'colBand':
@@ -53,11 +65,14 @@ export function cellMatches(payload, r, c) {
  * candidate set is meaningful rather than a bug — it means the applied hints
  * contradict each other, so at least one of them is false.
  */
-export function candidates(payloads, rows = 18, cols = 12) {
+export function candidates(payloads, rows, cols) {
+  // No defaults. They used to be `rows = 18, cols = 12`, which is the shape of
+  // a bug that cannot be seen: a caller who forgets an argument gets a
+  // confidently-drawn overlay for a grid that no longer exists.
   const out = [];
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      if (payloads.every(p => cellMatches(p, r, c))) out.push(`${r}:${c}`);
+      if (payloads.every(p => cellMatches(p, r, c, rows, cols))) out.push(`${r}:${c}`);
     }
   }
   return new Set(out);

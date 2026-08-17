@@ -12,6 +12,7 @@ interface Row {
   status: string;
   last_seq: number;
   elapsed_ms: number | null;
+  hints_used: number | null;
   fail_reason: string | null;
   progress: number;
   intervals: string;
@@ -42,6 +43,7 @@ function toDomain(r: Row): Attempt {
     // reflex attempt has always looked like.
     state: r.state === null ? null : (JSON.parse(r.state) as unknown),
     elapsedMs: r.elapsed_ms,
+    hintsUsed: r.hints_used,
     failReason: r.fail_reason,
     progress: r.progress,
     intervals: JSON.parse(r.intervals) as number[],
@@ -57,6 +59,16 @@ function build() {
     get: db.prepare('SELECT * FROM attempts WHERE id = ?'),
     ofPlayer: db.prepare('SELECT * FROM attempts WHERE hunt_id = ? AND player_id = ?'),
     forHunt: db.prepare('SELECT * FROM attempts WHERE hunt_id = ?'),
+    // Cash entries since a timestamp. This IS the key balance — see keys.ts.
+    // Joined against hunts rather than stored on the attempt, so it cannot
+    // drift from what actually happened.
+    countCashSince: db.prepare(`
+      SELECT COUNT(*) AS n
+        FROM attempts a
+        JOIN hunts h ON h.id = a.hunt_id
+       WHERE a.player_id = ? AND h.kind = 'cash' AND a.started_at >= ?
+    `),
+    countForPlayer: db.prepare('SELECT COUNT(*) AS n FROM attempts WHERE player_id = ?'),
     recentForPlayer: db.prepare(
       'SELECT * FROM attempts WHERE player_id = ? ORDER BY started_at DESC LIMIT ?',
     ),
@@ -69,6 +81,7 @@ function build() {
     finish: db.prepare(`
       UPDATE attempts
          SET status = @status, last_seq = @lastSeq, elapsed_ms = @elapsedMs,
+             hints_used = @hintsUsed,
              fail_reason = @failReason, progress = @progress, intervals = @intervals,
              max_clock_skew_ms = @maxClockSkewMs, finished_at = @finishedAt
        WHERE id = @id
@@ -131,12 +144,21 @@ export function insert(a: Attempt): void {
   });
 }
 
+export function countForPlayer(playerId: string): number {
+  return (s().countForPlayer.get(playerId) as { n: number }).n;
+}
+
+export function countCashSince(playerId: string, since: number): number {
+  return (s().countCashSince.get(playerId, since) as { n: number }).n;
+}
+
 export function finish(a: Attempt, now = Date.now()): void {
   s().finish.run({
     id: a.id,
     status: a.status,
     lastSeq: a.lastSeq,
     elapsedMs: a.elapsedMs,
+    hintsUsed: a.hintsUsed,
     failReason: a.failReason,
     progress: a.progress,
     intervals: JSON.stringify(a.intervals),

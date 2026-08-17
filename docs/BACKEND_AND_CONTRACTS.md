@@ -130,8 +130,14 @@ the chain is the source of truth for *money*, Postgres is the source of truth fo
 
 ## 3. Smart contracts
 
-Two contracts. Foundry, Solidity `^0.8.24`, OpenZeppelin for `SafeERC20` / `EIP712` / `ECDSA` /
-`Pausable` / `ReentrancyGuard`.
+Three contracts, in descending order of how much damage a bug in each one does. Foundry, Solidity
+`^0.8.24`, OpenZeppelin for `SafeERC20` / `EIP712` / `ECDSA` / `Pausable` / `ReentrancyGuard`.
+
+| Contract | Holds | Worst case if compromised |
+| --- | --- | --- |
+| `PlayerRegistry` | authentication authority | impersonate every player at once |
+| `LootGridEscrow` | prize funds | drain open prizes |
+| `LootGridActions` | nothing | false entries in a public game log |
 
 ### 3.1 `LootGridEscrow.sol` — the only contract that holds money
 
@@ -312,28 +318,160 @@ does **one cheap transaction, once ever**, binding a locally-generated session k
 address:
 
 ```solidity
-contract PlayerRegistry {
-    mapping(address => bytes32) public sessionKeyHash;
-    mapping(address => uint64)  public boundAt;
+contract PlayerRegistry is Initializable, Ownable2StepUpgradeable, UUPSUpgradeable {
+    mapping(address => address) public sessionKeyOf;
+    mapping(address => uint64)  public updatedAt;
 
-    event SessionKeyBound(address indexed player, bytes32 keyHash, uint64 at);
+    address public pendingImplementation;
+    uint64  public upgradeEta;
+    uint64  public constant UPGRADE_DELAY = 48 hours;
 
-    function bind(bytes32 keyHash) external {
-        sessionKeyHash[msg.sender] = keyHash;
-        boundAt[msg.sender] = uint64(block.timestamp);
-        emit SessionKeyBound(msg.sender, keyHash, uint64(block.timestamp));
-    }
+    event SessionKeyBound(address indexed player, address indexed sessionKey, uint64 at);
+    event SessionKeyCleared(address indexed player, address indexed sessionKey, uint64 at);
+    event UpgradeProposed(address indexed implementation, bytes32 codehash, bytes32 payloadHash, uint64 eta);
+
+    function initialize(address initialOwner) external initializer;
+    function bind(address sessionKey, bytes calldata sig) external;
+    function clear() external;
+    function isBound(address player, address sessionKey) external view returns (bool);
+    function binding(address player) external view returns (address key, uint64 at);
+    function proposeUpgrade(address newImplementation, bytes calldata migrationData) external onlyOwner;
 }
 ```
 
-The client generates a P-256/secp256k1 keypair in `localStorage`, calls `bind(keccak(pubkey))`
+The client generates a **secp256k1** keypair in `localStorage`, calls `bind(sessionKey, sig)`
 once (sub-cent, gas payable in USDm), and from then on **signs every API request with the
-session key** — no wallet interaction at all. The indexer sees `SessionKeyBound` and the API
-verifies request signatures against it.
+session key** — no wallet interaction at all.
+
+Three details that are load-bearing, all of which the shipped contract enforces:
+
+- **The key stores an address, not a hash.** The server authenticates by recovering the signer
+  of a request and comparing addresses, so a `keccak(pubkey)` hash would be unusable — there is
+  nothing to compare it against. (An earlier draft of this doc specified a `bytes32` hash and
+  P-256; both were wrong. P-256 is not recoverable via `ecrecover` at all.)
+
+- **`sig` is a proof of possession**, an EIP-191 signature by `sessionKey` over
+  `bindDigest(player, sessionKey)`, which commits to the chain id, the contract address and the
+  player. Without it any wallet could bind a key it does not control — including one already
+  bound to somebody else — so a single key could authenticate several accounts and the registry
+  could not answer who actually holds a key. **The session key signs, not the wallet**, so the
+  MiniPay limitation is untouched.
+
+- **Both mutations emit the retired key.** `SessionKeyCleared(player, sessionKey, at)` fires on
+  `clear()` *and* on a rotation, so a consumer watching a specific key learns when it dies. The
+  server subscribes to both and drops its cache entry, which is what makes revocation take
+  effect on the next request rather than at the end of a cache TTL.
 
 Re-binding from the wallet rotates the key, which is also the "log out everywhere" button.
+`clear()` reverts when nothing is bound, so `updatedAt` cannot be used to manufacture
+revocation records for keys that never existed.
 
-### 3.3 Testing
+#### Upgradeability — and what it costs
+
+The registry is **UUPS-upgradeable behind an ERC-1967 proxy**. This is a deliberate reversal of
+the original design, which had no owner and no upgrade path precisely so that the deployer key
+would be worthless. Be clear about what changed:
+
+> **The registry owner is now the highest-value key in the system — above the escrow's game
+> signer.** The registry holds no funds, but it holds *authentication authority*. An
+> implementation where `isBound` returns true unconditionally is impersonation of every player
+> at once. The escrow signer's worst case is bounded by open TVL; this one is not bounded by
+> anything.
+
+Three mitigations, none of which is a substitute for the others:
+
+- **48-hour timelock.** `proposeUpgrade` starts a clock and emits `UpgradeProposed`;
+  `_authorizeUpgrade` rejects any implementation that was not proposed or whose delay has not
+  elapsed, and consumes the proposal so one proposal buys exactly one upgrade. A stolen owner key
+  cannot swap the implementation in the transaction it is stolen. **The delay's value here is
+  detection, not exit** — players have nothing to withdraw, so it is only useful if someone is
+  watching `UpgradeProposed`.
+- **Two-step ownership**, so the seat cannot be handed to a mistyped address.
+- **`_disableInitializers()` in the constructor**, closing the classic UUPS hole where an
+  attacker initializes the bare implementation.
+
+Owner **must** be a multisig in production. Storage is append-only with a `__gap`; never reorder
+or remove existing variables.
+
+### 3.3 `LootGridActions.sol` — the public record
+
+The escrow proves the money moved and the registry proves who you are. `LootGridActions` is the
+append-only log of what happened in the game: one transaction per hunt entry and per hunt
+resolution, with **no wallet prompt and no gas for the player**.
+
+> **Tile reveals are no longer relayed (v2, phase 1).** The contract still exposes
+> `recordReveal` / `recordRevealBatch` and the server never calls either. A public, per-player
+> log of who uncovered which tile would let any observer reassemble the pooled map and hand it
+> back to everyone — restoring free-riding, restoring the subsidy against the hint market, and
+> making burner wallets cheap again. It is the one on-chain claim that private fog contradicts,
+> and the weakest of them. Commitments, hint sets and their truth flags, entries, resolutions
+> and payouts are all still published, and those are what the audit story actually rests on.
+
+**Why gameplay itself cannot go on chain.** Tap Challenge is 14 inputs in 6 seconds against ~1s
+blocks. Routing inputs through consensus would mean block inclusion order decides races instead of
+reflexes — the fastest player loses to the one whose transaction landed earlier in the same block.
+The 400ms settlement window exists precisely because latency must not be the game. So the referee
+still decides, and the chain still records.
+
+**What it costs and what it buys.**
+
+| | |
+| --- | --- |
+| Storage written | none — events only |
+| Gas per record | ~26k (a log, versus ~20k for a single `SSTORE`) |
+| Upgradeable | no; it holds nothing worth an upgrade key |
+| Who signs | the relayer, not the player |
+
+Events only is the load-bearing choice. The server already holds authoritative state; duplicating
+it on chain would cost 10–20× per action to store a second copy of a database it does not trust
+less.
+
+**The trust boundary does not move.** There is no per-action signature check, because verifying
+the referee's own attestation would cost gas and prove nothing — the referee controls the hidden
+grid, so a dishonest one could fabricate reveals whether or not a signature is verified. Read
+these logs as *the referee's signed, timestamped claim* about what happened, not as proof the game
+was fair. Proof of fairness comes from the epoch seed commitment (§5.4) and the per-hunt salt
+revealed at resolution (§5.9), which is a different mechanism entirely.
+
+Two roles, separate on purpose: `relayer` writes records and is a hot key on the VPS; `owner`
+rotates the relayer and touches nothing else. A leaked relayer key can write false game logs and
+nothing more, and rotation is one transaction. This is a much smaller blast radius than
+`REGISTRY_OWNER`, which is why an EOA owner is acceptable here and is not there.
+
+#### The outbox
+
+The server never waits on the chain. `enqueue()` is a synchronous insert into a SQLite
+`relay_queue` table, wrapped in a `try/catch` that swallows its own errors; a worker drains it out
+of band. If the RPC is down, the key is unfunded or the chain is congested, rows accumulate and
+drain later — the game does not stall, slow down, or fail. A public audit log is worth having, but
+not worth one dropped race.
+
+- **Idempotent on enqueue, at-least-once on delivery.** `dedupe_key` is derived from the game
+  fact — `reveal:{zone}:{epoch}:{r}:{c}`, `entry:{hunt}:{player}` — not from the call site, so a
+  crash-and-replay inside the request path cannot queue the same event twice. Both keys mirror a
+  UNIQUE constraint that already exists in the game schema, so they cannot collide. The *send*
+  path offers no such guarantee: a transaction that is mined but whose response is lost is retried
+  under a fresh nonce and both land. **Indexers must deduplicate on event contents.** Publishing a
+  duplicate beats silently losing a record.
+- **Pipelined.** Nonces are tracked locally and receipts are awaited off the send path. Awaiting
+  each receipt inline would cap throughput at one transaction per block.
+- **Bounded.** Exponential backoff from 2s to 5 minutes; after `RELAY_MAX_ATTEMPTS` a row is
+  parked as `dead` and kept for inspection, never deleted. **`lootgrid_relay_dead_total` is the
+  metric to alert on** — a dead row is a game event that will never reach the chain.
+- **One transaction per action.** This is now an invariant rather than a default.
+  `RELAY_BATCH_SIZE` was removed with the reveal relay: `recordRevealBatch` was the only
+  multi-row call the contract offers, so with reveals gone there is nothing left to group.
+
+Ids are packed as ASCII into `bytes32` (`ridge` → `0x7269646765…`) so an explorer shows something
+readable; anything over 31 bytes falls back to keccak. An indexed topic occupies a full word
+regardless of declared type, so this costs exactly what a `uint16` would have and avoids
+maintaining a numeric id registry.
+
+**Off is a valid production setting.** `RELAY_ENABLED=false` by default. The chain records nothing
+the server does not already own, so enabling it is a decision about public verifiability and
+gas budget, not about whether the game works.
+
+### 3.4 Testing
 
 Foundry. Non-negotiable coverage:
 
@@ -359,8 +497,9 @@ zones              (id PK, name, accent, cols, rows, seed_commit, seed_revealed_
 zone_seeds         (zone_id, epoch, seed_secret, seed_commit, revealed_at)   -- seed_secret
                                                               -- withheld until rotation
 
-tile_reveals       (zone_id, epoch, r, c, player_address, tile_type, revealed_at)
-                    PK (zone_id, epoch, r, c)
+tile_reveals       (zone_id, epoch, player_address, r, c, tile_type, revealed_at)
+                    PK (zone_id, epoch, player_address, r, c)   -- private fog: the map
+                                                                -- is per player, not per zone
 
 hunts              (id PK uuid/bytes32, zone_id, epoch, r, c, salt, cell_commit,
                     kind ENUM(cash,puzzle), creator_address, token, prize_base_units,
@@ -402,7 +541,7 @@ actually lives once there is a backend.
 ```
 1. Client detects window.ethereum.isMiniPay, calls eth_requestAccounts → address (implicit).
 2. Client looks for a session keypair in localStorage.
-   - Missing, or PlayerRegistry.sessionKeyHash(address) doesn't match:
+   - Missing, or PlayerRegistry.sessionKeyOf(address) does not match:
        → prompt the one-time bind() transaction ("Set up your hunter profile").
    - Present and matching:
        → POST /session { address, sig(session key over nonce) } → short-lived JWT.
@@ -465,14 +604,26 @@ tileType(zoneSeed, r, c) = bucket(keccak256(zoneSeed ‖ r ‖ c))
 // zoneSeed is secret for the life of the epoch
 ```
 
-`GET /zones/:id/grid` returns **only revealed cells** — `{ r, c, type, prize?, byHandle }` —
-plus the positions of *live hunts*, which are public by design (the fireworks tile is the
-whole point). Unrevealed cells are simply absent from the payload; the client renders fog for
-anything it wasn't told about.
+`GET /zones/:id/grid` is **authenticated**, and returns **only the cells the calling player has
+revealed** — `{ r, c, type, prize?, byHandle }` — plus the positions of *live hunts*, which are
+public by design (the fireworks tile is the whole point). Unrevealed cells are simply absent
+from the payload; the client renders fog for anything it wasn't told about.
+
+> **The fog is private (v2, phase 1).** Everyone hunts the same treasure in the same zone, but
+> what you have personally uncovered, only you see. `reveals` is keyed
+> `(zone_id, epoch, player_id, r, c)`. This is the single change that stops a zone being
+> *consumed* — under a shared map its remaining life fell as players arrived — and it is what
+> ends free-riding, ends the standing subsidy against the hint market (every shared dig was a
+> free hint about where treasure was *not*), and makes fifty burner wallets cost fifty times
+> the energy instead of sharing one solved map. There is no longer any such thing as "the
+> zone's map" to serve anonymously.
 
 **Provable fairness:** publish `seed_commit = keccak256(zoneSeed)` when the epoch opens, and
 reveal `zoneSeed` when the epoch rotates. Players can then verify after the fact that the map
-was fixed in advance and not rewritten under them.
+was fixed in advance and not rewritten under them. Epoch rotation is live as of v2 phase 1 —
+maps reprint on a per-zone schedule (`zones.rotates_at`, default three days, staggered so the
+world never resets all at once), and the outgoing secret is archived to `zone_seed_history`
+before it is overwritten.
 
 ### 5.5 Tapping a fog tile
 
@@ -486,11 +637,17 @@ Server, in order:
 2. Rate limit (Redis token bucket — ~5 opens/sec ceiling; a human cannot beat that meaningfully).
 3. Atomic energy decrement of 1 → `-1` means insufficient, return `409 INSUFFICIENT_ENERGY`
    (this drives the existing `OUT OF ENERGY — REGENERATING` toast).
-4. `INSERT ... ON CONFLICT DO NOTHING` into `tile_reveals` — if it conflicts, someone else
-   already revealed it; **refund the energy** and return the existing cell.
+4. `INSERT ... ON CONFLICT DO NOTHING` into `reveals` — a conflict now means only that *this
+   same player* already opened this tile (a double-tap or a retried request); **refund the
+   energy** and return the existing cell. Under private fog there is no race with another
+   player to lose.
 5. Compute `tileType` from the secret seed, persist.
-6. Broadcast `tile:revealed` to the zone's WS room.
+6. Send `tile:revealed` **to the opening player alone**, never to the zone room. Broadcasting
+   it was the free-riding leak in socket form.
 7. Return `{ cell, energy }`.
+
+Note what is **not** in this list any more: a dig is no longer relayed on chain. See §the relay
+outbox — a public per-player reveal log would republish the very map private fog withholds.
 
 The `-1⚡` float animation stays purely client-side, fired on the optimistic tap and reconciled
 against the server's energy value in the response.
@@ -818,6 +975,11 @@ de-risks everything below.*
 **Phase 2 — money on testnet.**
 `LootGridEscrow` + `PlayerRegistry` on Celo Sepolia. Indexer, relayer, voucher settlement,
 create-hunt flow, refunds. Test inside MiniPay via ngrok with Developer Mode + testnet enabled.
+
+`LootGridActions` can ship any time after `PlayerRegistry`, independently of the escrow — it
+needs real addresses (`AUTH_MODE=chain`) and nothing else. Turning it on early is a cheap way to
+exercise the relayer key, gas budgeting and the outbox under real load, well before any of that
+sits in front of actual prize money.
 
 **Phase 3 — mainnet.**
 Audit before real funds. Prize caps, guardian + multisig, monitoring, trust scoring, the
