@@ -13,6 +13,8 @@ import * as relayer from './chain/relayer';
 import { ENERGY, GRID, SURVEY, TILES } from './config';
 import { getDb } from './db/index';
 import * as energy from './energy';
+import * as keys from './keys';
+import * as rank from './rank';
 import { stdev } from './games/tap';
 import { inBounds, tileType } from './grid';
 import * as hints from './hints';
@@ -210,6 +212,17 @@ export function registerRoutes(app: App): void {
       handle: player.handle,
       energy: energy.view(player, Date.now()),
       trustScore: player.trustScore,
+      xp: player.xp,
+      /**
+       * The two currencies, side by side on purpose.
+       *
+       * Energy is the product and can be bought. Keys are entries and cannot
+       * be, by anyone, at any price — see keys.ts. Showing them together is
+       * what makes the boundary legible rather than a rule buried in a FAQ.
+       */
+      keys: keys.balance(player.id),
+      /** Standing, and what is still missing to climb. See rank.ts. */
+      rank: rank.rankOf(player.id),
     };
   });
 
@@ -546,7 +559,14 @@ export function registerRoutes(app: App): void {
     }
 
     const result = referee.openAttempt(player, hunt);
-    if (!result.ok) throw conflict(result.error);
+    if (!result.ok) {
+      // The refusal's detail travels with it. A money-gate refusal that says
+      // only "no" reads as rigged; one that says "two more days" is something
+      // a player can act on, and it gives away nothing an attacker could not
+      // read in rank.ts. `shadow_banned` never reaches here — it is disguised
+      // as `hunt_not_live` inside the referee.
+      throw conflict(result.error, undefined, result.detail);
+    }
 
     return {
       attemptId: result.attempt.id,

@@ -193,6 +193,77 @@ export const SURVEY = {
   coldest: 'cold',
 } as const;
 
+/**
+ * Keys — the second currency, and the one that cannot be bought.
+ *
+ * Energy buys digging and surveying: exploration and information, sold freely,
+ * and the actual product. Keys buy entry to a cash hunt, and nothing buys keys
+ * — not money, not referrals, not a streak.
+ *
+ * See keys.ts for why there is deliberately no balance to credit. The numbers
+ * here are the entire configuration surface, and `perDay` is meant to be
+ * invisible: there are about four cash treasures on the whole map in a day, so
+ * a normal player never approaches five. A good cap is invisible to normal
+ * players and painful to abusers.
+ */
+export const KEYS = {
+  perDay: 5,
+  /** Fixed UTC days rather than a rolling window — see the escrow's daily cap
+   *  for the same reasoning: a sliding window needs stored history to prove the
+   *  same property, and the cap exists to bound damage, not to be precise. */
+  dayMs: 24 * 60 * 60 * 1000,
+} as const;
+
+/**
+ * Prospector rank, and what a cash hunt requires of it.
+ *
+ * The numbers are deliberately modest. This gate exists to make a *farm*
+ * expensive, not to make a first cash hunt hard to reach — a real player who
+ * digs for two or three days clears it without noticing, while fifty burner
+ * wallets need fifty times that in energy and, crucially, the same two or three
+ * days each. Time is the axis an attacker cannot buy.
+ *
+ * See rank.ts for why the gate is time-and-volume while the ladder above it is
+ * accuracy, and why conflating the two would break both.
+ */
+export const RANK = {
+  /** Hints that have resolved — held on hunts which have since closed. */
+  minResolvedHints: 6,
+  /** Distinct UTC days on which hints were acquired. The part money cannot rush. */
+  minActiveDays: 2,
+  /** The tier a cash hunt demands. Everything below it is refused with a reason. */
+  minTierForCash: 'prospector' as const,
+
+  /** Above the gate the ladder is accuracy. 60% and 75% of held hints true. */
+  surveyor: { resolved: 20, accuracyBps: 6_000 },
+  cartographer: { resolved: 60, accuracyBps: 7_500 },
+} as const;
+
+/**
+ * Wallet age, and the tier a cash hunt demands.
+ *
+ * ─────────────────────────── what age actually buys ─────────────────────────
+ *
+ * An empty new wallet costs nothing to create — that is the whole sybil
+ * problem in one sentence. A wallet with history is a different object: it took
+ * real time, and in `AUTH_MODE=chain` it took real transactions someone paid
+ * for.
+ *
+ * The honest limitation, stated rather than hidden: this measures when the
+ * account first appeared *to us*, not the age of the wallet on chain. An
+ * attacker who registers fifty wallets today and waits two days defeats it, and
+ * the rank gate is what makes that wait expensive rather than merely long —
+ * they must also *play* on each of those days. Reading true wallet age from
+ * chain is the stronger check and belongs with the on-chain identity work; this
+ * is the part that can be enforced without an RPC on the entry path.
+ */
+export const WALLET = {
+  /** How long an account must have existed before it can win money. */
+  minAgeMs: 2 * 24 * 60 * 60 * 1000,
+  /** Mirrors RANK.minTierForCash; kept here so `admission.ts` reads one config. */
+  minTierForCash: 'prospector' as const,
+} as const;
+
 export const RACE = {
   /**
    * When the first player completes, hold the result open this long and collect

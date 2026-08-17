@@ -59,6 +59,15 @@ function build() {
     get: db.prepare('SELECT * FROM attempts WHERE id = ?'),
     ofPlayer: db.prepare('SELECT * FROM attempts WHERE hunt_id = ? AND player_id = ?'),
     forHunt: db.prepare('SELECT * FROM attempts WHERE hunt_id = ?'),
+    // Cash entries since a timestamp. This IS the key balance — see keys.ts.
+    // Joined against hunts rather than stored on the attempt, so it cannot
+    // drift from what actually happened.
+    countCashSince: db.prepare(`
+      SELECT COUNT(*) AS n
+        FROM attempts a
+        JOIN hunts h ON h.id = a.hunt_id
+       WHERE a.player_id = ? AND h.kind = 'cash' AND a.started_at >= ?
+    `),
     recentForPlayer: db.prepare(
       'SELECT * FROM attempts WHERE player_id = ? ORDER BY started_at DESC LIMIT ?',
     ),
@@ -132,6 +141,10 @@ export function insert(a: Attempt): void {
     deadlineAt: a.deadlineAt,
     status: a.status,
   });
+}
+
+export function countCashSince(playerId: string, since: number): number {
+  return (s().countCashSince.get(playerId, since) as { n: number }).n;
 }
 
 export function finish(a: Attempt, now = Date.now()): void {

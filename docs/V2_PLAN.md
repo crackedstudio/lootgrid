@@ -1,7 +1,7 @@
 # LOOTGRID v2 — Implementation Plan
 
 **Source:** `docs/briefing.md` (the outside review)
-**Status:** Phases 1–4 shipped. Phase 0 was skipped at the user's direction — worth
+**Status:** Phases 1–5 shipped. Phase 0 was skipped at the user's direction — worth
 knowing, because it means everything below is being built without the funnel that would
 tell us whether any of it worked. §0-A was decided (stop relaying reveals). §0-B is half-resolved: proximity
 targeting shipped, the Compass's explicit choice did not. §0-D still gates
@@ -360,7 +360,36 @@ commitment (§4d). `difficulty` and `prizeLabel` are already in the
 
 ---
 
-## Phase 5 — The money gate
+## Phase 5 — The money gate ✅ shipped
+
+| Decision | Why |
+|---|---|
+| Keys are **derived, not stored** | A key is a count of cash attempts today subtracted from a constant. A stored balance needs a credit path — daily reset, refunds, support tools — and once one exists, "keys cannot be bought" is a policy someone has to remember. There is no function anywhere that can grant one, and a test asserts the module's whole surface is `balance`/`dayStart`/`hasKey` |
+| The gate is **time and volume**; the ladder is accuracy | Conflating them breaks both. A burner farm with lucky hints must not rank up, so admission never reads accuracy — only resolved hints across distinct days, which is the axis money cannot move |
+| Accuracy is **honestly weak for a digger** | Hints are granted by the drop roll, not chosen, and tier 3 is a coin flip by design. It becomes skill for someone who *buys* hints (they chose) or *sells* them (already bonded against lying). Documented in `rank.ts` rather than glossed |
+| Only **resolved** hunts count toward rank | Counting live ones would let an account rank on hints it has not had to be right about, and would leak a game in progress into a public number |
+| One `mayEnter`, called from the **referee** | Not the HTTP handler — every entry path reaches the referee, including the agent driver, so a gate placed there cannot be walked around by a caller that did not know about it |
+| **Agent zones are not gated** | Not a hole: rank comes from digging fog and agents do not dig, so they would sit at `unranked` forever and the agent zone would silently close. The symptom would have read as "nobody enters", not as a bug. Agents carry stricter admission of their own — registration, budget, bonds, verified-trade reputation |
+| Refusals **explain themselves** — except the ban | "Not ranked highly enough" with no number reads as rigged; "two more days" is actionable and gives away nothing not already in `rank.ts`. The shadow ban keeps its disguise as `hunt_not_live`, because telling a botter when they were caught only helps them iterate |
+| Nothing gates **XP hunts** | 23 of every 24 treasures. A new player can play essentially the whole game on day one; what they cannot do is take cash out of it. That is also what keeps the free path to every prize real — rank is earned by playing, and playing is free |
+
+**On §0-D — is the money gate closed?** The three the review named are live and
+tested: private maps (Phase 1), the rank gate, the wallet check. Two honest
+caveats before anyone funds a zone:
+
+- **Wallet age is account age, not on-chain wallet age.** It measures when the
+  account first appeared to us. An attacker who registers fifty wallets today
+  and waits two days defeats *that check alone* — the rank gate is what makes
+  the wait expensive, because those two days have to be spent actually playing
+  each account. Reading true wallet age from chain is the stronger version and
+  belongs with the on-chain identity work.
+- **The win cap per wallet per cycle is not built.** The review lists it as a
+  backstop for when everything above fails. The escrow's per-day claim cap
+  bounds total damage but not per-identity damage.
+
+---
+
+### Original plan
 
 Nothing here is optional before real money (§0-D).
 
@@ -415,7 +444,7 @@ Phase 1  Rotation + private fog   ✅ the money gate, part 1
 Phase 2  Resize + retune          ✅ needs 1
 Phase 3  Survey + real tiles      ✅ needs 1 (mystery), 2 (survey tuning)
 Phase 4  The Crack                ✅ needs 3 (hints worth using)
-Phase 5  Keys + rank + wallet     ── the money gate, part 2
+Phase 5  Keys + rank + wallet     ✅ the money gate, part 2
 Phase 6  First-run experience     ── needs 1–4 to be truthful
 Phase 7  Shop                     ── needs 3 (Compass), 5 (keys boundary)
 ```

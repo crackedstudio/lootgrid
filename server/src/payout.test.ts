@@ -7,7 +7,7 @@ import { env } from './env';
 import { registerRoutes } from './http';
 import * as referee from './referee';
 import * as store from './store';
-import { anyHunt, freshWorld, makePlayer, teardownWorld } from './testing/harness';
+import { anyHunt, freshWorld, makeVeteran, teardownWorld } from './testing/harness';
 
 /**
  * The prize path, end to end.
@@ -47,7 +47,7 @@ function buildApp(): App {
 /** Run a hunt to a finish with `winner` first past the post. */
 function winHunt(winner: string) {
   const hunt = anyHunt();
-  const player = makePlayer(winner, '@winner');
+  const player = makeVeteran(winner, '@winner');
   const opened = referee.openAttempt(player, hunt);
   if (!opened.ok) throw new Error(`could not open an attempt: ${opened.error}`);
 
@@ -99,7 +99,7 @@ describe('claiming a prize', () => {
 
   it('refuses everyone but the winner', async () => {
     const hunt = winHunt(WINNER);
-    makePlayer(LOSER, '@loser');
+    makeVeteran(LOSER, '@loser');
 
     const res = await app.inject({
       method: 'POST',
@@ -115,7 +115,7 @@ describe('claiming a prize', () => {
 
   it('refuses a hunt that is still running', async () => {
     const hunt = anyHunt();
-    const player = makePlayer(WINNER, '@winner');
+    const player = makeVeteran(WINNER, '@winner');
     referee.openAttempt(player, hunt);
 
     const res = await app.inject({
@@ -162,7 +162,7 @@ describe('claiming a prize', () => {
 
 describe('collecting a prize', () => {
   it('reports nothing owed before a claim lands', async () => {
-    makePlayer(WINNER, '@winner');
+    makeVeteran(WINNER, '@winner');
     escrowChain.setBalanceReaderForTests(async () => ({ owed: 0n, withdrawableAt: 0 }));
 
     const res = await app.inject({ method: 'GET', url: '/escrow/balance', headers: as(WINNER) });
@@ -172,7 +172,7 @@ describe('collecting a prize', () => {
   });
 
   it('holds the prize back until the challenge window elapses', async () => {
-    makePlayer(WINNER, '@winner');
+    makeVeteran(WINNER, '@winner');
     const soon = Math.floor(Date.now() / 1000) + 3_600;
     escrowChain.setBalanceReaderForTests(async () => ({ owed: 10n ** 18n, withdrawableAt: soon }));
 
@@ -186,7 +186,7 @@ describe('collecting a prize', () => {
   });
 
   it('offers the withdrawal once the window has passed', async () => {
-    makePlayer(WINNER, '@winner');
+    makeVeteran(WINNER, '@winner');
     const past = Math.floor(Date.now() / 1000) - 1;
     escrowChain.setBalanceReaderForTests(async () => ({ owed: 500n, withdrawableAt: past }));
 
@@ -199,7 +199,7 @@ describe('collecting a prize', () => {
   it('reports the balance as a string, not a number', async () => {
     // 18dp base units exceed Number's safe range, and a prize quietly rounded
     // in transit is a solvency bug rather than a display one.
-    makePlayer(WINNER, '@winner');
+    makeVeteran(WINNER, '@winner');
     const huge = 12_345_678_901_234_567_890n;
     escrowChain.setBalanceReaderForTests(async () => ({ owed: huge, withdrawableAt: 0 }));
 

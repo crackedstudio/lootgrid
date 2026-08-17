@@ -5,7 +5,7 @@ import type { CrackSpec } from './games/crack';
 import * as hints from './hints';
 import * as referee from './referee';
 import * as store from './store';
-import { freshWorld, huntOfType, makePlayer, teardownWorld } from './testing/harness';
+import { freshWorld, huntOfType, makeVeteran, teardownWorld } from './testing/harness';
 import type { Hunt } from './types';
 
 /**
@@ -43,7 +43,9 @@ afterEach(() => {
  * taking their three energy and cutting them off mid-window.
  */
 function enter(hunt: Hunt, playerId: string, at = T0) {
-  const player = makePlayer(playerId, `@${playerId}`);
+  // A veteran, because the money gate refuses new accounts and these tests are
+  // about what happens once you are through it. See harness.makeVeteran.
+  const player = makeVeteran(playerId, `@${playerId}`);
   const res = referee.openAttempt(player, hunt, at);
   if (!res.ok) throw new Error(`could not enter: ${res.error}`);
   return { id: res.attempt.id, spec: res.spec as CrackSpec };
@@ -234,7 +236,7 @@ describe('a wrong guess must not kill a funded prize', () => {
     settle();
 
     expect(store.attemptHistory('0xa', 5)[0]!.status).toBe('lost');
-    const player = makePlayer('0xa');
+    const player = makeVeteran('0xa');
     expect(referee.openAttempt(player, store.getHunt(hunt.id)!, T0 + 60_000)).toMatchObject({
       ok: false,
       error: 'already_attempted',

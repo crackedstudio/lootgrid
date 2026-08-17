@@ -1,4 +1,4 @@
-import { closeDb, openDb } from '../db/index';
+import { closeDb, getDb, openDb } from '../db/index';
 import { migrate } from '../db/migrate';
 import * as agentRepo from '../db/repos/agents';
 import * as attemptRepo from '../db/repos/attempts';
@@ -10,6 +10,7 @@ import * as playerRepo from '../db/repos/players';
 import * as zoneRepo from '../db/repos/zones';
 import * as escrowWorker from '../chain/escrow';
 import * as ratelimit from '../ratelimit';
+import * as hints from '../hints';
 import * as store from '../store';
 import type { GameType } from '../types';
 
@@ -75,3 +76,48 @@ export function huntOfType(type: GameType) {
 export function makePlayer(id: string, handle = `@${id}`) {
   return store.ensurePlayer(id, handle);
 }
+
+/**
+ * A player who can actually enter a cash hunt.
+ *
+ * The money gate refuses brand-new accounts — that is the entire point of it —
+ * so any test about *winning* has to start from someone who has already earned
+ * the right to try. This satisfies the gate the honest way rather than
+ * disabling it: it backdates the account, closes a hunt, and grants its
+ * resolved hints across separate days. If the gate's rules change, tests using
+ * this break loudly instead of quietly testing an open door.
+ *
+ * Deliberately not a flag on `mayEnter`. A test-only bypass in the admission
+ * path is exactly the kind of thing that survives into production behind an env
+ * var nobody audits.
+ */
+export function makeVeteran(id: string, handle = `@${id}`) {
+  const player = makePlayer(id, handle);
+  const now = Date.now();
+
+  // Old enough to be past WALLET.minAgeMs. Written to both the row and the
+  // cached object, because the referee reads the object.
+  const born = now - 30 * DAY_MS;
+  getDb().prepare('UPDATE players SET created_at = ? WHERE id = ?').run(born, id);
+  player.createdAt = born;
+
+  // A closed hunt's hints are what rank is computed from. A puzzle hunt, so
+  // this never disturbs the cash hunt a test is about.
+  const zone = store.listZones()[0]!;
+  const closing = store.liveHuntsIn(zone).find(h => h.kind === 'puzzle');
+  if (closing) {
+    const hunt = store.getHunt(closing.id)!;
+    const pool = hints.forHunt(hunt);
+    store.setHuntStatus(hunt, 'expired', null, now);
+    // Spread across distinct UTC days — the part of the gate that time buys and
+    // money cannot.
+    pool.forEach((h, i) => {
+      hintRepo.grant(id, h.id, 'reveal', born + i * DAY_MS);
+    });
+    store.evictHunt(hunt.id);
+  }
+
+  return player;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;

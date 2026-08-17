@@ -3,7 +3,7 @@ import { ENERGY, RACE, TAP } from './config';
 import * as energy from './energy';
 import * as referee from './referee';
 import * as store from './store';
-import { freshWorld, huntOfType, makePlayer, teardownWorld } from './testing/harness';
+import { freshWorld, huntOfType, makePlayer, makeVeteran, teardownWorld } from './testing/harness';
 
 const T0 = 1_700_000_000_000;
 
@@ -53,7 +53,9 @@ describe('referee', () => {
       // of phase 4 — asking for it here charged the puzzle price and made this
       // test quietly about something else.
       const hunt = huntOfType('crack');
-      const player = makePlayer('0xaaa');
+      // A veteran: the money gate refuses new accounts from cash hunts, which
+      // is phase 5's whole point. See harness.makeVeteran.
+      const player = makeVeteran('0xaaa');
       const before = energy.currentEnergy(player, T0);
 
       const res = referee.openAttempt(player, hunt, T0);
@@ -106,7 +108,8 @@ describe('referee', () => {
 
     it('keeps shadow-banned players out of cash blocks', () => {
       const hunt = huntOfType('crack');
-      const player = makePlayer('0xbad');
+      // Otherwise admissible — so the refusal below can only be the ban.
+      const player = makeVeteran('0xbad');
       player.shadowBanned = true;
       // Indistinguishable from the block having just closed — on purpose.
       expect(referee.openAttempt(player, hunt, T0)).toMatchObject({

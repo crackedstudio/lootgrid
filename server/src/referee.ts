@@ -1,4 +1,5 @@
 import { ASYNC, CRACK, ENERGY, NET, PUZZLE_HUNT_XP, RACE } from './config';
+import * as admission from './admission';
 import * as escrow from './chain/escrow';
 import * as director from './director';
 import type { Directive } from './director/types';
@@ -44,7 +45,8 @@ export const observers: {
 
 export type OpenResult =
   | { ok: true; attempt: Attempt; spec: unknown; limitMs: number; gameType: string }
-  | { ok: false; error: string };
+  /** `detail` carries what the player needs to fix a refusal they can fix. */
+  | { ok: false; error: string; detail?: Record<string, unknown> };
 
 /**
  * Resume attempts that survived a restart.
@@ -64,10 +66,22 @@ export function resume(attempts: Attempt[]): void {
 export function openAttempt(player: Player, hunt: Hunt, now = Date.now()): OpenResult {
   if (hunt.status !== 'live') return { ok: false, error: 'hunt_not_live' };
 
-  // Shadow-banned accounts stop matching into cash hunts. Deliberately
-  // indistinguishable from the block having just closed — telling a suspected
-  // botter exactly when they were caught only helps them iterate.
-  if (player.shadowBanned && hunt.kind === 'cash') return { ok: false, error: 'hunt_not_live' };
+  // The money gate. Keys, rank, wallet age and the shadow ban, asked in one
+  // place — see admission.ts for why they live together rather than being
+  // checked at whichever route happened to need them.
+  //
+  // Here rather than in the HTTP handler on purpose: every entry path reaches
+  // this function, including the agent driver, so a gate placed here cannot be
+  // walked around by a caller that did not know about it.
+  const admitted = admission.mayEnter(player, hunt, store.getZone(hunt.zoneId)?.kind ?? 'human', now);
+  if (!admitted.ok) {
+    // A shadow ban keeps its old disguise: it must stay indistinguishable from
+    // the block having just closed. Every other refusal says what it is,
+    // because a player who cannot see why they were turned away assumes the
+    // game is rigged.
+    if (admitted.code === 'shadow_banned') return { ok: false, error: 'hunt_not_live' };
+    return { ok: false, error: admitted.code!, detail: admitted.detail };
+  }
 
   if (store.attemptOf(hunt.id, player.id)) return { ok: false, error: 'already_attempted' };
 

@@ -549,6 +549,21 @@ export function useGameState() {
       if (err.code === 'insufficient_energy') return toast('NOT ENOUGH ENERGY');
       if (err.code === 'already_attempted') return toast('YOU ALREADY TRIED THIS ONE');
       if (err.code === 'hunt_not_live') return toast('ALREADY CRACKED');
+
+      // The money gate. Each refusal says what it is and what would fix it — a
+      // player turned away with no reason assumes the game is rigged, and this
+      // is the one moment where that assumption is most expensive.
+      //
+      // `shadow_banned` is deliberately absent: it arrives as `hunt_not_live`
+      // above and must stay indistinguishable from a closed hunt.
+      if (err.code === 'wallet_too_new') return toast('ACCOUNT TOO NEW FOR CASH HUNTS');
+      if (err.code === 'rank_too_low') {
+        const short = err.body?.details?.shortfall;
+        if (short?.activeDays > 0) return toast(`PROSPECT ${short.activeDays} MORE DAY(S) FIRST`);
+        if (short?.resolved > 0) return toast(`NEED ${short.resolved} MORE RESOLVED HINTS`);
+        return toast('RANK TOO LOW FOR CASH HUNTS');
+      }
+      if (err.code === 'no_keys_left') return toast('NO KEYS LEFT TODAY — XP HUNTS ARE OPEN');
       toast('COULD NOT ENTER HUNT');
     }
   }, [set, toast]);
