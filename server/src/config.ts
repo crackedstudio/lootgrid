@@ -3,10 +3,42 @@
  * expect to change them once real humans on real Android hardware have played.
  */
 
+/**
+ * The map.
+ *
+ * ─────────────────────────── why it got big ───────────────────────────
+ *
+ * 216 cells with four treasures on them is 1.85% density: a new player's first
+ * energy bar bought twelve taps and a one-in-five chance of finding anything.
+ * Brute force was not just viable, it was the *dominant* strategy — and a game
+ * whose best line is "tap everything" has no use for the deduction, the hints
+ * or the market that three phases were spent building.
+ *
+ * At 3,600 cells a full cycle's energy uncovers a few percent of the map.
+ * Sweeping stops working, and reading the hints becomes the only way to play.
+ * The grid is not big to be impressive; it is big to make information the
+ * scarce thing.
+ *
+ * ─────────────────────────── what scales with it ───────────────────────────
+ *
+ * This is not a number you can change alone, and everything downstream of it is
+ * now *derived* rather than hand-tuned, so the next change is a one-liner:
+ *
+ *   * hint band widths and distance radii — see hints/types.ts. They were
+ *     constants picked against 216 cells, and carried over unchanged they would
+ *     have turned every tier-3 hint into a near-exact answer.
+ *   * `DEDUCTION.budget`, which is a function of ⌈log₂ cells⌉ (below).
+ *   * `hints/types.ts` MID_ROW / MID_COL, already derived.
+ *
+ * {@link SEARCH} deliberately does NOT scale with it. See the note there.
+ */
 export const GRID = {
-  cols: 12,
-  rows: 18,
+  cols: 60,
+  rows: 60,
 } as const;
+
+/** Cells on the map. The quantity most of the derivations below are about. */
+export const GRID_CELLS = GRID.rows * GRID.cols;
 
 /**
  * How long a map lives before it is torn up and reprinted.
@@ -32,10 +64,31 @@ export const EPOCH = {
   rotateMs: 3 * 24 * 60 * 60 * 1000,
 } as const;
 
+/**
+ * Energy.
+ *
+ * ─────────────────────────── it has to be a real limit ──────────────────────
+ *
+ * A full bar used to refill in **108 seconds**. Nobody has ever paid money to
+ * skip under two minutes, so the thing the business plans to sell could not be
+ * sold — and nothing carried between sessions, so there was no reason to come
+ * back tomorrow. A four-hour refill makes the bar something you spend
+ * deliberately and something a Cycle Pass can meaningfully accelerate.
+ *
+ * 40 at 4h is one point every six minutes: 240/day, 720 over a three-day cycle.
+ * Against 3,600 cells that is a few percent of the map per cycle even before
+ * Survey starts competing for the same bar — which is the point. You cannot
+ * sweep your way to a treasure any more.
+ *
+ * `costFog` stays at 1 until phase 3 splits digging from surveying; raising it
+ * now would only make the game slower, not deeper.
+ */
 export const ENERGY = {
-  max: 12,
-  start: 9,
-  regenMs: 9_000,
+  max: 40,
+  /** 75% of a bar, as before — enough to matter, short of full. */
+  start: 30,
+  /** 4h ÷ 40. */
+  regenMs: 360_000,
   costFog: 1,
   costCashHunt: 3,
   costPuzzleHunt: 2,
@@ -152,8 +205,48 @@ export const NET = {
   deadlineSweepMs: 100,
 } as const;
 
-/** How many cash hunts each zone seeds with. */
-export const HUNTS_PER_ZONE = 4;
+/**
+ * How many treasures a zone keeps live, and how many of them carry money.
+ *
+ * ─────────────────────────── why the split exists ───────────────────────────
+ *
+ * Twenty-four treasures on a 3,600-cell map is roughly the density the old
+ * 216-cell grid had — enough that exploring finds *something*, which is what
+ * keeps a huge map from feeling empty. But 24 cash hunts per zone at the prize
+ * band below would burn about **$168/day**, against a self-funded floor of
+ * $100–300 *per month*. The grid resize and the prize budget only reconcile if
+ * most treasures pay in XP rather than cash.
+ *
+ * `HuntKind` has had a 'puzzle' member since phase 0 — the energy cost, the
+ * module pool, the entry path all handle it — and `replenish` hardcoded 'cash',
+ * so it had never once been created. This turns it on.
+ *
+ * ─────────────────────────── the arithmetic ───────────────────────────
+ *
+ * Cash hunts created per day = zones × CASH_PER_ZONE ÷ TTL in days.
+ *
+ *   human: 4 zones × 1 ÷ 1 day  = 4.00/day × 95.2c = $3.81/day
+ *   agent: 1 zone  × 1 ÷ 3 days = 0.33/day × 112.8c = $0.38/day
+ *                                                     ─────────────
+ *                                                     $4.19/day
+ *                                                     ≈ $127/month
+ *
+ * That sits in the lower half of the $100–300/month band on purpose. The
+ * headline prize is meant to be *concentrated* — one large weekly final beats a
+ * hundred small hunts for the same money — so routine hunts should not spend
+ * the whole budget before that exists.
+ *
+ * Worst case (every hunt hard AND every one claimed) is ~$22/day, which is well
+ * over the floor but is the tail, not the mean; the escrow's per-day claim cap
+ * is the backstop that makes it survivable rather than a surprise.
+ *
+ * Four cash hunts a day across the world also matches the target density the
+ * review asked for — few enough that finding one is an event.
+ */
+export const HUNTS_PER_ZONE = 24;
+
+/** Of those, how many carry a prize. The rest are XP-only puzzle hunts. */
+export const CASH_PER_ZONE = 1;
 
 // ─────────────────────────── agent games ───────────────────────────
 //
@@ -162,16 +255,31 @@ export const HUNTS_PER_ZONE = 4;
 // perfectly is a cheat. Here a perfect player is the intended audience, so the
 // budget — how many questions you may ask — is what makes the game hard.
 
+/** Questions a perfect binary search needs to isolate one cell of the map. */
+const OPTIMAL_PROBES = Math.ceil(Math.log2(GRID_CELLS));
+
 export const DEDUCTION = {
   /**
    * Probes allowed, per difficulty.
    *
-   * The grid is 18×12 = 216 cells, so a perfect binary search needs
-   * ⌈log₂ 216⌉ = 8 questions. `hard` is exactly 8: nothing but optimal
+   * `hard` is exactly the information-theoretic optimum: nothing but perfect
    * information gain gets there, and a probe that fails to halve the remaining
-   * space is a probe you cannot afford. `easy` leaves room to be sloppy.
+   * space is a probe you cannot afford. `med` allows one wasted question and
+   * `easy` four, which is room to be sloppy without room to guess.
+   *
+   * **Derived, not written down.** This used to read `{ easy: 12, med: 9,
+   * hard: 8 }` with a comment explaining that 8 was ⌈log₂ 216⌉ — correct, and
+   * silently wrong the moment the grid changed. At 3,600 cells the optimum is
+   * 12, so the old `hard` was four questions short of winnable. The deduction
+   * game probes in the same vocabulary the fog's hints use (see
+   * `agents/validate.ts`), so its board genuinely IS the map and genuinely must
+   * scale with it.
    */
-  budget: { easy: 12, med: 9, hard: 8 },
+  budget: {
+    easy: OPTIMAL_PROBES + 4,
+    med: OPTIMAL_PROBES + 1,
+    hard: OPTIMAL_PROBES,
+  },
   /** Minutes. An agent is expected to think between probes, not react. */
   limitMs: 10 * 60 * 1000,
 } as const;
@@ -203,6 +311,24 @@ export const NEGOTIATION = {
 } as const;
 
 export const SEARCH = {
+  /**
+   * The board this game is played on — **deliberately not the map**.
+   *
+   * Every other grid-derived number in this file scales with {@link GRID}.
+   * This one must not, and the reason is that the budgets below are an
+   * *empirical* bound rather than a formula: they come from measuring how many
+   * probes a filter-based hunt needs against an evader that moves in response
+   * to being looked at. That analysis was done on an 18×12 board and does not
+   * survive being handed a 3,600-cell one — a pursuit problem does not scale
+   * like a search problem, and the honest position is that nobody has measured
+   * the big-board version.
+   *
+   * Nothing ties this game to the fog. Its probes are plain cells rather than
+   * the hint vocabulary deduction borrows, and the board size travels to the
+   * client in the block's spec, so keeping it at its tuned size costs nothing
+   * and keeps a tested game tested. Revisit only with fresh measurement.
+   */
+  board: { rows: 18, cols: 12 },
   /**
    * Probes allowed before the evader escapes for good.
    *

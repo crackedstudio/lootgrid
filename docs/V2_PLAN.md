@@ -1,7 +1,10 @@
 # LOOTGRID v2 — Implementation Plan
 
 **Source:** `docs/briefing.md` (the outside review)
-**Status:** proposed. §0 has open decisions that change the shape of §2 and §6 — settle those first.
+**Status:** Phases 1 and 2 shipped. Phase 0 was skipped at the user's direction — worth
+knowing, because it means everything below is being built without the funnel that would
+tell us whether any of it worked. §0-A was decided (stop relaying reveals); §0-B and §0-D
+are still open and gate Phases 3 and 5.
 **Scope:** ten phases built the machinery. This plan is the first one that changes the game.
 
 ---
@@ -141,7 +144,7 @@ new migration `011_player_activity.sql`.
 
 ---
 
-## Phase 1 — A world that doesn't die
+## Phase 1 — A world that doesn't die ✅ shipped
 
 The briefing's §9 first-priority item. Two changes, one milestone.
 
@@ -194,9 +197,35 @@ epoch of sustained single-player digging without running out of map.
 
 ---
 
-## Phase 2 — Resize and retune
+## Phase 2 — Resize and retune ✅ shipped
 
 Depends on Phase 1 (rotation gives a clean epoch to resize into).
+
+**What was decided while building it**, beyond the plan below:
+
+| Decision | Why |
+|---|---|
+| Hint geometry is now **grid-relative**, not constant | Band widths and ring radii are expressed as the share of the map they should cover, and the constants are recovered from `GRID`. Fed the old 18×12 grid the derivation returns the old numbers exactly — asserted in `generate.test.ts`, which is what makes it a re-derivation rather than a rebalance |
+| `sharpness` became **closed-form** | It prices every hint in the market and was walking all 3,600 cells. `candidateCells` stays the readable definition; a test compares the two on every shape the generator emits |
+| `SEARCH` got its own **18×12 board**, decoupled from the map | Its probe budgets are an empirical pursuit bound, not a formula. A pursuit problem does not scale like a search problem, and nobody has measured the big-board version. Deduction *does* scale, because it probes in the fog's own hint vocabulary |
+| The 1c tier died by **raising the floor**, not deleting `easy` | `Difficulty` is also the *game's* difficulty and easy games should still exist. `MIN_VIABLE_PRIZE_CENTS = 60` is the lowest prize whose 25% hint ceiling clears `MIN_TRADE_CENTS` |
+| **`CASH_PER_ZONE = 1`** — new | The plan flagged the burn as a "watch"; it turned out to be load-bearing. 24 *funded* hunts per zone burns ~$168/day against a $100–300/**month** floor. Most treasures are now XP-only puzzle hunts — a `HuntKind` that has existed since phase 0 and had never once been created. Lands at ~$156/month, asserted in `prizes.test.ts` |
+
+**Two bugs the resize exposed**, both silent:
+
+- The client hardcoded `MID_ROW = 9` / `MID_COL = 6`, so every `region` and
+  `exclusion` hint would have shaded the wrong quarter of a 60×60 board while
+  looking entirely plausible. Geometry now comes from the served dimensions.
+- `candidates()` defaulted to `rows = 18, cols = 12` — a default that can only
+  ever be wrong. Removed.
+
+**Still open from this phase:** at 54px tiles a 60-wide grid is ~3,240px across.
+It scrolls, and that is not a design. The viewport work belongs with Phase 6,
+which is where the first-run experience gets built against a real low-end phone.
+
+---
+
+### Original plan
 
 - `GRID` → 60×60, `ENERGY.max` → 40, `regenMs` → 4h/40, `HUNTS_PER_ZONE` → 24
 - **Re-derive hint tiers against the new grid** per §0-C. `sharpness()` is the
@@ -328,9 +357,9 @@ the refill SKU. Instrument them separately from day one.
 ## Sequencing
 
 ```
-Phase 0  Instrumentation          ── independent, do now
-Phase 1  Rotation + private fog   ── the money gate, part 1
-Phase 2  Resize + retune          ── needs 1
+Phase 0  Instrumentation          ── independent, NOT DONE (skipped)
+Phase 1  Rotation + private fog   ✅ the money gate, part 1
+Phase 2  Resize + retune          ✅ needs 1
 Phase 3  Survey + real tiles      ── needs 1 (mystery), 2 (survey tuning)
 Phase 4  The Crack                ── needs 3 (hints worth using)
 Phase 5  Keys + rank + wallet     ── the money gate, part 2

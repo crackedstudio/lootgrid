@@ -1,4 +1,4 @@
-import { ASYNC, EPOCH, GRID, HUNTS_PER_ZONE } from './config';
+import { ASYNC, CASH_PER_ZONE, EPOCH, GRID, HUNTS_PER_ZONE } from './config';
 import { migrate } from './db/migrate';
 import { tx } from './db/index';
 import * as attemptRepo from './db/repos/attempts';
@@ -15,7 +15,7 @@ import { hash, randomHex } from './hash';
 import { env } from './env';
 import { logger } from './logger';
 import { difficultyForBlock, prizeCentsFor, prizeLabelFor, toTokenUnits } from './prizes';
-import type { Attempt, BlockGame, Hunt, Player, Reveal, Zone, ZoneKind } from './types';
+import type { Attempt, BlockGame, Hunt, HuntKind, Player, Reveal, Zone, ZoneKind } from './types';
 
 /**
  * The seam between the referee and storage.
@@ -271,6 +271,7 @@ export function replenish(zoneId: string, now = Date.now()): number {
   if (!zone) return 0;
 
   let open = huntRepo.countOpen(zone.id, zone.epoch);
+  let openCash = huntRepo.countOpenCash(zone.id, zone.epoch);
   let created = 0;
   let guard = 0;
 
@@ -313,6 +314,16 @@ export function replenish(zoneId: string, now = Date.now()): number {
     // and hard tables since phase 0, and a hardcoded 'med' here was the reason
     // two thirds of them never ran.
     const difficulty = difficultyForBlock(salt, id, zone.kind);
+
+    // Cash first, then fill the rest of the zone with XP hunts.
+    //
+    // The count, not the coin flip, is what bounds the burn: a zone holds
+    // exactly CASH_PER_ZONE funded hunts no matter how many treasures are on
+    // it. `kind` has been on `Hunt` since phase 0 with the energy cost, the
+    // module pool and the entry path all handling 'puzzle' — and `replenish`
+    // hardcoded 'cash', so a puzzle hunt had never once existed.
+    const kind: HuntKind = openCash < CASH_PER_ZONE ? 'cash' : 'puzzle';
+
     const hunt: Hunt = {
       id,
       zoneId: zone.id,
@@ -321,11 +332,13 @@ export function replenish(zoneId: string, now = Date.now()): number {
       c,
       salt,
       cellCommit: hash(id, zone.id, r, c, salt).toString('hex'),
-      kind: 'cash',
+      kind,
       difficulty,
       // Derived from difficulty rather than cycled through a fixed array, so a
-      // prize now means something about the hunt. See prizes.ts.
-      prizeLabel: prizeLabelFor(difficulty),
+      // prize now means something about the hunt. See prizes.ts. A puzzle hunt
+      // pays in XP and says so — showing "$0.00" would read as a broken prize
+      // rather than a different kind of reward.
+      prizeLabel: kind === 'cash' ? prizeLabelFor(difficulty) : 'XP',
       status: 'live',
       winnerId: null,
       game: null,
@@ -347,18 +360,24 @@ export function replenish(zoneId: string, now = Date.now()): number {
       // Queue the prize alongside the hunt, so a created hunt and its funding
       // intent are recorded together or not at all. The worker funds it out of
       // band — an unfunded hunt still plays, it just carries no money yet.
-      escrow.enqueue(
-        hunt.id,
-        toTokenUnits(prizeCentsFor(hunt.difficulty), env.ESCROW_TOKEN_DECIMALS),
-        hunt.expiresAt ?? expiryFor(now),
-      );
+      //
+      // Only cash hunts have anything to fund. A puzzle hunt with an escrow row
+      // would be a pot nobody can win, waiting to be refunded — pure gas.
+      if (hunt.kind === 'cash') {
+        escrow.enqueue(
+          hunt.id,
+          toTokenUnits(prizeCentsFor(hunt.difficulty), env.ESCROW_TOKEN_DECIMALS),
+          hunt.expiresAt ?? expiryFor(now),
+        );
+      }
     });
 
     open += 1;
+    if (hunt.kind === 'cash') openCash += 1;
     created += 1;
   }
 
-  if (created > 0) logger.info({ zoneId, created, open }, 'zone replenished');
+  if (created > 0) logger.info({ zoneId, created, open, cash: openCash }, 'zone replenished');
   return created;
 }
 

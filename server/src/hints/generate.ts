@@ -2,9 +2,12 @@ import { GRID } from '../config';
 import { hashInt } from '../hash';
 import type { Hunt } from '../types';
 import {
+  COL_BAND_HALF,
   HINTS_PER_HUNT,
   MID_COL,
   MID_ROW,
+  RING_RADII,
+  ROW_BAND_HALF,
   TIER_RELIABILITY_BPS,
   cellMatches,
   quadrantOf,
@@ -114,16 +117,23 @@ function payloadFor(
   if (tier === 2) {
     switch (shapeRoll % 3) {
       case 0:
-        return { kind: 'rowBand', ...clampBand(target.r, 2, GRID.rows) };
+        return { kind: 'rowBand', ...clampBand(target.r, ROW_BAND_HALF, GRID.rows) };
       case 1:
-        return { kind: 'colBand', ...clampBand(target.c, 1, GRID.cols) };
+        return { kind: 'colBand', ...clampBand(target.c, COL_BAND_HALF, GRID.cols) };
       default:
         return { kind: 'parity', parity: (target.r + target.c) % 2 === 0 ? 'even' : 'odd' };
     }
   }
 
   // Tier 3: a tight box. Sharp, and only ever a coin flip away from a lie.
-  return { kind: 'distance', r: target.r, c: target.c, within: 1 + (shapeRoll % 2) };
+  // Both radii are derived from the grid so the box stays the same *share* of
+  // the map at any size — see the geometry note in types.ts.
+  return {
+    kind: 'distance',
+    r: target.r,
+    c: target.c,
+    within: RING_RADII[shapeRoll % RING_RADII.length]!,
+  };
 }
 
 /**

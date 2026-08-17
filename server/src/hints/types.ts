@@ -86,6 +86,60 @@ export const HINTS_PER_HUNT = 6;
 export const MID_ROW = Math.floor(GRID.rows / 2);
 export const MID_COL = Math.floor(GRID.cols / 2);
 
+/**
+ * ─────────────────────── hint shapes are grid-relative ──────────────────────
+ *
+ * A hint is priced by {@link sharpness} — the fraction of the map it rules out
+ * — and reliability is published per tier. Both of those are promises. So when
+ * the map changes size, a hint shape written as a *constant* silently breaks
+ * the promise: a ±2 row band covered 28% of an 18-row grid and would cover 8%
+ * of a 60-row one, turning a tier-2 hint into something sharper than tier 3
+ * while still advertising 70% reliability and still priced as tier 2.
+ *
+ * Quadrants and parity are already proportional — a quadrant is a quarter of
+ * any grid — which is why they need nothing here. Bands and distance rings do
+ * not scale on their own, so they are expressed as the fraction of the map they
+ * are *meant* to cover, and the constants are recovered from the grid.
+ *
+ * The fractions below are exactly the shapes the 18×12 grid produced, so this
+ * is a re-derivation rather than a rebalance: feed it the old grid and it
+ * returns the old numbers. `hints/generate.test.ts` asserts that.
+ */
+
+/** Share of the rows a tier-2 row band spans. 5 rows of 18. */
+const ROW_BAND_SPAN = 5 / 18;
+/** Share of the columns a tier-2 column band spans. 3 cols of 12. */
+const COL_BAND_SPAN = 3 / 12;
+/** Share of the map a tier-3 ring covers, at its two sizes. 9 and 25 of 216. */
+const RING_AREA = [9 / 216, 25 / 216] as const;
+
+/** Half-width of a band covering `share` of `axis` cells. */
+function halfSpan(axis: number, share: number): number {
+  const span = Math.max(1, Math.round(axis * share));
+  return Math.floor((span - 1) / 2);
+}
+
+/** Chebyshev radius of a square covering `share` of the map. */
+function ringRadius(share: number): number {
+  const side = Math.sqrt(share * GRID.rows * GRID.cols);
+  return Math.max(0, Math.round((side - 1) / 2));
+}
+
+export const ROW_BAND_HALF = halfSpan(GRID.rows, ROW_BAND_SPAN);
+export const COL_BAND_HALF = halfSpan(GRID.cols, COL_BAND_SPAN);
+/** The two tier-3 radii, smallest first. */
+export const RING_RADII = RING_AREA.map(ringRadius);
+
+/**
+ * Largest radius a stored or transmitted hint may claim.
+ *
+ * Twice the sharpest the generator will produce — the same slack the old
+ * hardcoded `4` gave against a generated maximum of 2. It is a bound on
+ * untrusted input, not a game parameter: a hint claiming a radius the generator
+ * cannot produce is malformed, and one claiming a huge radius is just noise.
+ */
+export const MAX_RING_RADIUS = 2 * Math.max(...RING_RADII);
+
 export function quadrantOf(r: number, c: number): Quadrant {
   const ns = r < MID_ROW ? 'N' : 'S';
   const we = c < MID_COL ? 'W' : 'E';
@@ -133,12 +187,67 @@ export function candidateCells(payload: HintPayload): Array<{ r: number; c: numb
 }
 
 /**
+ * How many cells a hint is consistent with — counted, not enumerated.
+ *
+ * {@link candidateCells} materialises the list and is the readable definition;
+ * this is the same number in closed form. On a 216-cell grid the difference was
+ * academic. On a 3,600-cell one it is not: {@link sharpness} is what
+ * `market/pricing.ts` values every hint with, so the enumerating version put a
+ * 3,600-iteration scan on the pricing path of a market that is supposed to be
+ * busy.
+ *
+ * `candidateCells` remains the specification. `candidateCount.matchesEnumeration`
+ * in the tests asserts the two agree cell-for-cell on every shape, at more than
+ * one grid size — which is the only thing that makes an optimisation like this
+ * safe to keep.
+ */
+export function candidateCount(payload: HintPayload): number {
+  const { rows, cols } = GRID;
+
+  // Quadrants split at the midpoint, so on an odd axis they are NOT equal
+  // quarters — north gets the smaller half. Counting has to respect that or it
+  // disagrees with `quadrantOf` on exactly the grids where it matters.
+  const north = MID_ROW;
+  const south = rows - MID_ROW;
+  const west = MID_COL;
+  const east = cols - MID_COL;
+
+  const quadrantArea = (q: Quadrant): number =>
+    (q[0] === 'N' ? north : south) * (q[1] === 'W' ? west : east);
+
+  /** Cells in [centre-w, centre+w] clamped to an axis of `len`. */
+  const span = (centre: number, w: number, len: number): number =>
+    Math.min(len - 1, centre + w) - Math.max(0, centre - w) + 1;
+
+  switch (payload.kind) {
+    case 'region':
+      return quadrantArea(payload.quadrant);
+    case 'exclusion':
+      return rows * cols - quadrantArea(payload.quadrant);
+    case 'rowBand':
+      return (payload.to - payload.from + 1) * cols;
+    case 'colBand':
+      return (payload.to - payload.from + 1) * rows;
+    case 'parity': {
+      // A row contributes the columns matching its own parity.
+      const evenCols = Math.ceil(cols / 2);
+      const oddCols = cols - evenCols;
+      const evenRows = Math.ceil(rows / 2);
+      const oddRows = rows - evenRows;
+      const even = evenRows * evenCols + oddRows * oddCols;
+      return payload.parity === 'even' ? even : rows * cols - even;
+    }
+    case 'distance':
+      return span(payload.r, payload.within, rows) * span(payload.c, payload.within, cols);
+  }
+}
+
+/**
  * Fraction of the grid a hint rules out, 0–1. Higher is sharper.
  * Phase 5 prices hints off this; phase 1 uses it to sanity-check tiers.
  */
 export function sharpness(payload: HintPayload): number {
-  const total = GRID.rows * GRID.cols;
-  return 1 - candidateCells(payload).length / total;
+  return 1 - candidateCount(payload) / (GRID.rows * GRID.cols);
 }
 
 // ─────────────────────────── validation ───────────────────────────
@@ -177,7 +286,11 @@ export function parsePayload(raw: unknown): HintPayload | null {
         ? { kind: 'parity', parity: p.parity }
         : null;
     case 'distance':
-      return inRows(p.r) && inCols(p.c) && int(p.within) && p.within >= 0 && p.within <= 4
+      return inRows(p.r) &&
+        inCols(p.c) &&
+        int(p.within) &&
+        p.within >= 0 &&
+        p.within <= MAX_RING_RADIUS
         ? { kind: 'distance', r: p.r, c: p.c, within: p.within }
         : null;
     default:

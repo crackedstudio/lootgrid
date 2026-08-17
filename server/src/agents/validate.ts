@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { GRID } from '../config';
+import { MAX_RING_RADIUS } from '../hints/types';
 import { candidates, type DeductionSpec, type DeductionState } from '../games/deduction';
 import { potAfter, type NegotiationSpec, type NegotiationState } from '../games/negotiation';
 import type { SearchSpec, SearchState } from '../games/search';
@@ -73,7 +74,7 @@ const hintPayload = z.discriminatedUnion('kind', [
       kind: z.literal('distance'),
       r: z.number().int().min(0).max(GRID.rows - 1),
       c: z.number().int().min(0).max(GRID.cols - 1),
-      within: z.number().int().min(0).max(4),
+      within: z.number().int().min(0).max(MAX_RING_RADIUS),
     })
     .strict(),
 ]);

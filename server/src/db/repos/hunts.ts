@@ -86,6 +86,13 @@ function build() {
     countOpen: db.prepare(
       "SELECT COUNT(*) AS n FROM hunts WHERE zone_id = ? AND epoch = ? AND status NOT IN ('resolved', 'expired')",
     ),
+    /**
+     * Open hunts that carry money. Bounds the treasury's burn: a zone holds
+     * `CASH_PER_ZONE` of these however many treasures are on it.
+     */
+    countOpenCash: db.prepare(
+      "SELECT COUNT(*) AS n FROM hunts WHERE zone_id = ? AND epoch = ? AND kind = 'cash' AND status NOT IN ('resolved', 'expired')",
+    ),
     expired: db.prepare(
       "SELECT * FROM hunts WHERE status = 'live' AND expires_at IS NOT NULL AND expires_at < ?",
     ),
@@ -156,6 +163,10 @@ export function setStatus(
 
 export function countOpen(zoneId: string, epoch: number): number {
   return (s().countOpen.get(zoneId, epoch) as { n: number }).n;
+}
+
+export function countOpenCash(zoneId: string, epoch: number): number {
+  return (s().countOpenCash.get(zoneId, epoch) as { n: number }).n;
 }
 
 export function expired(now = Date.now()): Hunt[] {

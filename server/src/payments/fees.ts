@@ -47,8 +47,13 @@ import { prizeCentsFor } from '../prizes';
  * Fee per difficulty, in cents. Deliberately conservative against the ratio
  * above rather than against what a player might tolerate.
  *
- * `easy` is 0 and should stay 0: at a 1¢ prize there is no positive fee a
- * rational entrant can pay.
+ * `easy` is 0 and should stay 0 — but the reason has changed, and the new one
+ * is stronger. It used to be arithmetic: at a 1¢ prize no positive fee was
+ * rational, so the config could not invent one. At the raised floor a small fee
+ * on an easy hunt *would* be rational, and it must still be zero, because a
+ * genuinely free path to every prize is what keeps this the right side of the
+ * gambling line. See the module header, and §7c of the review: money buys
+ * information and exploration, never a chance at the pot.
  */
 export const ENTRY_FEE_CENTS: Record<Difficulty, number> = {
   easy: 0,
