@@ -9,21 +9,24 @@ import type { Hex } from 'viem';
 // to flip the parsed object. Restored in afterEach.
 const mut = env as {
   RELAY_ENABLED: boolean;
-  RELAY_BATCH_SIZE: number;
   RELAY_MAX_ATTEMPTS: number;
   RELAY_MAX_IN_FLIGHT: number;
 };
 
 const ALICE = '0x00000000000000000000000000000000000000a1' as const;
 
-function reveal(r: number, c: number) {
+/**
+ * A generic queued action.
+ *
+ * These tests used reveals as their stock payload until private fog took the
+ * reveal relay out — see the ABI note in relayer.ts. Entries carry them now;
+ * nothing here was ever about what a reveal *is*, only about the queue.
+ */
+function entry(n: number) {
   return {
     player: ALICE,
-    zoneId: relayer.toBytes32Id('ridge'),
-    epoch: 1,
-    r,
-    c,
-    tileType: 0,
+    huntId: relayer.toBytes32Id(`ridge-1-0x${n}-abc`),
+    gameType: 0,
   };
 }
 
@@ -46,7 +49,6 @@ beforeEach(() => {
   freshWorld();
   relayer.reset();
   mut.RELAY_ENABLED = true;
-  mut.RELAY_BATCH_SIZE = 1;
   mut.RELAY_MAX_ATTEMPTS = 8;
   mut.RELAY_MAX_IN_FLIGHT = 25;
 });
@@ -87,17 +89,14 @@ describe('id encoding', () => {
 });
 
 describe('enum codes', () => {
-  it('maps known tile and game types to stable codes', () => {
-    expect(relayer.tileTypeCode('empty')).toBe(0);
-    expect(relayer.tileTypeCode('puzzle')).toBe(4);
+  it('maps known game types to stable codes', () => {
     expect(relayer.gameTypeCode('math')).toBe(0);
     expect(relayer.gameTypeCode('tap')).toBe(3);
   });
 
   it('maps unknown values to 255 rather than throwing', () => {
-    // A new tile type shipped before the code table is updated should produce a
+    // A new game type shipped before the code table is updated should produce a
     // slightly odd log line, not a dropped record.
-    expect(relayer.tileTypeCode('brand-new')).toBe(255);
     expect(relayer.gameTypeCode('brand-new')).toBe(255);
   });
 });
@@ -105,21 +104,21 @@ describe('enum codes', () => {
 describe('enqueue', () => {
   it('writes nothing when the relay is disabled', () => {
     mut.RELAY_ENABLED = false;
-    relayer.enqueue('reveal', 'reveal:ridge:1:0:0', reveal(0, 0));
+    relayer.enqueue('entry', 'entry:ridge-1-0x0-abc', entry(0));
     expect(rows()).toHaveLength(0);
   });
 
   it('queues one pending row per action', () => {
-    relayer.enqueue('reveal', 'reveal:ridge:1:0:0', reveal(0, 0));
-    relayer.enqueue('reveal', 'reveal:ridge:1:0:1', reveal(0, 1));
+    relayer.enqueue('entry', 'entry:ridge-1-0x0-abc', entry(0));
+    relayer.enqueue('entry', 'entry:ridge-1-0x1-abc', entry(1));
     expect(rows().map(r => r.status)).toEqual(['pending', 'pending']);
   });
 
   it('ignores a repeated dedupe key', () => {
     // The crash-and-replay case: the same game fact must never produce two
     // on-chain records.
-    relayer.enqueue('reveal', 'reveal:ridge:1:0:0', reveal(0, 0));
-    relayer.enqueue('reveal', 'reveal:ridge:1:0:0', reveal(0, 0));
+    relayer.enqueue('entry', 'entry:ridge-1-0x0-abc', entry(0));
+    relayer.enqueue('entry', 'entry:ridge-1-0x0-abc', entry(0));
     expect(rows()).toHaveLength(1);
   });
 
@@ -127,7 +126,7 @@ describe('enqueue', () => {
     // Gameplay must not fail because the outbox does. This is the module's
     // single hard rule.
     teardownWorld();
-    expect(() => relayer.enqueue('reveal', 'k', reveal(0, 0))).not.toThrow();
+    expect(() => relayer.enqueue('entry', 'k', entry(0))).not.toThrow();
     freshWorld();
   });
 });
@@ -137,8 +136,8 @@ describe('drain', () => {
     const send = vi.fn(async () => HASH);
     relayer.setTransportForTests(send, async () => true);
 
-    relayer.enqueue('reveal', 'a', reveal(0, 0));
-    relayer.enqueue('reveal', 'b', reveal(0, 1));
+    relayer.enqueue('entry', 'a', entry(0));
+    relayer.enqueue('entry', 'b', entry(1));
 
     expect(await relayer.drain()).toBe(2);
     await relayer.settle();
@@ -176,7 +175,7 @@ describe('drain', () => {
       throw new Error('rpc down');
     }, async () => true);
 
-    relayer.enqueue('reveal', 'a', reveal(0, 0));
+    relayer.enqueue('entry', 'a', entry(0));
     const before = Date.now();
     await relayer.drain();
 
@@ -195,7 +194,7 @@ describe('drain', () => {
       .mockResolvedValue(HASH);
     relayer.setTransportForTests(send, async () => true);
 
-    relayer.enqueue('reveal', 'a', reveal(0, 0));
+    relayer.enqueue('entry', 'a', entry(0));
     await relayer.drain();
     await relayer.drain();
 
@@ -208,7 +207,7 @@ describe('drain', () => {
       throw new Error('permanent');
     }, async () => true);
 
-    relayer.enqueue('reveal', 'a', reveal(0, 0));
+    relayer.enqueue('entry', 'a', entry(0));
 
     await relayer.drain();
     // Skip the backoff rather than sleeping through it.
@@ -226,7 +225,7 @@ describe('drain', () => {
       throw new Error('boom: the reason an operator needs');
     }, async () => true);
 
-    relayer.enqueue('reveal', 'a', reveal(0, 0));
+    relayer.enqueue('entry', 'a', entry(0));
     await relayer.drain();
 
     const row = getDb().prepare('SELECT last_error FROM relay_queue').get() as {
@@ -239,7 +238,7 @@ describe('drain', () => {
     // The realistic cause is a relayer key rotation mid-flight.
     relayer.setTransportForTests(async () => HASH, async () => false);
 
-    relayer.enqueue('reveal', 'a', reveal(0, 0));
+    relayer.enqueue('entry', 'a', entry(0));
     await relayer.drain();
     await relayer.settle();
 
@@ -253,7 +252,7 @@ describe('drain', () => {
       throw new Error('timeout');
     });
 
-    relayer.enqueue('reveal', 'a', reveal(0, 0));
+    relayer.enqueue('entry', 'a', entry(0));
     await relayer.drain();
     await relayer.settle();
 
@@ -264,8 +263,8 @@ describe('drain', () => {
     const send = vi.fn<relayer.SendFn>().mockRejectedValue(new Error('nonce too low'));
     relayer.setTransportForTests(send, async () => true);
 
-    relayer.enqueue('reveal', 'a', reveal(0, 0));
-    relayer.enqueue('reveal', 'b', reveal(0, 1));
+    relayer.enqueue('entry', 'a', entry(0));
+    relayer.enqueue('entry', 'b', entry(1));
     await relayer.drain();
 
     expect(send).toHaveBeenCalledTimes(1);
@@ -277,7 +276,7 @@ describe('drain', () => {
     const send = vi.fn(async () => HASH);
     relayer.setTransportForTests(send, async () => true);
 
-    for (let i = 0; i < 5; i++) relayer.enqueue('reveal', `k${i}`, reveal(0, i));
+    for (let i = 0; i < 5; i++) relayer.enqueue('entry', `k${i}`, entry(i));
     expect(await relayer.drain()).toBe(2);
     expect(send).toHaveBeenCalledTimes(2);
   });
@@ -289,7 +288,7 @@ describe('drain', () => {
       async () => true,
     );
 
-    relayer.enqueue('reveal', 'a', reveal(0, 0));
+    relayer.enqueue('entry', 'a', entry(0));
     const first = relayer.drain();
     // Overlapping ticks would hand the same row to the transport twice.
     expect(await relayer.drain()).toBe(0);
@@ -299,71 +298,49 @@ describe('drain', () => {
   });
 });
 
-describe('batching', () => {
-  it('sends one transaction per action by default', async () => {
-    const send = vi.fn(async () => HASH);
+describe('one transaction per action', () => {
+  /**
+   * Batching went out with the reveal relay.
+   *
+   * `recordRevealBatch` was the only multi-row call the contract offers, so with
+   * reveals gone there is nothing left to group — every remaining kind is one
+   * row, one transaction. This is now an invariant rather than a default, which
+   * is why it is asserted on its own instead of alongside a batch size.
+   */
+  it('sends one transaction per queued action', async () => {
+    const send = vi.fn<relayer.SendFn>(async () => HASH);
     relayer.setTransportForTests(send, async () => true);
 
-    for (let i = 0; i < 4; i++) relayer.enqueue('reveal', `k${i}`, reveal(0, i));
+    for (let i = 0; i < 4; i++) relayer.enqueue('entry', `k${i}`, entry(i));
     await relayer.drain();
 
     // The whole point of relaying: transaction count tracks action count.
     expect(send).toHaveBeenCalledTimes(4);
+    // And each carries exactly one payload.
+    for (const call of send.mock.calls) expect(call[1]).toHaveLength(1);
   });
 
-  it('groups reveals when RELAY_BATCH_SIZE is raised', async () => {
-    mut.RELAY_BATCH_SIZE = 3;
+  it('keeps kinds separate across a mixed queue', async () => {
     const send = vi.fn<relayer.SendFn>(async () => HASH);
     relayer.setTransportForTests(send, async () => true);
 
-    for (let i = 0; i < 4; i++) relayer.enqueue('reveal', `k${i}`, reveal(0, i));
+    relayer.enqueue('entry', 'a', entry(0));
+    relayer.enqueue('resolution', 'b', {
+      winner: ALICE,
+      huntId: relayer.toBytes32Id('ridge-1-0x0-abc'),
+      elapsedMs: 4_200,
+      racers: 3,
+    });
+    relayer.enqueue('entry', 'c', entry(1));
     await relayer.drain();
 
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(send.mock.calls[0]![1]).toHaveLength(3);
-    expect(send.mock.calls[1]![1]).toHaveLength(1);
-  });
-
-  it('never batches across kinds', async () => {
-    mut.RELAY_BATCH_SIZE = 8;
-    const send = vi.fn<relayer.SendFn>(async () => HASH);
-    relayer.setTransportForTests(send, async () => true);
-
-    relayer.enqueue('reveal', 'a', reveal(0, 0));
-    relayer.enqueue('entry', 'b', { player: ALICE, huntId: HASH, gameType: 0 });
-    relayer.enqueue('reveal', 'c', reveal(0, 1));
-    await relayer.drain();
-
-    // Only recordRevealBatch exists on chain; mixing kinds would be unsendable.
-    expect(send.mock.calls.map(c => c[0])).toEqual(['reveal', 'entry', 'reveal']);
-  });
-
-  it('confirms every row in a batch together', async () => {
-    mut.RELAY_BATCH_SIZE = 4;
-    relayer.setTransportForTests(async () => HASH, async () => true);
-
-    for (let i = 0; i < 3; i++) relayer.enqueue('reveal', `k${i}`, reveal(0, i));
-    await relayer.drain();
-    await relayer.settle();
-
-    expect(rows().every(r => r.status === 'confirmed')).toBe(true);
-  });
-
-  it('requeues every row in a batch when the batch fails', async () => {
-    mut.RELAY_BATCH_SIZE = 4;
-    relayer.setTransportForTests(async () => HASH, async () => false);
-
-    for (let i = 0; i < 3; i++) relayer.enqueue('reveal', `k${i}`, reveal(0, i));
-    await relayer.drain();
-    await relayer.settle();
-
-    expect(rows().map(r => r.attempts)).toEqual([1, 1, 1]);
+    expect(send.mock.calls.map(c => c[0])).toEqual(['entry', 'resolution', 'entry']);
   });
 });
 
 describe('restart recovery', () => {
   it('returns in-flight rows to pending on start', () => {
-    relayer.enqueue('reveal', 'a', reveal(0, 0));
+    relayer.enqueue('entry', 'a', entry(0));
     getDb().prepare(`UPDATE relay_queue SET status = 'sent'`).run();
 
     // A row left `sent` has nobody watching its receipt — it would sit there
@@ -375,8 +352,8 @@ describe('restart recovery', () => {
   });
 
   it('leaves confirmed and dead rows alone on start', () => {
-    relayer.enqueue('reveal', 'a', reveal(0, 0));
-    relayer.enqueue('reveal', 'b', reveal(0, 1));
+    relayer.enqueue('entry', 'a', entry(0));
+    relayer.enqueue('entry', 'b', entry(1));
     getDb().prepare(`UPDATE relay_queue SET status = 'confirmed' WHERE id = 1`).run();
     getDb().prepare(`UPDATE relay_queue SET status = 'dead' WHERE id = 2`).run();
 

@@ -8,6 +8,30 @@ export const GRID = {
   rows: 18,
 } as const;
 
+/**
+ * How long a map lives before it is torn up and reprinted.
+ *
+ * ─────────────────────────── why a world needs an end ───────────────────────
+ *
+ * Reveals are permanent within an epoch, so without rotation a zone is a
+ * consumable: every dig removes a tile from the world and none ever come back.
+ * One player working through an energy bar every 108 seconds strips a 216-cell
+ * grid in about half an hour, and nothing in the system replaces what they
+ * took. The schema has been ready for this since phase 0 — `zones.rotates_at`
+ * and `zone_seed_history` were written for it — but nothing ever bumped the
+ * epoch, so the fog only ever thinned.
+ *
+ * ─────────────────────────── per zone, not global ───────────────────────────
+ *
+ * `rotates_at` is a per-zone column and rotation reads it per zone, so this is
+ * only the default for a freshly seeded world. Staggering zones is the point:
+ * every map resetting on the same tick would empty the whole game at once.
+ */
+export const EPOCH = {
+  /** Default lifetime of a map. Three days — long enough to be worth learning. */
+  rotateMs: 3 * 24 * 60 * 60 * 1000,
+} as const;
+
 export const ENERGY = {
   max: 12,
   start: 9,

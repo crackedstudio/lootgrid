@@ -59,8 +59,15 @@ function build() {
     get: db.prepare('SELECT * FROM hunts WHERE id = ?'),
     at: db.prepare('SELECT * FROM hunts WHERE zone_id = ? AND epoch = ? AND r = ? AND c = ?'),
     listIn: db.prepare('SELECT * FROM hunts WHERE zone_id = ? AND epoch = ?'),
+    // 'resolving' still counts as open — it is a race being settled, and it has
+    // to stay visible until a winner is recorded. 'expired' does not: nobody
+    // cracked it, it can never be played again, and leaving it here was quietly
+    // fatal. `countOpen` shares the predicate, so an expired hunt was still
+    // filling one of the zone's HUNTS_PER_ZONE slots and `replenish` never
+    // minted a replacement — a zone would bleed a hunt a day until it had none
+    // that could actually be played, while still reporting a full grid.
     listLive: db.prepare(
-      "SELECT * FROM hunts WHERE zone_id = ? AND epoch = ? AND status != 'resolved'",
+      "SELECT * FROM hunts WHERE zone_id = ? AND epoch = ? AND status NOT IN ('resolved', 'expired')",
     ),
     insert: db.prepare(`
       INSERT INTO hunts (id, zone_id, epoch, r, c, salt, cell_commit, kind, difficulty,
@@ -75,8 +82,9 @@ function build() {
     setStatus: db.prepare(
       'UPDATE hunts SET status = ?, winner_id = ?, resolved_at = ? WHERE id = ?',
     ),
+    /** Must match `listLive`'s predicate exactly — see the note there. */
     countOpen: db.prepare(
-      "SELECT COUNT(*) AS n FROM hunts WHERE zone_id = ? AND epoch = ? AND status != 'resolved'",
+      "SELECT COUNT(*) AS n FROM hunts WHERE zone_id = ? AND epoch = ? AND status NOT IN ('resolved', 'expired')",
     ),
     expired: db.prepare(
       "SELECT * FROM hunts WHERE status = 'live' AND expires_at IS NOT NULL AND expires_at < ?",

@@ -1,4 +1,5 @@
 import { ASYNC, ENERGY, NET, RACE } from './config';
+import * as escrow from './chain/escrow';
 import * as director from './director';
 import type { Directive } from './director/types';
 import * as energy from './energy';
@@ -378,13 +379,77 @@ export function sweepExpiredHunts(now = Date.now()): number {
   for (const h of expiredHunts) {
     const hunt = store.getHunt(h.id);
     if (!hunt || hunt.status !== 'live') continue;
-    store.setHuntStatus(hunt, 'expired', null, now);
-    rooms.broadcast(rooms.zoneRoom(hunt.zoneId), { t: 'hunt:expired', huntId: hunt.id, r: hunt.r, c: hunt.c });
-    store.evictHunt(hunt.id);
+    closeUncracked(hunt, now);
     store.replenish(hunt.zoneId, now);
   }
   if (expiredHunts.length > 0) logger.info({ n: expiredHunts.length }, 'expired hunts swept');
   return expiredHunts.length;
+}
+
+/**
+ * Retire a hunt nobody won, and start its pot on the way home.
+ *
+ * The refund is queued rather than sent: `escrow.enqueueRefund` will not
+ * dispatch before the pot's on-chain expiry, and the contract rejects a refund
+ * of a pot that was claimed or never funded. So this is safe to call on every
+ * hunt that closes without a winner, which is exactly what makes it correct to
+ * call from both paths below.
+ */
+function closeUncracked(hunt: Hunt, now: number): void {
+  store.setHuntStatus(hunt, 'expired', null, now);
+  rooms.broadcast(rooms.zoneRoom(hunt.zoneId), {
+    t: 'hunt:expired',
+    huntId: hunt.id,
+    r: hunt.r,
+    c: hunt.c,
+  });
+  // Nobody cracked it, so the money in it belongs back in the treasury. Before
+  // rotation existed this was a slow leak nobody had to think about; now that
+  // maps close on a schedule it is the routine case.
+  if (hunt.expiresAt !== null) escrow.enqueueRefund(hunt.id, hunt.expiresAt);
+  store.evictHunt(hunt.id);
+}
+
+/**
+ * Reprint the maps whose time is up.
+ *
+ * ─────────────────────────── what rotation is for ───────────────────────────
+ *
+ * A reveal is permanent within an epoch, so without this a zone is consumed
+ * rather than played: every dig takes a tile out of the world and nothing puts
+ * one back. Rotation is the only thing that makes a zone survivable — see
+ * config's EPOCH block.
+ *
+ * Hunts in the outgoing epoch do not carry over. They are keyed by epoch, so a
+ * survivor would sit on a map no player can reach; and because `replenish`
+ * clamped their expiry to this moment, their pots are refundable the instant
+ * they close. That clamp is what makes rotation safe to do on a timer rather
+ * than something an operator has to supervise.
+ */
+export function sweepRotations(now = Date.now()): number {
+  const due = store.zonesDueForRotation(now);
+
+  for (const zone of due) {
+    try {
+      for (const h of store.rotateZone(zone, now)) {
+        const hunt = store.getHunt(h.id);
+        if (!hunt || hunt.status !== 'live') continue;
+        closeUncracked(hunt, now);
+      }
+
+      // The zone object we hold still describes the epoch that just ended, so
+      // re-read it — `replenish` must stock the new map, not the dead one.
+      rooms.broadcast(rooms.zoneRoom(zone.id), { t: 'zone:rotated', zoneId: zone.id, epoch: zone.epoch + 1 });
+      store.replenish(zone.id, now);
+    } catch (err) {
+      // One zone failing to rotate must not hold up the others, and it is
+      // recoverable by nature: `rotates_at` is unchanged, so it comes due again
+      // on the next sweep.
+      logger.error({ err, zoneId: zone.id }, 'zone rotation failed — will retry next sweep');
+    }
+  }
+
+  return due.length;
 }
 
 // ---------------------------------------------------------------- fan-out
@@ -456,6 +521,15 @@ export function start(): void {
       sweepExpiredHunts();
     } catch (err) {
       logger.error({ err }, 'hunt expiry sweep failed');
+    }
+    // Same tick rather than a timer of its own. Rotation is a three-day event
+    // checked once a minute — it does not need its own cadence, and running it
+    // after the expiry sweep means a hunt that expired on its own is already
+    // closed by the time its map is torn up.
+    try {
+      sweepRotations();
+    } catch (err) {
+      logger.error({ err }, 'zone rotation sweep failed');
     }
   }, 60_000);
 }

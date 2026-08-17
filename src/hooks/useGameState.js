@@ -150,6 +150,10 @@ export function useGameState() {
         case 'energy':
           return set({ energy: { value: msg.value, max: msg.max, nextRegenMs: msg.nextRegenMs } });
 
+        // Your own dig, and only ever your own. This used to be broadcast to
+        // everyone in the zone, which is how a player who spent nothing learned
+        // where treasure was not. The fog is private now — the server sends
+        // this to the opener alone.
         case 'tile:revealed':
           return set(s =>
             s.grid
@@ -161,6 +165,29 @@ export function useGameState() {
                 }
               : null,
           );
+
+        /**
+         * The map was torn up and reprinted.
+         *
+         * Everything on screen now describes an epoch that no longer exists —
+         * the fog, the hunts, and the tile types underneath them. Clear it
+         * immediately rather than waiting for the refetch, so nobody spends
+         * energy tapping a map that is already gone.
+         */
+        case 'zone:rotated': {
+          if (stateRef.current.mapZone !== msg.zoneId) return;
+          set(s =>
+            s.grid ? { grid: { ...s.grid, epoch: msg.epoch, reveals: {}, hunts: [] } } : null,
+          );
+          get(`/zones/${msg.zoneId}/grid`)
+            .then(grid => {
+              const reveals = {};
+              for (const cell of grid.reveals) reveals[cellKey(cell.r, cell.c)] = cell;
+              set(s => (s.mapZone === msg.zoneId ? { grid: { ...grid, reveals } } : null));
+            })
+            .catch(() => {});
+          return;
+        }
 
         case 'zone:hunts':
           return set(s => (s.grid ? { grid: { ...s.grid, hunts: msg.hunts } } : null));

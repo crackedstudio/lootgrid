@@ -77,8 +77,36 @@ describe('map secrecy', () => {
     for (const z of zones) expect(z.seedCommit).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  const gridFor = (who: string) =>
+    app.inject({ method: 'GET', url: '/zones/ridge/grid', headers: { 'x-player': who } });
+
+  /**
+   * A cell with no hunt on it.
+   *
+   * Hunt placement is random per world, so a hard-coded cell collides with one
+   * about one run in fifty and the open comes back 409 `is_hunt` — a flake that
+   * looks like a fog bug.
+   */
+  function freeCell(): { r: number; c: number } {
+    const zone = store.getZone('ridge')!;
+    const taken = new Set(store.liveHuntsIn(zone).map(h => `${h.r},${h.c}`));
+    for (let r = 0; r < 18; r++) {
+      for (let c = 0; c < 12; c++) {
+        if (!taken.has(`${r},${c}`)) return { r, c };
+      }
+    }
+    throw new Error('no free cell — every tile in the zone holds a hunt');
+  }
+
+  const open = (who: string, at: { r: number; c: number }) =>
+    app.inject({
+      method: 'POST',
+      url: `/zones/ridge/tiles/${at.r}/${at.c}/open`,
+      headers: { 'x-player': who },
+    });
+
   it('returns no unrevealed cells in the grid', async () => {
-    const res = await app.inject({ method: 'GET', url: '/zones/ridge/grid' });
+    const res = await gridFor(PLAYER);
     const grid = res.json() as { cols: number; rows: number; reveals: unknown[] };
     // A fresh zone has nothing uncovered, so the payload must describe nothing.
     expect(grid.reveals).toHaveLength(0);
@@ -86,19 +114,39 @@ describe('map secrecy', () => {
   });
 
   it('reveals a cell only after somebody spends energy on it', async () => {
-    const before = await app.inject({ method: 'GET', url: '/zones/ridge/grid' });
-    expect((before.json() as { reveals: unknown[] }).reveals).toHaveLength(0);
+    expect((await gridFor(PLAYER)).json().reveals).toHaveLength(0);
 
-    await app.inject({
-      method: 'POST',
-      url: '/zones/ridge/tiles/4/4/open',
-      headers: { 'x-player': PLAYER },
-    });
+    const cell = freeCell();
+    expect((await open(PLAYER, cell)).statusCode).toBe(200);
 
-    const after = await app.inject({ method: 'GET', url: '/zones/ridge/grid' });
-    const reveals = (after.json() as { reveals: Array<{ r: number; c: number }> }).reveals;
+    const reveals = (await gridFor(PLAYER)).json().reveals as Array<{ r: number; c: number }>;
     expect(reveals).toHaveLength(1);
-    expect(reveals[0]).toMatchObject({ r: 4, c: 4 });
+    expect(reveals[0]).toMatchObject(cell);
+  });
+
+  /**
+   * The fog is private.
+   *
+   * A shared map was a standing free hint: every tile anyone uncovered told
+   * everyone else where treasure was *not*. It also made finding treasure
+   * charity, and made fifty burner wallets cheap — one account could solve a
+   * map and the rest could ride it. Digging is now something you pay for and
+   * something only you learn from.
+   */
+  it('does not show one player what another has uncovered', async () => {
+    const OTHER = '0x00000000000000000000000000000000000000b2';
+
+    expect((await open(PLAYER, freeCell())).statusCode).toBe(200);
+
+    expect((await gridFor(PLAYER)).json().reveals).toHaveLength(1);
+    // The other player pays their own way or sees nothing.
+    expect((await gridFor(OTHER)).json().reveals).toHaveLength(0);
+  });
+
+  it('will not serve a map to an unauthenticated caller', async () => {
+    // There is no longer any such thing as "the zone's map" to serve anonymously.
+    const res = await app.inject({ method: 'GET', url: '/zones/ridge/grid' });
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
   });
 
   it('never serves a live hunt salt', async () => {

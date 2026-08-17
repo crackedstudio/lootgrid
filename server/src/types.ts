@@ -58,6 +58,15 @@ export interface Zone {
   seedSecret: string;
   seedCommit: string;
   epoch: number;
+  /**
+   * When this map is torn up and reprinted. Null means never — the phase 0
+   * behaviour, kept reachable because an agent zone mid-experiment is not
+   * always something you want reset under you.
+   *
+   * Load-bearing beyond scheduling: a hunt's TTL is clamped to it, so no hunt
+   * can outlive the epoch that created it. See `store.replenish`.
+   */
+  rotatesAt: number | null;
 }
 
 export interface Reveal {

@@ -86,12 +86,10 @@ const schema = z
     RELAY_POLL_MS: z.coerce.number().int().min(200).max(60_000).default(1_000),
     /** Transactions dispatched per poll, bounded so one tick cannot exhaust the RPC. */
     RELAY_MAX_IN_FLIGHT: z.coerce.number().int().min(1).max(200).default(25),
-    /**
-     * Reveals per transaction. 1 = one transaction per action, which is the
-     * point of relaying at all. Raise it only if relayer gas becomes the binding
-     * constraint — it trades transaction count for cost, roughly linearly.
-     */
-    RELAY_BATCH_SIZE: z.coerce.number().int().min(1).max(128).default(1),
+    // RELAY_BATCH_SIZE was removed with the reveal relay. `recordRevealBatch`
+    // was the only multi-row call the contract offers, so there is nothing left
+    // to batch — the relay now sends one transaction per action, always. A
+    // stale value in an env file is ignored rather than rejected.
     /** Give up after this many failures and park the row as `dead` for inspection. */
     RELAY_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(8),
 

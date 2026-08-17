@@ -230,7 +230,15 @@ export function registerRoutes(app: App): void {
     })),
   }));
 
+  /**
+   * One player's view of a zone.
+   *
+   * Authenticated, where it used to be public — there is no longer any such
+   * thing as "the zone's map" to serve anonymously. The hunts are common
+   * knowledge (everyone is hunting the same treasure); the fog is not.
+   */
   app.get('/zones/:id/grid', async req => {
+    const player = await requirePlayer(req);
     const { id } = parse(zoneParams, req.params);
     const zone = store.getZone(id);
     if (!zone) throw notFound('no_such_zone');
@@ -239,9 +247,10 @@ export function registerRoutes(app: App): void {
       cols: GRID.cols,
       rows: GRID.rows,
       epoch: zone.epoch,
-      // Only what has actually been uncovered. Everything else is absent and
-      // the client renders fog — the map itself never leaves the server.
-      reveals: store.revealsFor(zone),
+      // Only what THIS PLAYER has uncovered. Everything else is absent and the
+      // client renders fog — the map itself never leaves the server, and one
+      // player's digs never reach another.
+      reveals: store.revealsFor(zone, player.id),
       hunts: store.liveHuntsIn(zone).map(h => ({
         id: h.id,
         r: h.r,
@@ -271,7 +280,7 @@ export function registerRoutes(app: App): void {
 
     if (store.huntAt(zone, r, c)) throw conflict('is_hunt', 'open this one from the hunt sheet');
 
-    const existing = store.getReveal(zone, r, c);
+    const existing = store.getReveal(zone, player.id, r, c);
     if (existing) return { cell: existing, energy: energy.view(player, now), alreadyOpen: true };
 
     const spent = energy.spend(player, 1, now);
@@ -279,28 +288,32 @@ export function registerRoutes(app: App): void {
     store.savePlayerEnergy(player);
 
     const cell = { r, c, type: tileType(zone, r, c), byHandle: player.handle, at: now };
-    const won = store.addReveal(zone, { ...cell, playerId: player.id });
+    const opened = store.addReveal(zone, { ...cell, playerId: player.id });
 
-    if (!won) {
-      // Someone opened it between our read and our write — give the energy back.
+    if (!opened) {
+      // The same player double-tapped: the read above missed it, the write hit
+      // the primary key. Not a lost race — under private fog there is nobody to
+      // race — so give the energy back and serve what they already had.
       const refunded = energy.refund(player, 1, now);
       store.savePlayerEnergy(player);
-      return { cell: store.getReveal(zone, r, c), energy: refunded, alreadyOpen: true };
+      return { cell: store.getReveal(zone, player.id, r, c), energy: refunded, alreadyOpen: true };
     }
 
     metrics.tilesRevealed.inc({ type: cell.type });
 
-    // Published after the reveal is committed, never before: the chain records
-    // what happened, and a relay failure must not undo a tile the player has
-    // already paid energy for. The dedupe key is the reveal's own primary key.
-    relayer.enqueue('reveal', `reveal:${zone.id}:${zone.epoch}:${r}:${c}`, {
-      player: player.id as `0x${string}`,
-      zoneId: relayer.toBytes32Id(zone.id),
-      epoch: zone.epoch,
-      r,
-      c,
-      tileType: relayer.tileTypeCode(cell.type),
-    });
+    // ─────────────────────── no reveal goes on chain ───────────────────────
+    //
+    // This used to publish every dig, deduped on (zone, epoch, r, c). Private
+    // fog is incompatible with that in both directions: the dedupe key now
+    // collides between players who legitimately open the same tile, and — the
+    // real problem — a public per-player reveal log republishes the map, which
+    // is exactly what this phase exists to stop. A chain record of who dug
+    // where would hand any observer the pooled map we just took away.
+    //
+    // The claims that carry the audit story are untouched: hunt commitments,
+    // hint sets and their truth flags, entries, resolutions and payouts. What
+    // is lost is "every dig is on chain", the weakest of them, and the only one
+    // private fog contradicts.
 
     // Awarded after the reveal is committed, and never allowed to throw: the
     // player has already paid energy for this tile, so a hint that fails to
@@ -314,7 +327,10 @@ export function registerRoutes(app: App): void {
       now,
     );
 
-    rooms.broadcast(rooms.zoneRoom(zone.id), { t: 'tile:revealed', ...cell });
+    // Deliberately NOT broadcast to the zone. Telling the room which tile just
+    // opened is the free-riding leak in socket form — it was how a player who
+    // spent nothing learned where treasure was not.
+    rooms.toPlayer(player.id, { t: 'tile:revealed', ...cell });
     return { cell, energy: spent.energy, hint };
   });
 
