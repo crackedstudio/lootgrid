@@ -289,6 +289,25 @@ export const TUTORIAL = {
   reward: { xp: 100, energy: 10 },
 } as const;
 
+/**
+ * The Cycle Pass — the only subscription-shaped thing sold.
+ *
+ * It sells *tempo*, which is the category the review marks as freely sellable:
+ * it buys attempts at finding, never a chance at winning. A pass holder digs
+ * more; they do not get a sixth key, and their hints are not truer.
+ *
+ * Three days on purpose. That is one cycle, so a pass expires when the map
+ * does — one that straddled a reset would be selling speed on a board that no
+ * longer exists.
+ */
+export const PASS = {
+  /** Regen multiplier while active. Four hours to a full bar becomes two. */
+  regenMultiplier: 2,
+  /** A full bar once per UTC day, claimed on first sight rather than pushed. */
+  dailyTopUp: true,
+  dayMs: 24 * 60 * 60 * 1000,
+} as const;
+
 export const RACE = {
   /**
    * When the first player completes, hold the result open this long and collect

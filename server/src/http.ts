@@ -29,6 +29,7 @@ import * as metrics from './metrics';
 import * as ratelimit from './ratelimit';
 import * as referee from './referee';
 import * as rooms from './rooms';
+import * as shop from './shop';
 import * as store from './store';
 import * as tutorial from './tutorial';
 import * as survey from './survey';
@@ -48,6 +49,8 @@ const tileParams = zoneParams.extend({
   c: z.coerce.number().int().min(0).max(GRID.cols - 1),
 });
 const idParams = z.object({ id: z.string().min(1).max(128) });
+const skuParams = z.object({ sku: z.string().min(1).max(64) });
+const aimBody = z.object({ huntId: z.string().min(1).max(128) });
 const hexAddress = z.string().regex(/^0x[a-fA-F0-9]{40}$/, 'must be a 0x-prefixed address');
 
 // Prices are whole cents, always. A float here would be a rounding error with a
@@ -441,6 +444,7 @@ export function registerRoutes(app: App): void {
       [...store.liveHuntsIn(zone), ...store.ownedHuntsIn(zone, player.id)],
       now,
       {
+        targetHuntId: shop.targetFor(player.id, now),
         guaranteed:
           type === 'clue'
             ? TILES.clue.guaranteedHint
@@ -450,6 +454,13 @@ export function registerRoutes(app: App): void {
         wantTrue: type === 'trap' && TILES.trap.falseHint ? false : undefined,
       },
     );
+
+    // A Compass charge is spent only when it actually delivered — a hint that
+    // was granted AND was about the treasure it was aimed at. A charge burned
+    // on a dig that turned up nothing would be selling five hints and handing
+    // over fewer.
+    const aimedAt = shop.targetFor(player.id, now);
+    if (hint && aimedAt && hint.huntId === aimedAt) shop.consumeCharge(player.id, now);
 
     // A mystery tile opens a neighbour on the house. Only coherent because the
     // fog is per-player: under a shared map this would have been spending
@@ -575,6 +586,75 @@ export function registerRoutes(app: App): void {
       /** XP hunts stay open when cash ones do not; say so rather than imply it. */
       hintsHeld: hints.countForPlayer(player.id, now),
     };
+  });
+
+  // ---- shop ----
+
+  /**
+   * What is for sale, and what this player already holds.
+   *
+   * The catalogue is a constant in code rather than a table, and served from
+   * there — see shop/catalogue.ts for why the set of sellable things is closed.
+   */
+  app.get('/shop', async req => {
+    const player = await requirePlayer(req);
+    return shop.stateFor(player.id);
+  });
+
+  /**
+   * Buy something.
+   *
+   * Payment goes through the same x402 path entry fees use: a 402 carrying the
+   * terms and a ready-to-sign payload, then the client signs and retries. When
+   * fees are switched off — the default — the shop still works and records the
+   * purchase at its listed price, which is what lets the whole flow be exercised
+   * without a facilitator.
+   */
+  app.post('/shop/:sku/buy', async (req, reply) => {
+    const player = await requirePlayer(req);
+    const { sku } = parse(skuParams, req.params);
+    limit(`shop:${player.id}`, env.RATE_ATTEMPT_PER_MIN, 60_000, 'shop');
+
+    const item = shop.itemFor(sku);
+    if (!item) throw notFound('no_such_item');
+
+    let paymentRef: string | null = null;
+    if (x402.enabled()) {
+      const terms = x402.termsFor(`shop/${item.sku}`, item.priceCents);
+      const settled = await x402.settleEntry(terms, headerOrNull(req, 'x-payment'));
+      if (!settled.ok) {
+        const challenge = x402.challengeFor(terms, player.id as `0x${string}`);
+        return reply.code(402).send(x402.paymentRequiredBody(terms, challenge));
+      }
+      paymentRef = settled.reference;
+    }
+
+    return shop.fulfil(player, item, paymentRef);
+  });
+
+  /** Spend a banked refill. Free — it was paid for when it was bought. */
+  app.post('/shop/refill/use', async req => {
+    const player = await requirePlayer(req);
+    const now = Date.now();
+    if (!shop.useRefillCredit(player, now)) throw conflict('no_refills_left');
+    return { energy: energy.view(player, now) };
+  });
+
+  /**
+   * Point a Compass at a treasure.
+   *
+   * Free and separate from buying one: choosing a target at the checkout would
+   * mean choosing before you had a reason to prefer any.
+   */
+  app.post('/shop/compass/aim', async req => {
+    const player = await requirePlayer(req);
+    const { huntId } = parse(aimBody, req.body);
+
+    const hunt = store.getHunt(huntId);
+    if (!hunt || hunt.status !== 'live') throw notFound('no_such_hunt');
+    if (!shop.aim(player.id, huntId)) throw conflict('no_compass');
+
+    return { aimedAt: huntId, entitlements: shop.stateFor(player.id).entitlements };
   });
 
   /**

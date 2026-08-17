@@ -194,6 +194,56 @@ export const surveysTaken = new Counter({
   registers: [registry],
 });
 
+/**
+ * The shop, counted per SKU and per category — never as one lump.
+ *
+ * The whole business thesis is a claim about WHICH of these sells. The review
+ * ranks the rake as not-revenue, house-sold hints as real money, and energy
+ * burned manufacturing hints for sale as the actual business — which implies
+ * the Compass matters more than its ten cents suggests, because it is the only
+ * item that makes another item sell more.
+ *
+ * A single revenue counter could not falsify any of that. These can.
+ */
+export const shopPurchases = new Counter({
+  name: 'lootgrid_shop_purchases_total',
+  help: 'Completed purchases, by SKU',
+  labelNames: ['sku', 'category'],
+  registers: [registry],
+});
+
+export const shopRevenueCents = new Counter({
+  name: 'lootgrid_shop_revenue_cents_total',
+  help: 'Revenue in cents, by SKU',
+  labelNames: ['sku', 'category'],
+  registers: [registry],
+});
+
+export const shopCreditsUsed = new Counter({
+  name: 'lootgrid_shop_refill_credits_used_total',
+  help: 'Banked refills actually spent',
+  registers: [registry],
+});
+
+/**
+ * Hints redirected by a Compass.
+ *
+ * The number that says whether targeting is worth paying for. If this stays
+ * near zero while refills sell, the thesis that targeting is the scarce thing
+ * is wrong, and that is worth learning from a counter rather than an argument.
+ */
+export const compassHintsAimed = new Counter({
+  name: 'lootgrid_compass_hints_aimed_total',
+  help: 'Hints granted about a Compass-chosen treasure',
+  registers: [registry],
+});
+
+export const passTopUps = new Counter({
+  name: 'lootgrid_pass_topups_total',
+  help: 'Daily Cycle Pass top-ups claimed',
+  registers: [registry],
+});
+
 export const huntsFound = new Counter({
   name: 'lootgrid_hunts_found_total',
   help: 'Hunts discovered, by whether the finder held a hint for them',

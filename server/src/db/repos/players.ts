@@ -8,6 +8,8 @@ interface Row {
   session_key: string | null;
   energy_value: number;
   energy_at: number;
+  pass_until: number | null;
+  pass_topped_up_at: number | null;
   trust_score: number;
   shadow_banned: number;
   xp: number;
@@ -21,6 +23,8 @@ const toDomain = (r: Row): Player => ({
   sessionKey: r.session_key,
   energyValue: r.energy_value,
   energyAt: r.energy_at,
+  passUntil: r.pass_until,
+  passToppedUpAt: r.pass_topped_up_at,
   trustScore: r.trust_score,
   shadowBanned: r.shadow_banned === 1,
   xp: r.xp,
@@ -38,6 +42,8 @@ function build() {
       VALUES (@id, @handle, @sessionKey, @energyValue, @energyAt, 1.0, 0, @now, @now)
     `),
     saveEnergy: db.prepare('UPDATE players SET energy_value = ?, energy_at = ? WHERE id = ?'),
+    setPass: db.prepare('UPDATE players SET pass_until = ? WHERE id = ?'),
+    setToppedUp: db.prepare('UPDATE players SET pass_topped_up_at = ? WHERE id = ?'),
     setSessionKey: db.prepare('UPDATE players SET session_key = ? WHERE id = ?'),
     setHandle: db.prepare('UPDATE players SET handle = ? WHERE id = ?'),
     touch: db.prepare('UPDATE players SET last_seen_at = ? WHERE id = ?'),
@@ -93,6 +99,14 @@ export function touch(id: string, now = Date.now()): void {
 export function addXp(id: string, amount: number): void {
   if (amount <= 0) return;
   s().addXp.run(amount, id);
+}
+
+export function setPass(id: string, until: number | null): void {
+  s().setPass.run(until, id);
+}
+
+export function setToppedUp(id: string, at: number): void {
+  s().setToppedUp.run(at, id);
 }
 
 export function setTrust(id: string, score: number, shadowBanned: boolean): void {

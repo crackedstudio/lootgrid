@@ -59,7 +59,7 @@ export default function App() {
       )}
 
       {showGrid && (
-        <GridScreen state={state} onBackZones={game.backZones} onTile={game.onTile} onToggleSurvey={game.toggleSurveyMode} onDismissStuck={game.dismissStuck} />
+        <GridScreen state={state} onBackZones={game.backZones} onTile={game.onTile} onToggleSurvey={game.toggleSurveyMode} onDismissStuck={game.dismissStuck} onBuy={game.buy} onSpendRefill={game.spendRefill} />
       )}
 
       {state.view === 'market' && <MarketScreen state={state} />}

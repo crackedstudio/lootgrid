@@ -197,6 +197,19 @@ export function awardXp(p: Player, amount: number): void {
   }
 }
 
+/** The Cycle Pass expiry. Mirrored onto the cached player — energy reads it. */
+export function setPass(p: Player, until: number | null): void {
+  p.passUntil = until;
+  playerCache.set(p.id, p);
+  playerRepo.setPass(p.id, until);
+}
+
+export function setPassToppedUp(p: Player, at: number): void {
+  p.passToppedUpAt = at;
+  playerCache.set(p.id, p);
+  playerRepo.setToppedUp(p.id, at);
+}
+
 export function setSessionKey(p: Player, sessionKey: string | null): void {
   p.sessionKey = sessionKey;
   playerCache.set(p.id, p);

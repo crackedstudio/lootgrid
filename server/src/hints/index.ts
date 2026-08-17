@@ -95,7 +95,7 @@ export function awardForReveal(
   c: number,
   liveHunts: Hunt[],
   now = Date.now(),
-  opts: { guaranteed?: boolean; wantTrue?: boolean } = {},
+  opts: { guaranteed?: boolean; wantTrue?: boolean; targetHuntId?: string | null } = {},
 ): Hint | null {
   try {
     if (liveHunts.length === 0) return null;
@@ -129,6 +129,15 @@ export function awardForReveal(
     // only a certain one.
     if (!opts.guaranteed && !hintDrops(zoneSalt, playerId, r, c)) return null;
 
+    // A Compass overrides proximity: its whole product is choosing which
+    // treasure your hints concern without having to dig next to it. Falls
+    // through to nearest when the aimed hunt is no longer live, so a stale
+    // target degrades to the free behaviour rather than paying nothing.
+    // See shop/index.ts `targetFor` for why this is safe.
+    const aimed = opts.targetHuntId
+      ? liveHunts.find(h => h.id === opts.targetHuntId)
+      : undefined;
+
     // Nearest first, then outward.
     //
     // Ordinary digs never look past the first entry. A trap does, and it has to:
@@ -141,7 +150,7 @@ export function awardForReveal(
     // advance, which is what the honesty audit rests on. The cost is that a
     // trap's lie is occasionally about a treasure slightly further away, and
     // that is a far smaller lie than a trap that tells the truth.
-    const ordered = byDistance(liveHunts, r, c);
+    const ordered = aimed ? [aimed, ...byDistance(liveHunts, r, c)] : byDistance(liveHunts, r, c);
 
     let hint: HintRecord | null = null;
     for (const candidate of ordered) {

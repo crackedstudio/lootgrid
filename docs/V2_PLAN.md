@@ -1,7 +1,7 @@
 # LOOTGRID v2 — Implementation Plan
 
 **Source:** `docs/briefing.md` (the outside review)
-**Status:** Phases 1–6 shipped. Phase 0 was skipped at the user's direction — worth
+**Status:** Phases 1–7 shipped — the plan is complete. Phase 0 was skipped at the user's direction — worth
 knowing, because it means everything below is being built without the funnel that would
 tell us whether any of it worked. §0-A was decided (stop relaying reveals). §0-B is half-resolved: proximity
 targeting shipped, the Compass's explicit choice did not. §0-D still gates
@@ -430,8 +430,8 @@ away (it could not see the player's own hunt), and the tutorial's first clue
 paid a hint about a treasure on the other side of the map. Both now include the
 player's reserved hunts.
 
-**Still not built:** the refill offer on the empty-energy screen. There is no
-shop until Phase 7 — the surface is built and waiting for it.
+**Since resolved:** the refill offer on the empty-energy screen landed in
+Phase 7, and offers a banked refill before a purchase.
 
 ---
 
@@ -451,7 +451,44 @@ before the game it tutors**, or it lies again.
 
 ---
 
-## Phase 7 — Shop
+## Phase 7 — Shop ✅ shipped
+
+**§0-B is decided: yes, targeting is sellable.** The Compass lets a player
+choose which treasure their hints concern without digging near it — the
+deliberate invariant the plan flagged. Three things already in the code make it
+safe, and none of them needed a special case: you still have to dig (a Compass
+redirects hints, it does not produce them), information is capped at 25% of the
+prize in `market/pricing.ts`, and **The Crack's tiebreak counts hints held**, so
+five aimed hints are five points of tiebreak debt. A player who buys their way
+to the answer loses to one who did not. That is anti-pay-to-win rule 3 enforcing
+itself.
+
+| Decision | Why |
+|---|---|
+| The catalogue is a **closed constant in code** | Not a table anyone can insert into. `Grant` has no member that could produce an entry, key or retry — and there is nothing for such a member to write to, because a key is a count of cash attempts subtracted from a constant. The rule holds by absence of mechanism |
+| `purchases` is **append-only, price as charged** | It is the denominator of the published payout ratio. A price re-read from the catalogue later would misdescribe last month's revenue the moment prices move; a refund is a new row |
+| The pass lives on the **player row**, not only in entitlements | It changes the regen *rate*, which `currentEnergy` computes on nearly every request, and that function is pure by design. A lookup there would put a query on the hottest path in the server |
+| The daily top-up is **claimed, not pushed** | A scheduler crediting energy to sleeping accounts has to be right about time zones and restarts forever. It runs when the player shows up, which is the only moment the energy is worth anything to them |
+| Buying twice **extends**, never replaces | A second pass pushes the expiry out from where it already is. Buying something twice must never be worth less than buying it twice |
+| Every SKU counted **separately from day one** | The plan asked for this and the reason is falsifiability: the business thesis is a claim about *which* of these sells. If refill revenue dwarfs Compass revenue forever, the thesis is wrong, and a single revenue counter could not tell us |
+| The offer appears **only on the empty bar** | Never a pop-up, never a timer. The review is explicit that it belongs at the moment someone runs out mid-hunt on a grid they have been narrowing down. A banked refill is offered before a purchase — charging again for something already bought is how a payer is lost permanently |
+
+**Deliberately not built, with reasons** (recorded in `catalogue.ts` so nobody
+ships one by deleting a comment):
+
+- **Hint slots.** There is no cap on hints held, so this has nothing to sell.
+  Adding a cap in order to sell relief from it is taking something away and
+  charging to give it back — the same move as raising prices on repeat buyers,
+  which §5g rules out for the same reason.
+- **House scout reports.** Legitimate, with a hard precondition: only from a set
+  locked in before anyone entered and revealed true-or-false after. The
+  commitment machinery exists; the sponsor and audit story around it does not.
+- **Cosmetics and the report card.** No cosmetic layer to attach to; the report
+  card is a real build, now computable from `attempts.hints_used`.
+
+---
+
+### Original plan
 
 Last, because it monetises mechanics that must exist first.
 
@@ -474,7 +511,7 @@ Phase 3  Survey + real tiles      ✅ needs 1 (mystery), 2 (survey tuning)
 Phase 4  The Crack                ✅ needs 3 (hints worth using)
 Phase 5  Keys + rank + wallet     ✅ the money gate, part 2
 Phase 6  First-run experience     ✅ needs 1–4 to be truthful
-Phase 7  Shop                     ── needs 3 (Compass), 5 (keys boundary)
+Phase 7  Shop                     ✅ needs 3 (Compass), 5 (keys boundary)
 ```
 
 Phases 0 and 5 can run parallel to everything. Phase 1 blocks the most.

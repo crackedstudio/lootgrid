@@ -13,6 +13,8 @@ function player(value: number, at: number): Player {
     trustScore: 1,
     shadowBanned: false,
   xp: 0,
+  passUntil: null,
+  passToppedUpAt: null,
     createdAt: at,
   };
 }

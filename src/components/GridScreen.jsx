@@ -101,6 +101,17 @@ function TileCell({ cell, onClick, dimmed, survey, pointed }) {
  * Priority order matters: a hunt outranks a reveal outranks a survey reading
  * outranks hint candidacy. What you are looking for beats where you have been.
  */
+/**
+ * Prices are shown in cents at these amounts, not dollars.
+ *
+ * "$0.05" reads as a rounding error; "5c" reads as a price. The review's own
+ * guidance goes further — anchor to a data bundle or a bus fare in local
+ * currency — which needs a currency the server does not yet know.
+ */
+function formatPrice(cents) {
+  return cents < 100 ? `${cents}\u00A2` : `$${(cents / 100).toFixed(2)}`;
+}
+
 /** "3H 20M" / "8M". A bar that returns in four hours has to say so. */
 function formatWait(ms) {
   if (!ms || ms <= 0) return 'READY';
@@ -133,11 +144,15 @@ function OverviewCell({ cell, survey, candidate, pointed, onClick }) {
   );
 }
 
-export default function GridScreen({ state, onBackZones, onTile, onToggleSurvey, onDismissStuck }) {
+export default function GridScreen({ state, onBackZones, onTile, onToggleSurvey, onDismissStuck, onBuy, onSpendRefill }) {
   const {
     grid, energy, showToast, toastText, zones, mapZone,
-    hints = [], surveys = {}, surveyMode = false, stuck = null,
+    hints = [], surveys = {}, surveyMode = false, stuck = null, shop = null,
   } = state;
+
+  const refillItem = shop?.catalogue?.find(i => i.sku === 'refill') ?? null;
+  const refillsBanked =
+    shop?.entitlements?.find(e => e.kind === 'refillCredits')?.remaining ?? 0;
   const zone = zones.find(z => z.id === mapZone);
 
   // Which hints the player is currently trusting. View state, not game state —
@@ -450,16 +465,56 @@ export default function GridScreen({ state, onBackZones, onTile, onToggleSurvey,
             </div>
           </div>
 
+          {/*
+            The offer, and only here.
+
+            Never from a pop-up and never on a timer: the review is explicit
+            that energy is offered when someone's bar hits empty MID-HUNT on a
+            grid they have been narrowing down. That is the highest-intent
+            moment in the session and it is the only one where an offer is
+            help rather than interruption.
+
+            A banked refill comes first when they have one — it is already paid
+            for, and charging again for something they bought would be the kind
+            of thing that loses a payer permanently.
+          */}
+          {refillsBanked > 0 ? (
+            <div
+              onClick={onSpendRefill}
+              style={{
+                marginTop: 6, padding: '11px 20px', background: '#29E6E6',
+                border: '3px solid #0C0C10', boxShadow: '4px 4px 0 #0C0C10',
+                fontFamily: "'Archivo Black', sans-serif", fontSize: 13,
+                color: '#0C0C10', cursor: 'pointer',
+              }}
+            >
+              USE A REFILL ({refillsBanked} LEFT)
+            </div>
+          ) : (
+            refillItem && (
+              <div
+                onClick={() => onBuy(refillItem.sku)}
+                style={{
+                  marginTop: 6, padding: '11px 20px', background: '#FFD51F',
+                  border: '3px solid #0C0C10', boxShadow: '4px 4px 0 #0C0C10',
+                  fontFamily: "'Archivo Black', sans-serif", fontSize: 13,
+                  color: '#0C0C10', cursor: 'pointer',
+                }}
+              >
+                FILL IT NOW · {formatPrice(refillItem.priceCents)}
+              </div>
+            )
+          )}
+
           <div
             onClick={onDismissStuck}
             style={{
-              marginTop: 6, padding: '10px 18px', background: '#FFD51F',
-              border: '3px solid #0C0C10', boxShadow: '4px 4px 0 #0C0C10',
-              fontFamily: "'Archivo Black', sans-serif", fontSize: 13,
-              color: '#0C0C10', cursor: 'pointer',
+              padding: '8px 16px', border: '2px solid rgba(245,239,227,.25)',
+              fontFamily: "'Space Mono', monospace", fontSize: 10, fontWeight: 700,
+              color: 'var(--cream)', opacity: .7, cursor: 'pointer',
             }}
           >
-            OK
+            KEEP LOOKING FOR FREE
           </div>
         </div>
       )}

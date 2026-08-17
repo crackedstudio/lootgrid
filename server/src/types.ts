@@ -33,6 +33,16 @@ export interface Player {
   /** Lazily-computed energy: value at `energyAt`, plus regen since. Never ticked. */
   energyValue: number;
   energyAt: number;
+  /**
+   * When the Cycle Pass ends, or null.
+   *
+   * On the player rather than only in `entitlements` because it changes the
+   * regen RATE, and `currentEnergy` is a pure function called on nearly every
+   * request. See migration 017.
+   */
+  passUntil: number | null;
+  /** When the pass's daily top-up was last taken. Claimed, never pushed. */
+  passToppedUpAt: number | null;
   trustScore: number;
   /** Flagged accounts keep playing but stop matching into cash hunts. */
   shadowBanned: boolean;

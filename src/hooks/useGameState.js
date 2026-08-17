@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { get, post, ApiError } from '../api/http';
 import { fetchHints } from '../api/hints';
+import { buyItem, fetchShop, spendRefillCredit } from '../api/shop';
 import { enterHunt } from '../api/entry';
 import { publishEntry, publishWin } from '../api/records';
 import { createSender, socket } from '../api/socket';
@@ -26,6 +27,10 @@ const INITIAL = {
   hints: [],
   /** The empty-bar screen's payload, or null. See fetchStuck. */
   stuck: null,
+  /** { catalogue, entitlements, pass } once loaded. */
+  shop: null,
+  /** True while a purchase is in flight, so the button cannot be double-tapped. */
+  buying: false,
   /** Survey readings by cell key. Kept so several can be compared at once. */
   surveys: {},
   /** Tap a tile to survey it rather than dig it. */
@@ -138,9 +143,19 @@ export function useGameState() {
 
     (async () => {
       try {
-        const [me, zones] = await Promise.all([get('/me'), get('/zones')]);
+        // The shop rides along at boot rather than being fetched when the shop
+        // screen opens. The offer that matters is the one on the empty-bar
+        // screen, and that moment must not wait on a round trip — it arrives
+        // exactly when the player has just been stopped.
+        const [me, zones, shop] = await Promise.all([get('/me'), get('/zones'), fetchShop().catch(() => null)]);
         if (cancelled) return;
-        set({ player: { playerId: me.playerId, handle: me.handle }, energy: me.energy, zones: zones.zones });
+        set({
+          player: { playerId: me.playerId, handle: me.handle },
+          energy: me.energy,
+          zones: zones.zones,
+          xp: me.xp ?? 0,
+          shop,
+        });
         socket.connect();
       } catch (err) {
         if (cancelled) return;
@@ -411,6 +426,57 @@ export function useGameState() {
   }, [set]);
 
   const dismissStuck = useCallback(() => set({ stuck: null }), [set]);
+
+  const loadShop = useCallback(async () => {
+    try {
+      set({ shop: await fetchShop() });
+    } catch {
+      toast('SHOP UNAVAILABLE');
+    }
+  }, [set, toast]);
+
+  /**
+   * Buy something.
+   *
+   * The 402 path is the server's; if payment is switched off the purchase
+   * completes directly. Either way the response carries the resulting energy
+   * and entitlements, so nothing here has to guess at what the player now has.
+   */
+  const buy = useCallback(
+    async sku => {
+      if (stateRef.current.buying) return;
+      set({ buying: true });
+      try {
+        const res = await buyItem(sku);
+        set(s => ({
+          energy: res.energy ?? s.energy,
+          shop: s.shop ? { ...s.shop, entitlements: res.entitlements } : s.shop,
+          // A purchase that filled the bar ends the stuck screen — the thing
+          // that was blocking them is no longer true.
+          stuck: res.energy && res.energy.value > 0 ? null : s.stuck,
+        }));
+        toast('PURCHASED');
+      } catch (err) {
+        if (err.status === 402) return toast('PAYMENT REQUIRED');
+        if (err.code === 'no_such_item') return toast('NO LONGER SOLD');
+        toast('PURCHASE FAILED');
+      } finally {
+        set({ buying: false });
+      }
+    },
+    [set, toast],
+  );
+
+  /** Spend a banked refill. The cheapest way out of an empty bar. */
+  const spendRefill = useCallback(async () => {
+    try {
+      const res = await spendRefillCredit();
+      set({ energy: res.energy, stuck: null });
+      toast('BAR REFILLED');
+    } catch {
+      toast('NO REFILLS BANKED');
+    }
+  }, [set, toast]);
 
   /**
    * Survey a cell: spend energy to learn how close the nearest treasure is.
@@ -719,6 +785,9 @@ export function useGameState() {
     onTile,
     onSurvey,
     dismissStuck,
+    loadShop,
+    buy,
+    spendRefill,
     toggleSurveyMode,
     closeHunt,
     confirmHunt,
