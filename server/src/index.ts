@@ -9,6 +9,8 @@ import * as relayer from './chain/relayer';
 import { closeDb, openDb } from './db/index';
 import { corsOrigins, env, isProd } from './env';
 import { registerRoutes } from './http';
+import * as funnel from './funnel';
+import { wireObservers } from './observability';
 import { logger } from './logger';
 import * as hints from './hints';
 import * as metrics from './metrics';
@@ -52,54 +54,9 @@ await app.register(cors, {
 
 registerRoutes(app);
 
-// ---- observer wiring (kept out of the referee so it stays dependency-light) ----
-referee.observers.onAttemptOpened = (attempt, hunt) => {
-  // Phase 1's gate metric: did this player hold a hint for the hunt they just
-  // entered? If the hinted and unhinted rates never diverge, hints are not
-  // changing where people dig and the loop has not earned its next phase.
-  metrics.huntsFound.inc({
-    hinted: hints.heldForHunt(attempt.playerId, hunt.id) ? 'yes' : 'no',
-  });
-
-  // When players publish their own entries, relaying it too would emit the
-  // record twice and put the operator back on the hook for the gas this change
-  // moved to the player. The player's transaction may of course never land —
-  // that costs a public record, nothing more.
-  if (attestor.enabled()) return;
-
-  // One entry per player per hunt, which the UNIQUE (hunt_id, player_id)
-  // constraint already guarantees — so the dedupe key cannot collide.
-  relayer.enqueue('entry', `entry:${hunt.id}:${attempt.playerId}`, {
-    player: attempt.playerId as `0x${string}`,
-    huntId: relayer.toBytes32Id(hunt.id),
-    gameType: relayer.gameTypeCode(attempt.gameType),
-  });
-};
-
-referee.observers.onAttemptFinished = (attempt, outcome) => {
-  metrics.attemptsFinished.inc({ game_type: attempt.gameType, outcome });
-  if (outcome === 'failed' && attempt.failReason) {
-    metrics.attemptFailures.inc({ game_type: attempt.gameType, reason: attempt.failReason });
-  }
-};
-
-referee.observers.onHuntResolved = (hunt, winner, racers) => {
-  metrics.raceResolutions.inc();
-  metrics.winnerElapsed.observe(winner.elapsedMs ?? 0);
-  metrics.raceRacers.observe(racers);
-
-  // As above: the winner publishes their own result when attestations are on.
-  if (attestor.enabled()) return;
-
-  relayer.enqueue('resolution', `resolution:${hunt.id}`, {
-    winner: winner.playerId as `0x${string}`,
-    huntId: relayer.toBytes32Id(hunt.id),
-    elapsedMs: winner.elapsedMs ?? 0,
-    // uint16 on chain. A race with 65k entrants is impossible under the energy
-    // cost, but clamping is cheaper than a silently truncated record.
-    racers: Math.min(racers, 65_535),
-  });
-};
+// Observers live in observability.ts so they can be exercised by tests — see
+// the note there. Wired before boot, so nothing can run unobserved.
+wireObservers();
 
 // ---- boot ----
 openDb();
@@ -118,6 +75,9 @@ relayer.start();
 // either way, they simply carry no money until a pot lands.
 escrowWorker.start();
 startNoncePruner();
+// The five funnel numbers. Two of them are cohort aggregates that cannot be
+// accumulated as they happen, so they are recomputed on a timer — see funnel.ts.
+funnel.start();
 // Enters hunts and takes turns for players who have an agent. A no-op unless
 // AGENTS_ENABLED=true — and until this existed, every other agent module was a
 // capability nothing ever called.
@@ -180,6 +140,7 @@ async function shutdown(signal: string): Promise<void> {
     escrowWorker.stop();
     agentDriver.stop();
     stopNoncePruner();
+    funnel.stop();
     // Tell clients to reconnect rather than dropping them silently.
     for (const client of [...rooms.allClients()]) client.ws.close(1001, 'server shutting down');
     wss.close();

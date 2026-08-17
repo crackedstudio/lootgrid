@@ -86,7 +86,7 @@ export function openAttempt(player: Player, hunt: Hunt, now = Date.now()): OpenR
   if (store.attemptOf(hunt.id, player.id)) return { ok: false, error: 'already_attempted' };
 
   const cost = hunt.kind === 'cash' ? ENERGY.costCashHunt : ENERGY.costPuzzleHunt;
-  const spent = energy.spend(player, cost, now);
+  const spent = energy.spend(player, cost, now, hunt.kind === 'cash' ? 'cash_hunt' : 'puzzle_hunt');
   if (!spent.ok) return { ok: false, error: 'insufficient_energy' };
   store.savePlayerEnergy(player);
 

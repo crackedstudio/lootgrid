@@ -43,6 +43,13 @@ export interface Player {
   passUntil: number | null;
   /** When the pass's daily top-up was last taken. Claimed, never pushed. */
   passToppedUpAt: number | null;
+  /**
+   * UTC day this player was last recorded active, in memory only.
+   *
+   * Not a column — it exists so `markSeen` can skip a write it already made
+   * this process's lifetime. The durable record is `player_days`.
+   */
+  lastSeenDay?: number;
   trustScore: number;
   /** Flagged accounts keep playing but stop matching into cash hunts. */
   shadowBanned: boolean;

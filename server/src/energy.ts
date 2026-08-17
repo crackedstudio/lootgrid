@@ -1,4 +1,5 @@
 import { ENERGY, PASS } from './config';
+import * as metrics from './metrics';
 import type { Player } from './types';
 
 export interface EnergyView {
@@ -57,9 +58,25 @@ export function view(p: Player, now: number): EnergyView {
  * process a function that never awaits is already atomic, and pretending
  * otherwise would be theatre.
  */
-export function spend(p: Player, cost: number, now: number): { ok: boolean; energy: EnergyView } {
+/**
+ * `action` is only for the funnel: it labels an empty-bar refusal so that
+ * "stopped mid-dig" and "could not afford a survey" can be told apart. It does
+ * not affect the arithmetic, and a caller that omits it still spends correctly.
+ */
+export function spend(
+  p: Player,
+  cost: number,
+  now: number,
+  action = 'unknown',
+): { ok: boolean; energy: EnergyView } {
   const value = currentEnergy(p, now);
-  if (value < cost) return { ok: false, energy: view(p, now) };
+  if (value < cost) {
+    // The highest-intent moment in the session, and the one phase 6's stuck
+    // screen and phase 7's offer both exist for. Counted here rather than at
+    // each call site so no future spender can forget to.
+    metrics.energyEmpty.inc({ action });
+    return { ok: false, energy: view(p, now) };
+  }
 
   // Preserve partial regen progress so spending doesn't reset the timer.
   const partial = (now - p.energyAt) % regenMsFor(p, now);

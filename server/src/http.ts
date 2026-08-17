@@ -13,6 +13,7 @@ import * as relayer from './chain/relayer';
 import { ENERGY, GRID, SURVEY, TILES } from './config';
 import { getDb } from './db/index';
 import * as energy from './energy';
+import * as funnel from './funnel';
 import * as keys from './keys';
 import * as rank from './rank';
 import { stdev } from './games/tap';
@@ -121,6 +122,20 @@ async function requirePlayer(req: FastifyRequest): Promise<Player> {
     // A global bucket per identity, so one account cannot monopolise the box
     // no matter which mix of endpoints it hits.
     limit(`global:${player.id}`, env.RATE_GLOBAL_PER_MIN, 60_000, 'global');
+
+    // Every authenticated request passes through here, which is exactly why the
+    // activity record goes here and nowhere else — a funnel that only counts
+    // players who happened to hit an instrumented route measures the route.
+    //
+    // Costs one write per player per day, not one per request: the day row's
+    // primary key rejects the repeats. Swallows its own errors, because a
+    // measurement must never be able to fail a request it is only observing.
+    try {
+      store.markSeen(player);
+    } catch (err) {
+      logger.warn({ err, playerId: player.id }, 'activity not recorded');
+    }
+
     return player;
   } catch (err) {
     if (isAppError(err) && err.statusCode === 401) {
@@ -389,7 +404,7 @@ export function registerRoutes(app: App): void {
     const type = tileType(zone, r, c);
     const cost = ENERGY.costFog * (type === 'trap' ? TILES.trap.energyMultiplier : 1);
 
-    const spent = energy.spend(player, cost, now);
+    const spent = energy.spend(player, cost, now, 'dig');
     if (!spent.ok) throw conflict('insufficient_energy', 'out of energy', spent.energy);
     store.savePlayerEnergy(player);
 
@@ -519,7 +534,7 @@ export function registerRoutes(app: App): void {
     const reading = survey.read(live, r, c, now);
     if (!reading) throw conflict('nothing_to_find', 'this zone has no live treasure');
 
-    const spent = energy.spend(player, SURVEY.cost, now);
+    const spent = energy.spend(player, SURVEY.cost, now, 'survey');
     if (!spent.ok) throw conflict('insufficient_energy', 'out of energy', spent.energy);
     store.savePlayerEnergy(player);
 
@@ -587,6 +602,15 @@ export function registerRoutes(app: App): void {
       hintsHeld: hints.countForPlayer(player.id, now),
     };
   });
+
+  /**
+   * The five numbers, in one place.
+   *
+   * Prometheus carries all of these and is the right home for graphing them,
+   * but a funnel nobody can read without a Grafana login is a funnel nobody
+   * reads. This is the version you can curl during a playtest.
+   */
+  app.get('/audit/funnel', async () => funnel.report());
 
   // ---- shop ----
 

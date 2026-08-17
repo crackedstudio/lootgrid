@@ -1,9 +1,9 @@
 # LOOTGRID v2 — Implementation Plan
 
 **Source:** `docs/briefing.md` (the outside review)
-**Status:** Phases 1–7 shipped — the plan is complete. Phase 0 was skipped at the user's direction — worth
-knowing, because it means everything below is being built without the funnel that would
-tell us whether any of it worked. §0-A was decided (stop relaying reveals). §0-B is half-resolved: proximity
+**Status:** complete. All eight phases shipped. Phase 0 was built last rather than first,
+so Phases 1–7 were designed without a funnel; the five numbers now exist, and the
+behavioural claims in Phases 6 and 7 are answerable rather than merely argued. §0-A was decided (stop relaying reveals). §0-B is half-resolved: proximity
 targeting shipped, the Compass's explicit choice did not. §0-D still gates
 funding any zone.
 **Scope:** ten phases built the machinery. This plan is the first one that changes the game.
@@ -120,7 +120,42 @@ in parallel but cannot be *funded* until they land.
 
 ---
 
-## Phase 0 — Instrumentation
+## Phase 0 — Instrumentation ✅ shipped (last, not first)
+
+Built after Phases 1–7 rather than before them, which was the user's call. The
+cost of that ordering is real and worth recording: six phases of design shipped
+without a way to tell whether any of them worked, and the two most behavioural
+— the first-run experience and the shop — are still unvalidated bets. What this
+phase changes is that they are now *answerable*.
+
+| Decision | Why |
+|---|---|
+| A `player_days` table, not a `last_seen_at` fix | `touch` existed and was **never called**, so `last_seen_at` had been written once at signup since Phase 0 — retention was not merely unmeasured, it was unmeasurable. And one timestamp still could not answer a cohort question: D1 asks whether the people who joined on Tuesday were present on Wednesday, which needs presence on a *specific* day |
+| Recorded in `requirePlayer` | Every authenticated request passes through it. A funnel that only counts players who happened to hit an instrumented route is measuring the route. Costs one write per player per day — the primary key is the throttle |
+| Three events, two cohort gauges | Taps-to-treasure, hints-at-entry and energy-empty accumulate where they happen. D1/D7 and %-paying are cohort questions whose answers change retroactively as time passes, so they are computed from history on a timer |
+| Retention excludes players whose day has not arrived | Someone who joined this morning has not *failed* to return on day 7. Counting them as a miss drags every number toward zero and makes a healthy game look dying — the mistake that makes retention dashboards untrustworthy, and one `WHERE` clause |
+| Observers moved out of `index.ts` into `observability.ts` | They were in the process entry point, which no test loads — so the funnel metrics could have read zero forever and every test would still have passed. A measurement nobody can test is a measurement nobody should trust |
+
+**Two bugs found while testing, both of the silent kind:**
+
+- `CAST(created_at / :dayMs AS INTEGER)` is load-bearing. A bound parameter
+  arrives as REAL, so the division was float — `20679.765` rather than `20679` —
+  and every join against an integer day column matched nothing. The query ran
+  without error and reported that nobody had ever come back.
+- The test helper looked histograms up by `m.name`, but prom-client exports them
+  under the *base* name with `_count`/`_sum` as `metricName` on the samples. It
+  found nothing and read as a metric that never fired.
+
+Both are exactly the failure mode instrumentation actually has: not being
+wrong, but silently reading zero, which is indistinguishable from a healthy
+system with no traffic.
+
+**Verified live:** taps-to-first-treasure = **1** on a fresh account following
+the Phase 6 script — the tutorial working, measured for the first time.
+
+---
+
+### Original plan
 
 **Why first:** the briefing's open question #2 says we measure nothing about
 players, and it's right. `metrics.ts` has 40+ counters — all system-side
@@ -504,7 +539,7 @@ the refill SKU. Instrument them separately from day one.
 ## Sequencing
 
 ```
-Phase 0  Instrumentation          ── independent, NOT DONE (skipped)
+Phase 0  Instrumentation          ✅ built last, after 1-7
 Phase 1  Rotation + private fog   ✅ the money gate, part 1
 Phase 2  Resize + retune          ✅ needs 1
 Phase 3  Survey + real tiles      ✅ needs 1 (mystery), 2 (survey tuning)

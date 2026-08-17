@@ -198,6 +198,21 @@ export function awardXp(p: Player, amount: number): void {
 }
 
 /** The Cycle Pass expiry. Mirrored onto the cached player — energy reads it. */
+/**
+ * Record that a player was here today. See `playerRepo.seen`.
+ *
+ * Mirrors onto the cached object so the write can be skipped for the rest of
+ * the day without a read — the primary key would reject it anyway, but not
+ * asking is cheaper than being rejected on every request.
+ */
+export function markSeen(p: Player, now = Date.now()): void {
+  const today = Math.floor(now / 86_400_000);
+  if (p.lastSeenDay === today) return;
+  playerRepo.seen(p.id, now);
+  p.lastSeenDay = today;
+  playerCache.set(p.id, p);
+}
+
 export function setPass(p: Player, until: number | null): void {
   p.passUntil = until;
   playerCache.set(p.id, p);
@@ -503,3 +518,16 @@ export function attemptHistory(playerId: string, limit = 50) {
 }
 
 export const attemptEvents = (attemptId: string) => attemptRepo.eventsFor(attemptId);
+
+/**
+ * Whether this is the player's very first attempt at anything.
+ *
+ * Read after the insert, so the attempt itself is counted — exactly one means
+ * this is the first. Asking before the insert would race two concurrent
+ * entries into both believing they were first.
+ */
+export const isFirstAttempt = (a: Attempt): boolean => attemptRepo.countForPlayer(a.playerId) === 1;
+
+/** Tiles this player dug before a given moment. The taps in taps-to-treasure. */
+export const digsBefore = (playerId: string, before: number): number =>
+  zoneRepo.countRevealsBefore(playerId, before);

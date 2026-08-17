@@ -80,6 +80,11 @@ function build() {
     revealsFor: db.prepare(
       'SELECT * FROM reveals WHERE zone_id = ? AND epoch = ? AND player_id = ?',
     ),
+    // Across every zone and epoch: "taps to first treasure" is a fact about the
+    // player's whole life, not about one map.
+    countRevealsBefore: db.prepare(
+      'SELECT COUNT(*) AS n FROM reveals WHERE player_id = ? AND at <= ?',
+    ),
     revealCount: db.prepare(
       'SELECT COUNT(*) AS n FROM reveals WHERE zone_id = ? AND epoch = ? AND player_id = ?',
     ),
@@ -186,6 +191,10 @@ export function addReveal(
 /** One player's map. There is no longer any such thing as the zone's map. */
 export function revealsFor(zoneId: string, epoch: number, playerId: string): Reveal[] {
   return (s().revealsFor.all(zoneId, epoch, playerId) as RevealRow[]).map(toReveal);
+}
+
+export function countRevealsBefore(playerId: string, before: number): number {
+  return (s().countRevealsBefore.get(playerId, before) as { n: number }).n;
 }
 
 export function revealCount(zoneId: string, epoch: number, playerId: string): number {

@@ -47,6 +47,10 @@ function build() {
     setSessionKey: db.prepare('UPDATE players SET session_key = ? WHERE id = ?'),
     setHandle: db.prepare('UPDATE players SET handle = ? WHERE id = ?'),
     touch: db.prepare('UPDATE players SET last_seen_at = ? WHERE id = ?'),
+    // One row per player per active day. INSERT OR IGNORE means the caller can
+    // fire this on every request without checking first — the primary key is
+    // the throttle, rather than a timer somebody has to keep correct.
+    markDay: db.prepare('INSERT OR IGNORE INTO player_days (player_id, day) VALUES (?, ?)'),
     setTrust: db.prepare('UPDATE players SET trust_score = ?, shadow_banned = ? WHERE id = ?'),
     // Incremented in SQL rather than read-modify-written, so two awards landing
     // together cannot lose one. XP is cheap, but silently dropping a reward the
@@ -90,6 +94,18 @@ export function setSessionKey(id: string, sessionKey: string | null): void {
 
 export function setHandle(id: string, handle: string): void {
   s().setHandle.run(handle, id);
+}
+
+/**
+ * Record that this player was here today.
+ *
+ * Writes the day row and the last-seen stamp together. `touch` existed and was
+ * never called, so `last_seen_at` had been written once at signup and never
+ * again — retention was not merely unmeasured, it was unmeasurable.
+ */
+export function seen(id: string, now = Date.now()): void {
+  s().markDay.run(id, Math.floor(now / 86_400_000));
+  s().touch.run(now, id);
 }
 
 export function touch(id: string, now = Date.now()): void {

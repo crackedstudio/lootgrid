@@ -205,6 +205,100 @@ export const surveysTaken = new Counter({
  *
  * A single revenue counter could not falsify any of that. These can.
  */
+// ─────────────────────────── the funnel ───────────────────────────
+//
+// Five numbers, and deliberately only five. The review is explicit: "nothing
+// else until those five are trustworthy". Forty-odd counters already existed
+// here before this block and every one of them measured the SYSTEM — escrow
+// queue depth, inference failures, realised rake. Not one measured a player.
+//
+// Six phases were built on top of that silence. These are the numbers that say
+// whether any of it worked.
+
+/**
+ * 1. Taps to first treasure.
+ *
+ * The number behind "four out of five new players never find a single treasure
+ * in their first session". Observed once per player, at the moment they first
+ * enter a hunt — so the histogram is one sample per person, not per attempt,
+ * and its count is "players who ever found anything".
+ *
+ * Buckets are shaped around a bar rather than round numbers: 20 digs is a full
+ * bar at the current cost, so the first three buckets are the first three bars.
+ * If phase 6's placed treasure works, this collapses towards 3.
+ */
+export const tapsToFirstTreasure = new Histogram({
+  name: 'lootgrid_taps_to_first_treasure',
+  help: 'Tiles a player dug before entering their first hunt',
+  buckets: [1, 3, 5, 10, 20, 40, 60, 100, 200],
+  registers: [registry],
+});
+
+/**
+ * 2. Hints held at entry.
+ *
+ * Whether the deduction loop is actually reachable. `huntsFound{hinted=}` has
+ * carried the yes/no version since phase 1 and it was too coarse to answer the
+ * real question: three hints about one treasure is the thing the whole economy
+ * is priced around, and a boolean cannot tell one from three.
+ */
+export const hintsHeldAtEntry = new Histogram({
+  name: 'lootgrid_hints_held_at_entry',
+  help: 'Live hints a player held about a hunt when they entered it',
+  buckets: [0, 1, 2, 3, 4, 6, 10],
+  labelNames: ['kind'],
+  registers: [registry],
+});
+
+/**
+ * 3. Energy-empty moments.
+ *
+ * The highest-intent moment in the session, and until phase 6 it was dead air.
+ * Labelled by what the player was trying to do, because "stopped mid-dig" and
+ * "could not afford a survey" are different problems with different fixes.
+ */
+export const energyEmpty = new Counter({
+  name: 'lootgrid_energy_empty_total',
+  help: 'Times a player was refused for want of energy, by action',
+  labelNames: ['action'],
+  registers: [registry],
+});
+
+/**
+ * 4. Day-1 and day-7 return.
+ *
+ * A gauge rather than a counter because it is a cohort question — of the people
+ * who joined on a given day, how many came back — and cohorts are computed from
+ * history, not accumulated as they happen. See funnel.ts.
+ */
+export const retention = new Gauge({
+  name: 'lootgrid_retention_ratio',
+  help: 'Share of a cohort active N days after signing up',
+  labelNames: ['day'],
+  registers: [registry],
+});
+
+/**
+ * 5. Share of players who ever pay.
+ *
+ * The single biggest unknown in the business: whether one-tap payment converts
+ * better than an app store would. The gap between the pessimistic and
+ * optimistic answers is 10x — break-even at 950 players or at 9,500 — and
+ * nothing but this number decides which.
+ */
+export const payingShare = new Gauge({
+  name: 'lootgrid_paying_players_ratio',
+  help: 'Share of players who have ever completed a purchase',
+  registers: [registry],
+});
+
+export const playersTotal = new Gauge({
+  name: 'lootgrid_players_total',
+  help: 'Distinct players, by whether they have ever paid',
+  labelNames: ['paid'],
+  registers: [registry],
+});
+
 export const shopPurchases = new Counter({
   name: 'lootgrid_shop_purchases_total',
   help: 'Completed purchases, by SKU',

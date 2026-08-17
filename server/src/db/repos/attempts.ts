@@ -68,6 +68,7 @@ function build() {
         JOIN hunts h ON h.id = a.hunt_id
        WHERE a.player_id = ? AND h.kind = 'cash' AND a.started_at >= ?
     `),
+    countForPlayer: db.prepare('SELECT COUNT(*) AS n FROM attempts WHERE player_id = ?'),
     recentForPlayer: db.prepare(
       'SELECT * FROM attempts WHERE player_id = ? ORDER BY started_at DESC LIMIT ?',
     ),
@@ -141,6 +142,10 @@ export function insert(a: Attempt): void {
     deadlineAt: a.deadlineAt,
     status: a.status,
   });
+}
+
+export function countForPlayer(playerId: string): number {
+  return (s().countForPlayer.get(playerId) as { n: number }).n;
 }
 
 export function countCashSince(playerId: string, since: number): number {
