@@ -32,6 +32,14 @@ export interface Player {
   trustScore: number;
   /** Flagged accounts keep playing but stop matching into cash hunts. */
   shadowBanned: boolean;
+  /**
+   * What everything that is not money pays in.
+   *
+   * Most treasures are XP-only — see `CASH_PER_ZONE`. A counter rather than a
+   * balance: XP buys nothing and is never spent, so there is no ledger and no
+   * solvency question. Phase 5's Prospector rank reads it.
+   */
+  xp: number;
   createdAt: number;
 }
 

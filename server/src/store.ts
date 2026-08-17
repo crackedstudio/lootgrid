@@ -180,6 +180,23 @@ export function savePlayerEnergy(p: Player): void {
   playerRepo.saveEnergy(p.id, p.energyValue, p.energyAt);
 }
 
+/**
+ * Award XP. Incremented in SQL, then mirrored onto the cached player.
+ *
+ * Never throws. XP is a reward, not a settlement — a counter that fails to
+ * advance must not cost someone the tile they already paid energy for.
+ */
+export function awardXp(p: Player, amount: number): void {
+  if (amount <= 0) return;
+  try {
+    playerRepo.addXp(p.id, amount);
+    p.xp += amount;
+    playerCache.set(p.id, p);
+  } catch (err) {
+    logger.warn({ err, playerId: p.id, amount }, 'xp award failed — the action stands');
+  }
+}
+
 export function setSessionKey(p: Player, sessionKey: string | null): void {
   p.sessionKey = sessionKey;
   playerCache.set(p.id, p);

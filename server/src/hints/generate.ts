@@ -175,13 +175,23 @@ export function hintsForHunt(hunt: Hunt): HintRecord[] {
 /**
  * Whether revealing this cell earns a hint, and which one.
  *
- * Keyed on the cell and the player, so it cannot be re-rolled: a cell is
- * revealable exactly once, by exactly one player, and the outcome was fixed by
- * the zone salt long before either was known.
+ * Keyed on the cell and the player, so neither can be re-rolled: the outcome
+ * was fixed by the zone salt long before either was known.
+ *
+ * Split into two questions because a clue tile answers the first one for you.
+ * It still has to ask the second, so that a guaranteed hint is a *certain* hint
+ * rather than a *better* one — otherwise "clue" would quietly be a tier
+ * upgrade as well as a drop upgrade.
  */
 export const HINT_DROP_PCT = 35;
 
-export function hintDrop(
+/** Does this cell pay a hint at all? */
+export function hintDrops(salt: string, playerId: string, r: number, c: number): boolean {
+  return hashInt(salt, playerId, r, c, 'drop') % 100 < HINT_DROP_PCT;
+}
+
+/** Which member of a pool, once something has decided that a hint is owed. */
+export function hintIndex(
   salt: string,
   playerId: string,
   r: number,
@@ -189,8 +199,22 @@ export function hintDrop(
   poolSize: number,
 ): number | null {
   if (poolSize <= 0) return null;
-  if (hashInt(salt, playerId, r, c, 'drop') % 100 >= HINT_DROP_PCT) return null;
   return hashInt(salt, playerId, r, c, 'which') % poolSize;
+}
+
+/**
+ * The original combined form: rolls for a drop, then picks. Kept because it is
+ * the honest description of an ordinary dig, which is still most of them.
+ */
+export function hintDrop(
+  salt: string,
+  playerId: string,
+  r: number,
+  c: number,
+  poolSize: number,
+): number | null {
+  if (!hintDrops(salt, playerId, r, c)) return null;
+  return hintIndex(salt, playerId, r, c, poolSize);
 }
 
 export { MID_ROW, MID_COL };

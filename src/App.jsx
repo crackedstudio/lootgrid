@@ -59,7 +59,7 @@ export default function App() {
       )}
 
       {showGrid && (
-        <GridScreen state={state} onBackZones={game.backZones} onTile={game.onTile} />
+        <GridScreen state={state} onBackZones={game.backZones} onTile={game.onTile} onToggleSurvey={game.toggleSurveyMode} />
       )}
 
       {state.view === 'market' && <MarketScreen state={state} />}

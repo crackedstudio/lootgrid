@@ -180,6 +180,20 @@ export const hintsAwarded = new Counter({
 });
 
 /** Split by whether the finder held any live hint for that hunt. */
+/**
+ * Survey readings, by how warm they came back.
+ *
+ * The distribution is the tuning signal for how vague the detector should be —
+ * the review left that explicitly open. Mostly-cold means the bands are too
+ * tight to be worth six energy; mostly-burning means it is solving the map.
+ */
+export const surveysTaken = new Counter({
+  name: 'lootgrid_surveys_total',
+  help: 'Survey readings taken, by band',
+  labelNames: ['band'],
+  registers: [registry],
+});
+
 export const huntsFound = new Counter({
   name: 'lootgrid_hunts_found_total',
   help: 'Hunts discovered, by whether the finder held a hint for them',

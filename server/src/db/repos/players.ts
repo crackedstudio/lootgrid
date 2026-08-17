@@ -10,6 +10,7 @@ interface Row {
   energy_at: number;
   trust_score: number;
   shadow_banned: number;
+  xp: number;
   created_at: number;
   last_seen_at: number;
 }
@@ -22,6 +23,7 @@ const toDomain = (r: Row): Player => ({
   energyAt: r.energy_at,
   trustScore: r.trust_score,
   shadowBanned: r.shadow_banned === 1,
+  xp: r.xp,
   createdAt: r.created_at,
 });
 
@@ -40,6 +42,10 @@ function build() {
     setHandle: db.prepare('UPDATE players SET handle = ? WHERE id = ?'),
     touch: db.prepare('UPDATE players SET last_seen_at = ? WHERE id = ?'),
     setTrust: db.prepare('UPDATE players SET trust_score = ?, shadow_banned = ? WHERE id = ?'),
+    // Incremented in SQL rather than read-modify-written, so two awards landing
+    // together cannot lose one. XP is cheap, but silently dropping a reward the
+    // player watched themselves earn is not.
+    addXp: db.prepare('UPDATE players SET xp = xp + ? WHERE id = ?'),
   };
 }
 const s = () => (cache ??= build());
@@ -82,6 +88,11 @@ export function setHandle(id: string, handle: string): void {
 
 export function touch(id: string, now = Date.now()): void {
   s().touch.run(now, id);
+}
+
+export function addXp(id: string, amount: number): void {
+  if (amount <= 0) return;
+  s().addXp.run(amount, id);
 }
 
 export function setTrust(id: string, score: number, shadowBanned: boolean): void {

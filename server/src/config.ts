@@ -80,8 +80,11 @@ export const EPOCH = {
  * Survey starts competing for the same bar — which is the point. You cannot
  * sweep your way to a treasure any more.
  *
- * `costFog` stays at 1 until phase 3 splits digging from surveying; raising it
- * now would only make the game slower, not deeper.
+ * `costFog` is 2 now that Survey exists to compete with it. The two prices are
+ * the whole choice the player makes each turn: a dig at 2 buys one tile of
+ * certainty, a survey at 6 buys a reading over the whole neighbourhood and
+ * consumes no map. Three digs to one survey is the exchange rate, and it is
+ * meant to make surveying the obvious opener and digging the way you finish.
  */
 export const ENERGY = {
   max: 40,
@@ -89,9 +92,105 @@ export const ENERGY = {
   start: 30,
   /** 4h ÷ 40. */
   regenMs: 360_000,
-  costFog: 1,
+  costFog: 2,
   costCashHunt: 3,
   costPuzzleHunt: 2,
+} as const;
+
+/**
+ * What the five tile types actually do.
+ *
+ * ─────────────────────────── the first tap taught a lie ─────────────────────
+ *
+ * `grid.ts` has labelled tiles empty / clue / trap / mystery / puzzle since
+ * phase 0, and **none of them did anything**. A trap cost nothing. A clue gave
+ * no clue. The onboarding copy promised "clues run warm when treasure is near"
+ * about a mechanic that did not exist anywhere in the game. A new player's very
+ * first tap was a lesson that our words are decorative — which is an expensive
+ * thing to teach in the first fifteen seconds.
+ *
+ * The distribution is unchanged (56/17/12/9/6). Only the consequences are new,
+ * and each is chosen to push toward the same thing: knowing more about *where*
+ * rather than getting more of *what*.
+ */
+export const TILES = {
+  /** A clue always pays a hint. The 35% drop roll is skipped, not improved. */
+  clue: { guaranteedHint: true },
+  /**
+   * A trap costs double and hands you a hint drawn from the false ones.
+   *
+   * The hint comes out of the hunt's already-committed set, so the published
+   * honesty numbers are untouched — see `pickFrom` in hints/index.ts. It is a
+   * real cost with a real consequence, and it is survivable: a false hint that
+   * contradicts your others is itself information, which is why traps make the
+   * deduction better rather than merely more expensive.
+   */
+  trap: { energyMultiplier: 2, falseHint: true, guaranteedHint: true },
+  /** Opens one neighbour for free. Only coherent because fog is per-player. */
+  mystery: { freeNeighbours: 1 },
+  /** Pays XP. Not cash — see the four rules in §7b of the review. */
+  puzzle: { xp: 10 },
+} as const;
+
+/** XP for finding a treasure that carries no money. Most of them. */
+export const PUZZLE_HUNT_XP = 50;
+
+/**
+ * Survey: the hot/cold detector.
+ *
+ * ─────────────────────────── why this exists ───────────────────────────
+ *
+ * There was exactly one thing to do in this game — uncover a tile — and that
+ * was the poverty at the centre of it. Digging is a slot machine: you pay, you
+ * mostly get nothing, and nothing you learn compounds. Survey is the thinking
+ * move. Three readings from different places triangulate a location the way
+ * three people pointing at a sound locate its source, which is a puzzle rather
+ * than a pull of the lever.
+ *
+ * It does four jobs at once, and the last two are the ones that make it worth
+ * its cost:
+ *
+ *   1. It is the actual deduction the whole economy is priced around.
+ *   2. **It burns energy without consuming map.** On a 3,600-cell grid that is
+ *      what lets a zone survive being played hard — see EPOCH. Every other
+ *      energy sink takes a tile out of the world permanently.
+ *   3. It makes the onboarding true. "Clues run warm when treasure is near" has
+ *      been on the tutorial card since phase 0 describing a mechanic that did
+ *      not exist. Survey *is* warmth.
+ *   4. It always tells you something. There is no wasted spend, which is what a
+ *      35% hint drop cannot say.
+ *
+ * ─────────────────────────── the vagueness is the knob ──────────────────────
+ *
+ * Bands, not distances. A number would collapse the game: two readings and a
+ * little arithmetic give an exact answer, and the map stops mattering. Coarse
+ * bands mean a reading narrows the field without solving it, so three or four
+ * of them from different places are worth more than one precise one.
+ *
+ * The review left "how vague" explicitly open and said to start coarse and tune
+ * from real data. These are deliberately wide — it is far easier to sharpen a
+ * detector players find useless than to blunt one that has already taught them
+ * the game is trivial.
+ */
+export const SURVEY = {
+  /** Three times a dig. It has to compete with digging, not replace it. */
+  cost: 6,
+  /**
+   * Chebyshev distance to the nearest treasure, in bands. Upper bounds,
+   * inclusive; anything past the last is `cold`.
+   *
+   * Scaled to the map: `burning` is a 5-cell reach on a 60-wide grid, so a
+   * burning reading leaves ~121 candidate cells — narrow enough to be thrilling
+   * and wide enough to still need work.
+   */
+  bands: [
+    { name: 'burning', within: 5 },
+    { name: 'hot', within: 12 },
+    { name: 'warm', within: 25 },
+    { name: 'cool', within: 40 },
+  ],
+  /** Everything beyond the last band. */
+  coldest: 'cold',
 } as const;
 
 export const RACE = {

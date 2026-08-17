@@ -3,7 +3,7 @@ import { logger } from '../logger';
 import * as metrics from '../metrics';
 import type { Hunt } from '../types';
 import { COMMIT_VERSION, commitmentFor } from './commit';
-import { hintDrop, hintsForHunt } from './generate';
+import { hintDrops, hintIndex, hintsForHunt } from './generate';
 import type { Hint, HintRecord } from './types';
 
 /**
@@ -95,23 +95,63 @@ export function awardForReveal(
   c: number,
   liveHunts: Hunt[],
   now = Date.now(),
+  opts: { guaranteed?: boolean; wantTrue?: boolean } = {},
 ): Hint | null {
   try {
     if (liveHunts.length === 0) return null;
 
-    // Which hunt this cell speaks to is itself part of the draw, so a player
-    // cannot steer their hints towards a hunt they have already narrowed down.
-    const huntIdx = hintDrop(zoneSalt, playerId, r, c, liveHunts.length);
-    if (huntIdx === null) return null;
+    // ─────────────────── which treasure a hint is about ───────────────────
+    //
+    // The nearest one to the tile you just dug.
+    //
+    // This used to be drawn from the same hash as the drop, with the stated
+    // aim that "a player cannot steer their hints towards a hunt they have
+    // already narrowed down". That rule was written when a zone held four
+    // treasures. A zone now holds twenty-four, and scattering across all of
+    // them does not prevent steering so much as prevent *aggregation*:
+    // measured over 300 digs it produced 80 hints spread across 11 different
+    // treasures and not one about the hunt that carried the money. Three hints
+    // about the same treasure — the thing the whole deduction loop is built on
+    // — was not merely expensive, it was unreachable.
+    //
+    // Nearest-first is steerable, and that is the point rather than a
+    // concession. To aim your hints you must dig where you think the treasure
+    // is, which costs energy and is exactly the feedback loop exploration is
+    // supposed to have. What the old rule actually protected against — buying
+    // your way to a stack of hints on one hunt without paying to explore — is
+    // still protected, because digging is the only free path and it is priced.
+    //
+    // Choosing a target *without* digging near it is a separate thing, and it
+    // is a product rather than a default: the Prospector's Compass. It stays
+    // unbuilt here.
+    // `guaranteed` skips the drop roll — a clue and a trap both always pay. The
+    // roll is still what decides *which* hint, so neither is a stronger hint,
+    // only a certain one.
+    if (!opts.guaranteed && !hintDrops(zoneSalt, playerId, r, c)) return null;
 
-    const hunt = liveHunts[huntIdx]!;
-    const pool = forHunt(hunt, now);
-    if (pool.length === 0) return null;
+    // Nearest first, then outward.
+    //
+    // Ordinary digs never look past the first entry. A trap does, and it has to:
+    // it owes the player a *false* hint, and a hunt's committed set of six is
+    // true throughout about one time in seven. Falling back to a true hint there
+    // would quietly make a trap an expensive clue — the label would mean
+    // nothing again, which is the whole problem this phase exists to fix.
+    //
+    // Walking outward keeps every hint drawn from a set that was published in
+    // advance, which is what the honesty audit rests on. The cost is that a
+    // trap's lie is occasionally about a treasure slightly further away, and
+    // that is a far smaller lie than a trap that tells the truth.
+    const ordered = byDistance(liveHunts, r, c);
 
-    const which = hintDrop(zoneSalt, playerId, r, c, pool.length);
-    if (which === null) return null;
+    let hint: HintRecord | null = null;
+    for (const candidate of ordered) {
+      const pool = forHunt(candidate, now);
+      if (pool.length === 0) continue;
+      hint = pickFrom(pool, zoneSalt, playerId, r, c, opts.wantTrue);
+      if (hint) break;
+    }
+    if (!hint) return null;
 
-    const hint = pool[which]!;
     const fresh = hintRepo.grant(playerId, hint.id, 'reveal', now);
     if (fresh) {
       metrics.hintsAwarded.inc({ tier: String(hint.tier) });
@@ -121,6 +161,50 @@ export function awardForReveal(
     logger.warn({ err, playerId, r, c }, 'hint award failed — reveal stands');
     return null;
   }
+}
+
+/**
+ * Live hunts ordered by Chebyshev distance from a cell, nearest first.
+ *
+ * Ties break on hunt id rather than storage order, so the answer does not
+ * depend on how the rows happened to come back — two players digging the same
+ * tile must get hints about the same treasure.
+ */
+export function byDistance(liveHunts: Hunt[], r: number, c: number): Hunt[] {
+  const d = (h: Hunt) => Math.max(Math.abs(h.r - r), Math.abs(h.c - c));
+  return [...liveHunts].sort((a, b) => d(a) - d(b) || (a.id < b.id ? -1 : 1));
+}
+
+/** The single closest live hunt. */
+export const nearestHunt = (liveHunts: Hunt[], r: number, c: number): Hunt =>
+  byDistance(liveHunts, r, c)[0]!;
+
+/**
+ * Which hint from the set, optionally constrained to true or false ones.
+ *
+ * `wantTrue: false` is what a trap tile hands out. It draws from the hunt's
+ * **already-committed** set rather than fabricating anything, which is what
+ * keeps the honesty audit intact: `hints/stats.ts` measures the accuracy of the
+ * committed set against its advertised tier rates, and that set is unchanged by
+ * which member of it a given tile happens to grant.
+ *
+ * Returns null when this set has none of the requested kind, rather than
+ * substituting one of the other kind. The caller walks outward to the next
+ * hunt — a trap that cannot find a lie here looks somewhere else rather than
+ * handing over the truth and calling it a trap.
+ */
+function pickFrom(
+  pool: HintRecord[],
+  zoneSalt: string,
+  playerId: string,
+  r: number,
+  c: number,
+  wantTrue?: boolean,
+): HintRecord | null {
+  const from = wantTrue === undefined ? pool : pool.filter(h => h.isTrue === wantTrue);
+  if (from.length === 0) return null;
+  const which = hintIndex(zoneSalt, playerId, r, c, from.length);
+  return from[which ?? 0] ?? null;
 }
 
 /** A player's unexpired hints, newest first, safe to serialise. */

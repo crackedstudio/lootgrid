@@ -10,7 +10,7 @@ import * as director from './director';
 import * as attestor from './chain/attestor';
 import * as escrowChain from './chain/escrow';
 import * as relayer from './chain/relayer';
-import { GRID } from './config';
+import { ENERGY, GRID, SURVEY, TILES } from './config';
 import { getDb } from './db/index';
 import * as energy from './energy';
 import { stdev } from './games/tap';
@@ -28,7 +28,8 @@ import * as ratelimit from './ratelimit';
 import * as referee from './referee';
 import * as rooms from './rooms';
 import * as store from './store';
-import type { Player } from './types';
+import * as survey from './survey';
+import type { Player, Zone } from './types';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -267,6 +268,68 @@ export function registerRoutes(app: App): void {
     };
   });
 
+  /**
+   * Open free neighbours around a mystery tile.
+   *
+   * Free means free: no energy, and no hint either. A mystery that also paid
+   * hints would be strictly better than a clue at a lower rarity, and the
+   * distribution has clue at 17% against mystery at 9% precisely because a hint
+   * is meant to be the more common reward. What this buys is *map*, which is
+   * the scarce thing on a 3,600-cell grid.
+   *
+   * Skips cells holding a hunt. Handing someone a treasure they did not dig for
+   * would make the mystery tile the best thing on the board by a wide margin,
+   * and would do it invisibly.
+   */
+  function openNeighbours(
+    zone: Zone,
+    player: Player,
+    r: number,
+    c: number,
+    now: number,
+  ): Array<{ r: number; c: number; type: string; byHandle: string; at: number }> {
+    const out: Array<{ r: number; c: number; type: string; byHandle: string; at: number }> = [];
+
+    // Deterministic order, so the same mystery tile always opens the same
+    // neighbour — it is a property of the map, not of when you happened to tap.
+    const around = [
+      [-1, 0],
+      [0, 1],
+      [1, 0],
+      [0, -1],
+      [-1, -1],
+      [-1, 1],
+      [1, 1],
+      [1, -1],
+    ] as const;
+
+    for (const [dr, dc] of around) {
+      if (out.length >= TILES.mystery.freeNeighbours) break;
+      const nr = r + dr;
+      const nc = c + dc;
+      if (!inBounds(nr, nc, GRID.rows, GRID.cols)) continue;
+      if (store.huntAt(zone, nr, nc)) continue;
+      if (store.getReveal(zone, player.id, nr, nc)) continue;
+
+      const neighbour = {
+        r: nr,
+        c: nc,
+        type: tileType(zone, nr, nc),
+        byHandle: player.handle,
+        at: now,
+      };
+      // A neighbour that is itself a trap or a mystery does NOT chain. One free
+      // tile is a bonus; a cascade is an exploit, and on a map this size an
+      // unbounded chain could uncover a meaningful fraction of it for 2 energy.
+      if (store.addReveal(zone, { ...neighbour, playerId: player.id })) {
+        metrics.tilesRevealed.inc({ type: neighbour.type });
+        out.push(neighbour);
+      }
+    }
+
+    return out;
+  }
+
   app.post('/zones/:id/tiles/:r/:c/open', async req => {
     const player = await requirePlayer(req);
     const { id, r, c } = parse(tileParams, req.params);
@@ -283,18 +346,24 @@ export function registerRoutes(app: App): void {
     const existing = store.getReveal(zone, player.id, r, c);
     if (existing) return { cell: existing, energy: energy.view(player, now), alreadyOpen: true };
 
-    const spent = energy.spend(player, 1, now);
+    // The tile's type is known before it is paid for, because a trap costs
+    // double. That is the first thing in this handler that has ever read the
+    // type for anything but a label.
+    const type = tileType(zone, r, c);
+    const cost = ENERGY.costFog * (type === 'trap' ? TILES.trap.energyMultiplier : 1);
+
+    const spent = energy.spend(player, cost, now);
     if (!spent.ok) throw conflict('insufficient_energy', 'out of energy', spent.energy);
     store.savePlayerEnergy(player);
 
-    const cell = { r, c, type: tileType(zone, r, c), byHandle: player.handle, at: now };
+    const cell = { r, c, type, byHandle: player.handle, at: now };
     const opened = store.addReveal(zone, { ...cell, playerId: player.id });
 
     if (!opened) {
       // The same player double-tapped: the read above missed it, the write hit
       // the primary key. Not a lost race — under private fog there is nobody to
       // race — so give the energy back and serve what they already had.
-      const refunded = energy.refund(player, 1, now);
+      const refunded = energy.refund(player, cost, now);
       store.savePlayerEnergy(player);
       return { cell: store.getReveal(zone, player.id, r, c), energy: refunded, alreadyOpen: true };
     }
@@ -318,20 +387,79 @@ export function registerRoutes(app: App): void {
     // Awarded after the reveal is committed, and never allowed to throw: the
     // player has already paid energy for this tile, so a hint that fails to
     // generate is a missing bonus rather than a failed request.
-    const hint = hints.awardForReveal(
-      zone.seedSecret,
-      player.id,
-      r,
-      c,
-      store.liveHuntsIn(zone),
-      now,
-    );
+    //
+    // A clue always pays; a trap pays a hint drawn from the false ones. Both
+    // draw from the hunt's committed set, so neither disturbs the published
+    // honesty numbers — see hints/index.ts.
+    // A trap is guaranteed too, not only a clue. A tile that charges double and
+    // then rolls 35% for anything at all is pure punishment — the player pays
+    // more and may learn nothing, which teaches avoidance rather than caution.
+    // Guaranteed-but-false is a real cost with a real consequence, and it is
+    // survivable: a hint that contradicts your others is itself information.
+    const hint = hints.awardForReveal(zone.seedSecret, player.id, r, c, store.liveHuntsIn(zone), now, {
+      guaranteed: type === 'clue' ? TILES.clue.guaranteedHint : type === 'trap' ? TILES.trap.guaranteedHint : false,
+      wantTrue: type === 'trap' && TILES.trap.falseHint ? false : undefined,
+    });
+
+    // A mystery tile opens a neighbour on the house. Only coherent because the
+    // fog is per-player: under a shared map this would have been spending
+    // someone else's tile.
+    const bonus = type === 'mystery' ? openNeighbours(zone, player, r, c, now) : [];
+
+    // A puzzle tile pays XP. Small — it is a garnish on exploring, not a reason
+    // to hunt for puzzle tiles specifically.
+    if (type === 'puzzle') store.awardXp(player, TILES.puzzle.xp);
 
     // Deliberately NOT broadcast to the zone. Telling the room which tile just
     // opened is the free-riding leak in socket form — it was how a player who
     // spent nothing learned where treasure was not.
     rooms.toPlayer(player.id, { t: 'tile:revealed', ...cell });
-    return { cell, energy: spent.energy, hint };
+    for (const b of bonus) rooms.toPlayer(player.id, { t: 'tile:revealed', ...b });
+
+    return {
+      cell,
+      energy: spent.energy,
+      hint,
+      bonus,
+      xp: type === 'puzzle' ? { gained: TILES.puzzle.xp, total: player.xp } : null,
+    };
+  });
+
+  /**
+   * Survey: spend energy to learn how close the nearest treasure is.
+   *
+   * Uncovers nothing. That is the point rather than a limitation — it is the
+   * only energy sink in the game that does not permanently consume part of the
+   * map, which is what lets a zone survive being played hard. See the SURVEY
+   * block in config.ts.
+   *
+   * Deliberately allowed on a cell that already holds a hunt or has already
+   * been dug: you are reading the ground from a position, not interacting with
+   * the tile, and forbidding it would leak which cells are special.
+   */
+  app.post('/zones/:id/survey/:r/:c', async req => {
+    const player = await requirePlayer(req);
+    const { id, r, c } = parse(tileParams, req.params);
+    limit(`tile:${player.id}`, env.RATE_TILE_PER_MIN, 60_000, 'tile');
+
+    const zone = store.getZone(id);
+    if (!zone) throw notFound('no_such_zone');
+    if (!inBounds(r, c, GRID.rows, GRID.cols)) throw badRequest('out_of_bounds');
+
+    const now = Date.now();
+    const live = store.liveHuntsIn(zone);
+    // Read before charging. A zone with nothing in it would answer "cold",
+    // which implies a treasure is out there somewhere — charging six energy for
+    // a misleading answer is worse than refusing.
+    const reading = survey.read(live, r, c, now);
+    if (!reading) throw conflict('nothing_to_find', 'this zone has no live treasure');
+
+    const spent = energy.spend(player, SURVEY.cost, now);
+    if (!spent.ok) throw conflict('insufficient_energy', 'out of energy', spent.energy);
+    store.savePlayerEnergy(player);
+
+    metrics.surveysTaken.inc({ band: reading.band });
+    return { reading, energy: spent.energy };
   });
 
   /**

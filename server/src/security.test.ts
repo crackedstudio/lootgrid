@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { App } from './appTypes';
+import { GRID } from './config';
 import { MODULES } from './games';
 import { tileType } from './grid';
 import { registerRoutes } from './http';
@@ -81,21 +82,24 @@ describe('map secrecy', () => {
     app.inject({ method: 'GET', url: '/zones/ridge/grid', headers: { 'x-player': who } });
 
   /**
-   * A cell with no hunt on it.
+   * A cell that opens exactly one tile: no hunt on it, and not a mystery.
    *
-   * Hunt placement is random per world, so a hard-coded cell collides with one
-   * about one run in fifty and the open comes back 409 `is_hunt` — a flake that
-   * looks like a fog bug.
+   * Two sources of nondeterminism to dodge, both from randomised worlds rather
+   * than from anything these tests are about. A hunt on the cell answers 409
+   * `is_hunt`. A mystery tile opens a free neighbour, so the reveal count comes
+   * back 2 — correct behaviour that would read here as a fog leak.
    */
   function freeCell(): { r: number; c: number } {
     const zone = store.getZone('ridge')!;
     const taken = new Set(store.liveHuntsIn(zone).map(h => `${h.r},${h.c}`));
-    for (let r = 0; r < 18; r++) {
-      for (let c = 0; c < 12; c++) {
-        if (!taken.has(`${r},${c}`)) return { r, c };
+    for (let r = 0; r < GRID.rows; r++) {
+      for (let c = 0; c < GRID.cols; c++) {
+        if (taken.has(`${r},${c}`)) continue;
+        if (tileType(zone, r, c) === 'mystery') continue;
+        return { r, c };
       }
     }
-    throw new Error('no free cell — every tile in the zone holds a hunt');
+    throw new Error('no plain free cell in the zone');
   }
 
   const open = (who: string, at: { r: number; c: number }) =>

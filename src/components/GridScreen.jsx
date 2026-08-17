@@ -5,6 +5,21 @@ import { candidates, describe, reliabilityPct, tierLabel } from '../api/hints';
 const TILE_SIZE = 54;
 const GAP = 8;
 
+/**
+ * Survey readings, coldest to warmest.
+ *
+ * A deliberate ramp rather than the tile-type palette: a reading describes the
+ * ground around a cell, not what is under it, and the two must not be confused
+ * at a glance.
+ */
+const BAND_COLORS = {
+  burning: '#FF3D3D',
+  hot:     '#FF7A1A',
+  warm:    '#FFD51F',
+  cool:    '#29E6E6',
+  cold:    '#3A4A6A',
+};
+
 const TYPE_COLORS = {
   empty:   '#0C0C10',
   clue:    '#29E6E6',
@@ -14,7 +29,7 @@ const TYPE_COLORS = {
   found:   '#FFD51F',
 };
 
-function TileCell({ cell, onClick, dimmed }) {
+function TileCell({ cell, onClick, dimmed, survey }) {
   const { opened, hunt, reveal } = cell;
 
   let bg = '#1A1815';
@@ -42,12 +57,17 @@ function TileCell({ cell, onClick, dimmed }) {
   return (
     <div
       onClick={() => onClick(cell)}
-      title={opened ? `${reveal.type} · ${reveal.byHandle}` : undefined}
+      title={
+        [opened ? reveal.type : null, survey ? `survey: ${survey.band}` : null]
+          .filter(Boolean)
+          .join(' · ') || undefined
+      }
       style={{
         width: TILE_SIZE, height: TILE_SIZE,
         background: bg, border,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        cursor: opened ? 'default' : 'pointer',
+        // Always a pointer: even an opened tile can be surveyed.
+        cursor: 'pointer',
         position: 'relative', overflow: 'hidden',
         transition: 'transform .08s, opacity .15s',
         flexShrink: 0,
@@ -57,12 +77,22 @@ function TileCell({ cell, onClick, dimmed }) {
       }}
     >
       {content}
+      {survey && (
+        /* A reading describes the ground around this cell, not what is under
+           it — so it sits in the corner rather than filling the tile. */
+        <div style={{
+          position: 'absolute', top: 2, right: 2,
+          width: 10, height: 10,
+          background: BAND_COLORS[survey.band] || BAND_COLORS.cold,
+          border: '1px solid #0C0C10',
+        }} />
+      )}
     </div>
   );
 }
 
-export default function GridScreen({ state, onBackZones, onTile }) {
-  const { grid, energy, showToast, toastText, zones, mapZone, hints = [] } = state;
+export default function GridScreen({ state, onBackZones, onTile, onToggleSurvey }) {
+  const { grid, energy, showToast, toastText, zones, mapZone, hints = [], surveys = {}, surveyMode = false } = state;
   const zone = zones.find(z => z.id === mapZone);
 
   // Which hints the player is currently trusting. View state, not game state —
@@ -101,10 +131,6 @@ export default function GridScreen({ state, onBackZones, onTile }) {
     }
   }
 
-  const energyCells = Array.from({ length: energy.max }).map((_, i) => ({
-    color: i < energy.value ? '#FFD51F' : '#0C0C10',
-  }));
-
   // Hints for this zone only — one from another map tells you nothing here.
   const zoneHints = hints.filter(h => h.zoneId === mapZone);
   const activePayloads = zoneHints.filter(h => active.has(h.id)).map(h => h.payload);
@@ -134,12 +160,41 @@ export default function GridScreen({ state, onBackZones, onTile }) {
             </div>
           </div>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, color: '#0C0C10', opacity: .5 }}>ENERGY</div>
-          <div style={{ display: 'flex', gap: 3 }}>
-            {energyCells.map((c, i) => (
-              <div key={i} style={{ width: 14, height: 14, border: '2px solid #0C0C10', background: c.color }} />
-            ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/*
+            Survey toggle. Digging and surveying are different actions on the
+            same tile, and which one a tap performs has to be visible before
+            the tap — six energy is an expensive surprise.
+          */}
+          <div
+            onClick={onToggleSurvey}
+            style={{
+              padding: '5px 9px',
+              background: surveyMode ? '#29E6E6' : 'transparent',
+              border: '3px solid #0C0C10',
+              boxShadow: surveyMode ? '3px 3px 0 #0C0C10' : 'none',
+              fontFamily: "'Archivo Black', sans-serif", fontSize: 10,
+              color: '#0C0C10', cursor: 'pointer', whiteSpace: 'nowrap',
+            }}
+          >
+            {surveyMode ? 'SURVEY 6\u26A1' : 'DIG 2\u26A1'}
+          </div>
+
+          {/*
+            A bar and a number, not one pip per point. The pip row was written
+            for a 12-point bar; at 40 it is ~680px and runs off the side of
+            every phone this is built for.
+          */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, color: '#0C0C10', opacity: .5 }}>
+              ENERGY {energy.value}/{energy.max}
+            </div>
+            <div style={{ width: 78, height: 12, border: '2px solid #0C0C10', background: '#0C0C10' }}>
+              <div style={{
+                width: `${Math.round((energy.value / Math.max(1, energy.max)) * 100)}%`,
+                height: '100%', background: '#FFD51F',
+              }} />
+            </div>
           </div>
         </div>
       </div>
@@ -214,6 +269,7 @@ export default function GridScreen({ state, onBackZones, onTile }) {
               key={cell.id}
               cell={cell}
               onClick={onTile}
+              survey={surveys[`${cell.r},${cell.c}`]}
               dimmed={candidateSet !== null && !candidateSet.has(`${cell.r}:${cell.c}`)}
             />
           ))}

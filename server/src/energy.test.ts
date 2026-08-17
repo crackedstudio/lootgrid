@@ -12,6 +12,7 @@ function player(value: number, at: number): Player {
     energyAt: at,
     trustScore: 1,
     shadowBanned: false,
+  xp: 0,
     createdAt: at,
   };
 }

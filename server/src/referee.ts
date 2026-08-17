@@ -1,4 +1,4 @@
-import { ASYNC, ENERGY, NET, RACE } from './config';
+import { ASYNC, ENERGY, NET, PUZZLE_HUNT_XP, RACE } from './config';
 import * as escrow from './chain/escrow';
 import * as director from './director';
 import type { Directive } from './director/types';
@@ -327,6 +327,14 @@ function resolve(huntId: string, now = Date.now()): void {
 
   store.setHuntStatus(hunt, 'resolved', winner.playerId, now);
   finishers.delete(huntId);
+
+  // A puzzle hunt pays XP, because it carries no pot to pay from. Most
+  // treasures are these — see CASH_PER_ZONE — so without this, winning the
+  // overwhelming majority of what is on the map rewarded nothing at all.
+  if (hunt.kind === 'puzzle') {
+    const player = store.getPlayer(winner.playerId);
+    if (player) store.awardXp(player, PUZZLE_HUNT_XP);
+  }
 
   rooms.broadcast(rooms.huntRoom(huntId), {
     t: 'hunt:resolved',

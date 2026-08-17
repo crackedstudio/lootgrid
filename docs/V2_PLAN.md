@@ -1,10 +1,11 @@
 # LOOTGRID v2 — Implementation Plan
 
 **Source:** `docs/briefing.md` (the outside review)
-**Status:** Phases 1 and 2 shipped. Phase 0 was skipped at the user's direction — worth
+**Status:** Phases 1, 2 and 3 shipped. Phase 0 was skipped at the user's direction — worth
 knowing, because it means everything below is being built without the funnel that would
-tell us whether any of it worked. §0-A was decided (stop relaying reveals); §0-B and §0-D
-are still open and gate Phases 3 and 5.
+tell us whether any of it worked. §0-A was decided (stop relaying reveals). §0-B is half-resolved: proximity
+targeting shipped, the Compass's explicit choice did not. §0-D still gates
+funding any zone.
 **Scope:** ten phases built the machinery. This plan is the first one that changes the game.
 
 ---
@@ -245,7 +246,38 @@ $100–300/month floor in §5h is the constraint, not the old $9/day.
 
 ---
 
-## Phase 3 — Three things to do
+## Phase 3 — Three things to do ✅ shipped
+
+**The finding that reordered this phase.** Phase 2 raised a zone from 4 live
+treasures to 24, and `awardForReveal` scattered each hint across all of them.
+Measured: **300 digs produced 80 hints across 11 treasures and not one about the
+hunt carrying the money.** The briefing's problem #2 went from expensive to
+unreachable, so targeting became mandatory rather than optional and was built
+first. After the fix, digging a 9×9 patch around a treasure yields 27 hints
+about it.
+
+**§0-B is resolved for the free path and still open for the paid one.** The
+briefing's §5d table is explicit that a *dug* hint is about "whatever's nearest"
+and only a *bought* one is about "the one you chose". So targeting-by-proximity
+shipped and the anti-steering comment was rewritten rather than deleted:
+nearest-first is steerable, but only by digging near the thing, which costs
+energy and is the feedback loop exploration should have. Explicit choice without
+digging — the Compass — remains unbuilt and still needs the §0-B call.
+
+| Decision | Why |
+|---|---|
+| Traps are **guaranteed** to pay a hint, not just to cost double | A tile that charges double and then rolls 35% for nothing is punishment that teaches avoidance. Guaranteed-but-false is a real cost with a real consequence, and a contradicting hint is itself information |
+| A trap **walks outward** to find a lie | About one hunt in seven has a committed set that is true throughout. Falling back to a true hint would make a trap an expensive clue — the label meaning nothing again, which is the whole problem this phase fixes. Walking outward keeps every hint drawn from a published set, so the honesty audit is untouched |
+| Survey is a **local** instrument | Non-obvious and worth knowing: each reading reports the *nearest* treasure, so with 24 on the map, two readings taken far apart describe different treasures and intersect to **nothing**. Triangulation works inside a neighbourhood. Both directions are asserted, so nobody "fixes" it later |
+| Minimal `players.xp` added | 23 of 24 treasures pay in a currency that did not exist. A bare counter, not a ledger — XP buys nothing, so there is no solvency question. Phase 4 and the Phase 5 rank gate both need it |
+| Dig costs 2, survey costs 6 | Three digs to one survey is the exchange rate. Surveying is the opener; digging is how you finish |
+
+**Fixed here:** the energy bar rendered one pip per point — fine at 12, about
+680px at 40, off the side of every target phone. Now a bar and a number.
+
+---
+
+### Original plan
 
 ### 3a. Survey
 
@@ -360,7 +392,7 @@ the refill SKU. Instrument them separately from day one.
 Phase 0  Instrumentation          ── independent, NOT DONE (skipped)
 Phase 1  Rotation + private fog   ✅ the money gate, part 1
 Phase 2  Resize + retune          ✅ needs 1
-Phase 3  Survey + real tiles      ── needs 1 (mystery), 2 (survey tuning)
+Phase 3  Survey + real tiles      ✅ needs 1 (mystery), 2 (survey tuning)
 Phase 4  The Crack                ── needs 3 (hints worth using)
 Phase 5  Keys + rank + wallet     ── the money gate, part 2
 Phase 6  First-run experience     ── needs 1–4 to be truthful

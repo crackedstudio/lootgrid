@@ -7,7 +7,16 @@ import { createSender, socket } from '../api/socket';
 import { ONB_CARDS } from '../data/gameData';
 
 /** Display-only: the server is authoritative and corrects us on every response. */
-const REGEN_MS = 9000;
+const REGEN_MS = 360000;
+/**
+ * Mirrors ENERGY.costFog and SURVEY.cost on the server.
+ *
+ * Used only to refuse an action the server would refuse anyway, so a stale
+ * value costs a wasted round trip and never a wrong charge — the server is
+ * authoritative and returns the true balance with every response.
+ */
+const DIG_COST = 2;
+const SURVEY_COST = 6;
 
 const INITIAL = {
   view: 'home',
@@ -15,12 +24,18 @@ const INITIAL = {
   mapZone: null,
   /** Hints the player holds. Directions toward a hunt — some of them lie. */
   hints: [],
+  /** Survey readings by cell key. Kept so several can be compared at once. */
+  surveys: {},
+  /** Tap a tile to survey it rather than dig it. */
+  surveyMode: false,
+  /** Total XP. Paid by puzzle tiles and by the treasures that carry no cash. */
+  xp: 0,
 
   // session
   status: 'connecting', // connecting | online | offline
   fatal: null, // { code, message } — unrecoverable, blocks the app
   player: null,
-  energy: { value: 0, max: 12, nextRegenMs: 0 },
+  energy: { value: 0, max: 40, nextRegenMs: 0 },
 
   // world (all of it from the server; the client has no map of its own)
   zones: [],
@@ -355,10 +370,55 @@ export function useGameState() {
 
   // ---------------------------------------------------------------- tiles
 
+  /**
+   * Survey a cell: spend energy to learn how close the nearest treasure is.
+   *
+   * Uncovers nothing, which is why it is a separate action rather than a mode
+   * of digging. Readings accumulate on the grid so several can be compared —
+   * one reading is nearly useless and three around the same spot are the game.
+   */
+  const onSurvey = useCallback(
+    async cell => {
+      const s = stateRef.current;
+      if (!s.mapZone) return;
+      if (s.energy.value < SURVEY_COST) return toast(`NEED ${SURVEY_COST} ENERGY TO SURVEY`);
+
+      try {
+        const res = await post(`/zones/${s.mapZone}/survey/${cell.r}/${cell.c}`);
+        set(prev => ({
+          energy: res.energy,
+          surveys: { ...prev.surveys, [cellKey(cell.r, cell.c)]: res.reading },
+        }));
+        toast(String(res.reading.band).toUpperCase());
+      } catch (err) {
+        if (err.code === 'insufficient_energy') {
+          if (err.body?.details) set({ energy: err.body.details });
+          return toast('OUT OF ENERGY — REGENERATING');
+        }
+        if (err.code === 'nothing_to_find') return toast('NOTHING LIVE IN THIS ZONE');
+        toast('SURVEY FAILED');
+      }
+    },
+    [set, toast],
+  );
+
+  /** Digging and surveying are different actions on the same tile. */
+  const toggleSurveyMode = useCallback(
+    () => set(s => ({ surveyMode: !s.surveyMode })),
+    [set],
+  );
+
   const onTile = useCallback(
     async cell => {
       const s = stateRef.current;
-      if (!s.grid || cell.opened) return;
+      if (!s.grid) return;
+
+      // Survey reads the ground from a position, so it works on any cell —
+      // already dug, or holding a hunt. Checked before the `opened` guard for
+      // exactly that reason.
+      if (s.surveyMode) return onSurvey(cell);
+
+      if (cell.opened) return;
 
       if (cell.hunt) {
         const cost = cell.hunt.kind === 'cash' ? 3 : 2;
@@ -366,16 +426,20 @@ export function useGameState() {
         return set({ huntPreview: cell.hunt });
       }
 
-      if (s.energy.value < 1) return toast('OUT OF ENERGY — REGENERATING');
+      // A trap costs double, but its type is fog until it is opened — so this
+      // checks the cheapest possible price and lets the server refuse the rest.
+      if (s.energy.value < DIG_COST) return toast('OUT OF ENERGY — REGENERATING');
 
       try {
         const res = await post(`/zones/${s.mapZone}/tiles/${cell.r}/${cell.c}/open`);
-        set(prev => ({
-          energy: res.energy,
-          grid: prev.grid
-            ? { ...prev.grid, reveals: { ...prev.grid.reveals, [cellKey(cell.r, cell.c)]: res.cell } }
-            : null,
-        }));
+        set(prev => {
+          if (!prev.grid) return { energy: res.energy };
+          const reveals = { ...prev.grid.reveals, [cellKey(cell.r, cell.c)]: res.cell };
+          // A mystery tile opens neighbours on the house.
+          for (const b of res.bonus ?? []) reveals[cellKey(b.r, b.c)] = b;
+          return { energy: res.energy, grid: { ...prev.grid, reveals } };
+        });
+
         // A reveal can pay out a hint. Prepend so the newest is first, and
         // guard against a duplicate if the same grant arrives twice.
         if (res.hint) {
@@ -384,9 +448,19 @@ export function useGameState() {
               ? prev.hints
               : [res.hint, ...prev.hints],
           }));
-          toast('HINT FOUND');
         }
-        if (res.alreadyOpen) toast('SOMEONE BEAT YOU TO IT');
+
+        // Say what the tile actually did. The whole point of phase 3 is that
+        // these labels stopped being decorative — a player who is not told
+        // "that cost double" learns nothing from having paid it.
+        if (res.cell.type === 'trap') toast('TRAP — DOUBLE COST, AND THE HINT LIES');
+        else if (res.cell.type === 'clue') toast('CLUE FOUND');
+        else if (res.bonus?.length) toast(`MYSTERY — ${res.bonus.length} FREE TILE`);
+        else if (res.xp) toast(`PUZZLE — +${res.xp.gained} XP`);
+        else if (res.hint) toast('HINT FOUND');
+
+        if (res.xp) set({ xp: res.xp.total });
+        if (res.alreadyOpen) toast('ALREADY OPEN');
       } catch (err) {
         if (err.code === 'insufficient_energy') {
           if (err.body?.details) set({ energy: err.body.details });
@@ -395,7 +469,7 @@ export function useGameState() {
         toast('COULD NOT OPEN TILE');
       }
     },
-    [set, toast],
+    [set, toast, onSurvey],
   );
 
   /**
@@ -558,6 +632,8 @@ export function useGameState() {
     backZones,
     backToMap,
     onTile,
+    onSurvey,
+    toggleSurveyMode,
     closeHunt,
     confirmHunt,
     acceptQuote,
