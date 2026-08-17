@@ -10,6 +10,7 @@ interface Row {
   salt: string;
   cell_commit: string;
   kind: string;
+  owner_id: string | null;
   difficulty: string;
   prize_label: string;
   status: string;
@@ -42,6 +43,7 @@ function toDomain(r: Row): Hunt {
     salt: r.salt,
     cellCommit: r.cell_commit,
     kind: r.kind as HuntKind,
+    ownerId: r.owner_id,
     difficulty: r.difficulty as Difficulty,
     prizeLabel: r.prize_label,
     status: r.status as Hunt['status'],
@@ -66,13 +68,21 @@ function build() {
     // filling one of the zone's HUNTS_PER_ZONE slots and `replenish` never
     // minted a replacement — a zone would bleed a hunt a day until it had none
     // that could actually be played, while still reporting a full grid.
+    // The SHARED map. `owner_id IS NULL` is what keeps a reserved hunt out of
+    // everyone else's grid, out of hint targeting, and out of the count that
+    // decides whether a zone needs restocking — so an owned hunt is additive
+    // rather than something that displaces a real treasure.
     listLive: db.prepare(
-      "SELECT * FROM hunts WHERE zone_id = ? AND epoch = ? AND status NOT IN ('resolved', 'expired')",
+      "SELECT * FROM hunts WHERE zone_id = ? AND epoch = ? AND owner_id IS NULL AND status NOT IN ('resolved', 'expired')",
+    ),
+    /** One player's reserved hunts in a zone. Invisible to anyone else. */
+    listOwned: db.prepare(
+      "SELECT * FROM hunts WHERE zone_id = ? AND epoch = ? AND owner_id = ? AND status NOT IN ('resolved', 'expired')",
     ),
     insert: db.prepare(`
-      INSERT INTO hunts (id, zone_id, epoch, r, c, salt, cell_commit, kind, difficulty,
+      INSERT INTO hunts (id, zone_id, epoch, r, c, salt, cell_commit, kind, owner_id, difficulty,
                          prize_label, status, winner_id, expires_at, created_at)
-      VALUES (@id, @zoneId, @epoch, @r, @c, @salt, @cellCommit, @kind, @difficulty,
+      VALUES (@id, @zoneId, @epoch, @r, @c, @salt, @cellCommit, @kind, @ownerId, @difficulty,
               @prizeLabel, @status, NULL, @expiresAt, @createdAt)
     `),
     saveGame: db.prepare(`
@@ -84,14 +94,14 @@ function build() {
     ),
     /** Must match `listLive`'s predicate exactly — see the note there. */
     countOpen: db.prepare(
-      "SELECT COUNT(*) AS n FROM hunts WHERE zone_id = ? AND epoch = ? AND status NOT IN ('resolved', 'expired')",
+      "SELECT COUNT(*) AS n FROM hunts WHERE zone_id = ? AND epoch = ? AND owner_id IS NULL AND status NOT IN ('resolved', 'expired')",
     ),
     /**
      * Open hunts that carry money. Bounds the treasury's burn: a zone holds
      * `CASH_PER_ZONE` of these however many treasures are on it.
      */
     countOpenCash: db.prepare(
-      "SELECT COUNT(*) AS n FROM hunts WHERE zone_id = ? AND epoch = ? AND kind = 'cash' AND status NOT IN ('resolved', 'expired')",
+      "SELECT COUNT(*) AS n FROM hunts WHERE zone_id = ? AND epoch = ? AND owner_id IS NULL AND kind = 'cash' AND status NOT IN ('resolved', 'expired')",
     ),
     expired: db.prepare(
       "SELECT * FROM hunts WHERE status = 'live' AND expires_at IS NOT NULL AND expires_at < ?",
@@ -122,6 +132,10 @@ export function listLive(zoneId: string, epoch: number): Hunt[] {
   return (s().listLive.all(zoneId, epoch) as Row[]).map(toDomain);
 }
 
+export function listOwned(zoneId: string, epoch: number, ownerId: string): Hunt[] {
+  return (s().listOwned.all(zoneId, epoch, ownerId) as Row[]).map(toDomain);
+}
+
 export function insert(h: Hunt): void {
   s().insert.run({
     id: h.id,
@@ -132,6 +146,7 @@ export function insert(h: Hunt): void {
     salt: h.salt,
     cellCommit: h.cellCommit,
     kind: h.kind,
+    ownerId: h.ownerId ?? null,
     difficulty: h.difficulty,
     prizeLabel: h.prizeLabel,
     status: h.status,

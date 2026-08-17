@@ -43,6 +43,7 @@ import type { Hunt, Player, ZoneKind } from './types';
  */
 
 export type RefusalCode =
+  | 'not_your_hunt'
   | 'shadow_banned'
   | 'no_keys_left'
   | 'rank_too_low'
@@ -63,6 +64,15 @@ export function mayEnter(
   zoneKind: ZoneKind = 'human',
   now = Date.now(),
 ): Admission {
+  // A reserved hunt is enterable only by the player it was placed for.
+  //
+  // Checked before the XP shortcut below, not after: a tutorial treasure is an
+  // XP hunt, so an ownership test that lived after that early return would
+  // never run and every player's placed treasure would be open to everyone.
+  if (hunt.ownerId !== null && hunt.ownerId !== player.id) {
+    return { ok: false, code: 'not_your_hunt' };
+  }
+
   // Nothing below applies to XP. See the note above.
   if (hunt.kind !== 'cash') return ALLOWED;
 

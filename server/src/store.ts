@@ -230,6 +230,9 @@ export function getHunt(id: string): Hunt | undefined {
 
 export const huntAt = (z: Zone, r: number, c: number) => huntRepo.at(z.id, z.epoch, r, c);
 export const liveHuntsIn = (z: Zone) => huntRepo.listLive(z.id, z.epoch);
+/** Hunts reserved for one player. Never part of the shared map — see types.Hunt. */
+export const ownedHuntsIn = (z: Zone, ownerId: string) =>
+  huntRepo.listOwned(z.id, z.epoch, ownerId);
 export const expiredHunts = (now?: number) => huntRepo.expired(now);
 
 export function setHuntStatus(
@@ -355,6 +358,8 @@ export function replenish(zoneId: string, now = Date.now()): number {
       salt,
       cellCommit: hash(id, zone.id, r, c, salt).toString('hex'),
       kind,
+      // The shared map. Reserved tutorial hunts are created by tutorial.ts.
+      ownerId: null,
       difficulty,
       // Derived from difficulty rather than cycled through a fixed array, so a
       // prize now means something about the hunt. See prizes.ts. A puzzle hunt

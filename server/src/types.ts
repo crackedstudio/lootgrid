@@ -111,6 +111,16 @@ export interface Hunt {
   salt: string;
   cellCommit: string;
   kind: HuntKind;
+  /**
+   * Reserved for one player, or null for the shared map.
+   *
+   * An owned hunt is invisible to everyone else and enterable only by its
+   * owner. It exists so a new player's first treasure can be *placed* rather
+   * than left to a two-percent chance — see migration 016. Owned hunts are
+   * XP-only; a cash prize handed to an ungated new wallet is the sybil hole
+   * phase 5 closed.
+   */
+  ownerId: string | null;
   difficulty: Difficulty;
   /** Display only until the escrow contract lands — no money moves yet. */
   prizeLabel: string;

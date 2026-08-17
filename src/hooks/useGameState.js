@@ -24,6 +24,8 @@ const INITIAL = {
   mapZone: null,
   /** Hints the player holds. Directions toward a hunt — some of them lie. */
   hints: [],
+  /** The empty-bar screen's payload, or null. See fetchStuck. */
+  stuck: null,
   /** Survey readings by cell key. Kept so several can be compared at once. */
   surveys: {},
   /** Tap a tile to survey it rather than dig it. */
@@ -375,6 +377,42 @@ export function useGameState() {
   // ---------------------------------------------------------------- tiles
 
   /**
+   * Re-read the first-run script's current step.
+   *
+   * Best-effort: a tutorial pointer that fails to refresh is a missing hint
+   * arrow, never a broken board.
+   */
+  const refreshTutorial = useCallback(async () => {
+    const zoneId = stateRef.current.mapZone;
+    if (!zoneId) return;
+    try {
+      const g = await get(`/zones/${zoneId}/grid`);
+      set(s => (s.grid && s.mapZone === zoneId ? { grid: { ...s.grid, tutorial: g.tutorial } } : null));
+    } catch {
+      /* ignore */
+    }
+  }, [set]);
+
+  /**
+   * What to do when the bar is empty.
+   *
+   * The highest-intent moment in the session, and it used to be dead air. Asked
+   * for when the player actually runs out rather than polled, so it costs
+   * nothing until it matters.
+   */
+  const fetchStuck = useCallback(async () => {
+    const zoneId = stateRef.current.mapZone;
+    if (!zoneId) return;
+    try {
+      set({ stuck: await get(`/zones/${zoneId}/stuck`) });
+    } catch {
+      /* ignore */
+    }
+  }, [set]);
+
+  const dismissStuck = useCallback(() => set({ stuck: null }), [set]);
+
+  /**
    * Survey a cell: spend energy to learn how close the nearest treasure is.
    *
    * Uncovers nothing, which is why it is a separate action rather than a mode
@@ -465,15 +503,22 @@ export function useGameState() {
 
         if (res.xp) set({ xp: res.xp.total });
         if (res.alreadyOpen) toast('ALREADY OPEN');
+
+        // Advance the first-run pointer. Derived server-side from what is
+        // actually on the board, so it cannot drift out of step with the map —
+        // the cost is one cheap request after a dig, and only while the script
+        // is still running.
+        if (stateRef.current.grid?.tutorial?.step) void refreshTutorial();
       } catch (err) {
         if (err.code === 'insufficient_energy') {
           if (err.body?.details) set({ energy: err.body.details });
-          return toast('OUT OF ENERGY — REGENERATING');
+          void fetchStuck();
+          return;
         }
         toast('COULD NOT OPEN TILE');
       }
     },
-    [set, toast, onSurvey],
+    [set, toast, onSurvey, fetchStuck, refreshTutorial],
   );
 
   /**
@@ -564,6 +609,7 @@ export function useGameState() {
         return toast('RANK TOO LOW FOR CASH HUNTS');
       }
       if (err.code === 'no_keys_left') return toast('NO KEYS LEFT TODAY — XP HUNTS ARE OPEN');
+      if (err.code === 'not_your_hunt') return toast('THAT ONE IS SOMEBODY ELSE\u2019S');
       toast('COULD NOT ENTER HUNT');
     }
   }, [set, toast]);
@@ -672,6 +718,7 @@ export function useGameState() {
     backToMap,
     onTile,
     onSurvey,
+    dismissStuck,
     toggleSurveyMode,
     closeHunt,
     confirmHunt,

@@ -30,6 +30,7 @@ import * as ratelimit from './ratelimit';
 import * as referee from './referee';
 import * as rooms from './rooms';
 import * as store from './store';
+import * as tutorial from './tutorial';
 import * as survey from './survey';
 import type { Player, Zone } from './types';
 
@@ -265,7 +266,17 @@ export function registerRoutes(app: App): void {
       // client renders fog — the map itself never leaves the server, and one
       // player's digs never reach another.
       reveals: store.revealsFor(zone, player.id),
-      hunts: store.liveHuntsIn(zone).map(h => ({
+      /**
+       * Where the player is in the first-run script, or null once it is done.
+       *
+       * Served with the grid rather than from its own endpoint because it is a
+       * property of this player's view of this map, and because a tutorial that
+       * needs a second round trip is a tutorial that stutters on 3G.
+       */
+      tutorial: tutorial.stateFor(player, zone, (r, c) => !!store.getReveal(zone, player.id, r, c)),
+      // The shared map, plus anything reserved for this player. Owned hunts are
+      // invisible to everyone else — see migration 016.
+      hunts: [...store.liveHuntsIn(zone), ...store.ownedHuntsIn(zone, player.id)].map(h => ({
         id: h.id,
         r: h.r,
         c: h.c,
@@ -283,6 +294,8 @@ export function registerRoutes(app: App): void {
         // afterwards — hiding it protected nothing. Hide the answer, not the
         // shape.
         gameType: store.blockGame(store.getHunt(h.id) ?? h).type,
+        /** Non-null means this one was placed for you and only you can enter it. */
+        ownerId: h.ownerId,
         status: h.status,
         chasers: store.chaserCount(h.id),
       })),
@@ -417,10 +430,26 @@ export function registerRoutes(app: App): void {
     // more and may learn nothing, which teaches avoidance rather than caution.
     // Guaranteed-but-false is a real cost with a real consequence, and it is
     // survivable: a hint that contradicts your others is itself information.
-    const hint = hints.awardForReveal(zone.seedSecret, player.id, r, c, store.liveHuntsIn(zone), now, {
-      guaranteed: type === 'clue' ? TILES.clue.guaranteedHint : type === 'trap' ? TILES.trap.guaranteedHint : false,
-      wantTrue: type === 'trap' && TILES.trap.falseHint ? false : undefined,
-    });
+    const hint = hints.awardForReveal(
+      zone.seedSecret,
+      player.id,
+      r,
+      c,
+      // Own hunts included, so the tutorial's first clue is about the treasure
+      // the tutorial is walking you towards. Hints target the NEAREST hunt, and
+      // the placed one is two tiles away.
+      [...store.liveHuntsIn(zone), ...store.ownedHuntsIn(zone, player.id)],
+      now,
+      {
+        guaranteed:
+          type === 'clue'
+            ? TILES.clue.guaranteedHint
+            : type === 'trap'
+              ? TILES.trap.guaranteedHint
+              : false,
+        wantTrue: type === 'trap' && TILES.trap.falseHint ? false : undefined,
+      },
+    );
 
     // A mystery tile opens a neighbour on the house. Only coherent because the
     // fog is per-player: under a shared map this would have been spending
@@ -468,7 +497,11 @@ export function registerRoutes(app: App): void {
     if (!inBounds(r, c, GRID.rows, GRID.cols)) throw badRequest('out_of_bounds');
 
     const now = Date.now();
-    const live = store.liveHuntsIn(zone);
+    // The player's own reserved treasure counts. It is on the map, it is theirs
+    // to find, and a detector that could not see it would report a reading
+    // about something else — which would make the tutorial's second step a lie
+    // at exactly the moment it is teaching what Survey means.
+    const live = [...store.liveHuntsIn(zone), ...store.ownedHuntsIn(zone, player.id)];
     // Read before charging. A zone with nothing in it would answer "cold",
     // which implies a treasure is out there somewhere — charging six energy for
     // a misleading answer is worse than refusing.
@@ -481,6 +514,67 @@ export function registerRoutes(app: App): void {
 
     metrics.surveysTaken.inc({ band: reading.band });
     return { reading, energy: spent.energy };
+  });
+
+  /**
+   * What to do when the bar is empty.
+   *
+   * ─────────────────────────── the moment this exists for ─────────────────────
+   *
+   * An empty bar is the highest-intent moment in the session — someone who has
+   * been narrowing down a patch of map and has just been stopped — and it was
+   * dead air. 108 seconds of nothing, with no prompt and no reason to come back.
+   * Phase 2 made the bar four hours, which turns a shrug into a departure
+   * unless the moment says something.
+   *
+   * So it says two things: how close the nearest treasure is, and when the bar
+   * returns. The first is a reason to come back; the second is a time to come
+   * back. Neither costs the player anything, and the warmth reading is free
+   * here on purpose — charging six energy to a player with none would be a joke
+   * at their expense.
+   *
+   * The refill offer belongs here too and is not built: there is no shop until
+   * phase 7. That is the one thing this endpoint is shaped for and does not yet
+   * do.
+   */
+  app.get('/zones/:id/stuck', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(zoneParams, req.params);
+    const zone = store.getZone(id);
+    if (!zone) throw notFound('no_such_zone');
+
+    const now = Date.now();
+    const view = energy.view(player, now);
+    const live = [...store.liveHuntsIn(zone), ...store.ownedHuntsIn(zone, player.id)];
+
+    // Warmth from the last place they dug, which is where their attention is.
+    // Falling back to the middle of the map is honest but much less useful, so
+    // it is only for someone who has not dug at all.
+    const mine = store.revealsFor(zone, player.id);
+    const from = mine.length > 0
+      ? mine.reduce((latest, r) => (r.at > latest.at ? r : latest))
+      : { r: Math.floor(GRID.rows / 2), c: Math.floor(GRID.cols / 2) };
+
+    const reading = survey.read(live, from.r, from.c, now);
+
+    return {
+      energy: view,
+      /** Where the reading was taken from, so the client can point at it. */
+      from: { r: from.r, c: from.c },
+      /** Null only when the zone holds nothing at all. */
+      nearest: reading ? { band: reading.band } : null,
+      /** Enough energy for one dig — what "come back" actually means. */
+      digCostEnergy: ENERGY.costFog,
+      // Time until a DIG is affordable, not until the next single point lands.
+      // At two energy a dig and one point every six minutes, "next regen" would
+      // routinely promise the bar back twice as soon as it is actually usable.
+      msUntilPlayable:
+        view.value >= ENERGY.costFog
+          ? 0
+          : view.nextRegenMs + (ENERGY.costFog - view.value - 1) * ENERGY.regenMs,
+      /** XP hunts stay open when cash ones do not; say so rather than imply it. */
+      hintsHeld: hints.countForPlayer(player.id, now),
+    };
   });
 
   /**

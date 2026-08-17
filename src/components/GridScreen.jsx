@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { SPEC9 } from '../data/gameData';
 import { candidates, describe, reliabilityPct, tierLabel } from '../api/hints';
 
@@ -29,7 +29,7 @@ const TYPE_COLORS = {
   found:   '#FFD51F',
 };
 
-function TileCell({ cell, onClick, dimmed, survey }) {
+function TileCell({ cell, onClick, dimmed, survey, pointed }) {
   const { opened, hunt, reveal } = cell;
 
   let bg = '#1A1815';
@@ -64,7 +64,10 @@ function TileCell({ cell, onClick, dimmed, survey }) {
       }
       style={{
         width: TILE_SIZE, height: TILE_SIZE,
-        background: bg, border,
+        background: bg,
+        // The tutorial's pointer wins over the tile's own border, because an
+        // instruction you cannot pick out of the board is not an instruction.
+        border: pointed ? '3px solid #29E6E6' : border,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         // Always a pointer: even an opened tile can be surveyed.
         cursor: 'pointer',
@@ -91,13 +94,78 @@ function TileCell({ cell, onClick, dimmed, survey }) {
   );
 }
 
-export default function GridScreen({ state, onBackZones, onTile, onToggleSurvey }) {
-  const { grid, energy, showToast, toastText, zones, mapZone, hints = [], surveys = {}, surveyMode = false } = state;
+/**
+ * One tile in the whole-map view. A few pixels across, so colour is the only
+ * language available and every choice here has to earn its place.
+ *
+ * Priority order matters: a hunt outranks a reveal outranks a survey reading
+ * outranks hint candidacy. What you are looking for beats where you have been.
+ */
+/** "3H 20M" / "8M". A bar that returns in four hours has to say so. */
+function formatWait(ms) {
+  if (!ms || ms <= 0) return 'READY';
+  const mins = Math.ceil(ms / 60000);
+  if (mins < 60) return `${mins}M`;
+  return `${Math.floor(mins / 60)}H ${mins % 60}M`;
+}
+
+function OverviewCell({ cell, survey, candidate, pointed, onClick }) {
+  const { opened, hunt, reveal } = cell;
+
+  let bg = '#1A1815';
+  if (candidate) bg = '#2A2A18';
+  if (survey) bg = BAND_COLORS[survey.band] ?? bg;
+  if (opened) bg = TYPE_COLORS[reveal.type] === '#0C0C10' ? '#2E2A24' : TYPE_COLORS[reveal.type];
+  if (hunt) bg = hunt.kind === 'cash' ? '#FFD51F' : '#8A3DFF';
+
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        background: bg,
+        cursor: 'pointer',
+        // The tutorial pointer has to be findable at this size, so it is a ring
+        // rather than a tint — a tint is invisible against five other tints.
+        outline: pointed ? '2px solid #29E6E6' : 'none',
+        outlineOffset: pointed ? -1 : 0,
+      }}
+    />
+  );
+}
+
+export default function GridScreen({ state, onBackZones, onTile, onToggleSurvey, onDismissStuck }) {
+  const {
+    grid, energy, showToast, toastText, zones, mapZone,
+    hints = [], surveys = {}, surveyMode = false, stuck = null,
+  } = state;
   const zone = zones.find(z => z.id === mapZone);
 
   // Which hints the player is currently trusting. View state, not game state —
   // the server neither knows nor cares which ones you believe.
   const [active, setActive] = useState(() => new Set());
+
+  // Navigate in the overview, play in the dig view. See the note by the grid.
+  const [view, setView] = useState('overview');
+  const [focus, setFocus] = useState(null);
+  const digRef = useRef(null);
+
+  // The tutorial's current step, if there is one. Pointed at in both views —
+  // an instruction you cannot find on the map is not an instruction.
+  const pointer = state.grid?.tutorial?.step ?? null;
+
+  // Jump the dig view to whatever was tapped on the overview. Without this,
+  // switching views drops you at the top-left corner of a 3,240px board, which
+  // is the problem the overview exists to solve.
+  useEffect(() => {
+    if (view !== 'dig' || !focus || !digRef.current) return;
+    const el = digRef.current;
+    const step = TILE_SIZE + GAP;
+    el.scrollTo({
+      left: Math.max(0, focus.c * step - el.clientWidth / 2 + TILE_SIZE / 2),
+      top: Math.max(0, focus.r * step - el.clientHeight / 2 + TILE_SIZE / 2),
+      behavior: 'instant',
+    });
+  }, [view, focus]);
   const toggle = id =>
     setActive(prev => {
       const next = new Set(prev);
@@ -166,6 +234,18 @@ export default function GridScreen({ state, onBackZones, onTile, onToggleSurvey 
             same tile, and which one a tap performs has to be visible before
             the tap — six energy is an expensive surprise.
           */}
+          <div
+            onClick={() => setView(v => (v === 'overview' ? 'dig' : 'overview'))}
+            style={{
+              padding: '5px 9px', background: 'transparent',
+              border: '3px solid #0C0C10',
+              fontFamily: "'Archivo Black', sans-serif", fontSize: 10,
+              color: '#0C0C10', cursor: 'pointer', whiteSpace: 'nowrap',
+            }}
+          >
+            {view === 'overview' ? 'DIG VIEW' : 'WHOLE MAP'}
+          </div>
+
           <div
             onClick={onToggleSurvey}
             style={{
@@ -255,26 +335,134 @@ export default function GridScreen({ state, onBackZones, onTile, onToggleSurvey 
         </div>
       )}
 
-      {/* scrollable grid */}
-      <div className="lg-scroll" style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: `repeat(${grid.cols}, ${TILE_SIZE}px)`,
-          gap: GAP,
-          padding: '18px 16px 22px',
-          width: 'max-content',
-        }}>
-          {cells.map(cell => (
-            <TileCell
-              key={cell.id}
-              cell={cell}
-              onClick={onTile}
-              survey={surveys[`${cell.r},${cell.c}`]}
-              dimmed={candidateSet !== null && !candidateSet.has(`${cell.r}:${cell.c}`)}
-            />
-          ))}
+      {/*
+        ─────────────────────────── two zoom levels ───────────────────────────
+
+        A 60x60 board at a tappable tile size is about 3,240px across — nine
+        screens wide and nine deep on the phones this is built for. The grid
+        "scrolled", which is not a design: finding anything meant dragging blind
+        across eighty-one screens with no idea where you had been.
+
+        So there are two views and they do different jobs. OVERVIEW fits the
+        whole map on one screen at a few pixels per tile: too small to tap, but
+        it is the only place you can see where you have dug, where the hints
+        point and where the treasure sheet says to look. DIG is the old board at
+        full size, scrolled to wherever you tapped on the overview.
+
+        Navigate in one, play in the other. Every map game of this size does
+        this, and for the same reason.
+      */}
+      {view === 'overview' ? (
+        <div style={{ flex: 1, overflow: 'hidden', padding: 10, display: 'flex' }}>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(${grid.cols}, 1fr)`,
+            gap: 1,
+            width: '100%',
+            aspectRatio: `${grid.cols} / ${grid.rows}`,
+            alignSelf: 'center',
+            border: '3px solid #0C0C10',
+            background: '#0C0C10',
+          }}>
+            {cells.map(cell => (
+              <OverviewCell
+                key={cell.id}
+                cell={cell}
+                survey={surveys[`${cell.r},${cell.c}`]}
+                candidate={candidateSet !== null && candidateSet.has(`${cell.r}:${cell.c}`)}
+                pointed={pointer?.r === cell.r && pointer?.c === cell.c}
+                onClick={() => {
+                  setFocus({ r: cell.r, c: cell.c });
+                  setView('dig');
+                }}
+              />
+            ))}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div ref={digRef} className="lg-scroll" style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(${grid.cols}, ${TILE_SIZE}px)`,
+            gap: GAP,
+            padding: '18px 16px 22px',
+            width: 'max-content',
+          }}>
+            {cells.map(cell => (
+              <TileCell
+                key={cell.id}
+                cell={cell}
+                onClick={onTile}
+                survey={surveys[`${cell.r},${cell.c}`]}
+                pointed={pointer?.r === cell.r && pointer?.c === cell.c}
+                dimmed={candidateSet !== null && !candidateSet.has(`${cell.r}:${cell.c}`)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/*
+        ─────────────────────────── the empty bar ───────────────────────────
+
+        The highest-intent moment in the session: someone who has been
+        narrowing down a patch of map and has just been stopped. It used to be
+        108 seconds of nothing — no prompt, no number, no reason to return —
+        and phase 2 made it four hours, which turns a shrug into a departure.
+
+        Two facts fix that, and neither costs the player anything: how close the
+        nearest treasure is to where they were digging, and when they can dig
+        again. A reason to come back, and a time to come back.
+
+        The refill offer belongs here and does not exist yet — there is no shop
+        until phase 7. This is the surface it will land on.
+      */}
+      {stuck && (
+        <div style={{
+          position: 'absolute', inset: 0, zIndex: 70, background: 'rgba(12,12,16,.94)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          justifyContent: 'center', gap: 14, padding: 28,
+        }}>
+          <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 22, color: 'var(--cream)', textAlign: 'center' }}>
+            OUT OF ENERGY
+          </div>
+
+          {stuck.nearest && (
+            <div style={{ textAlign: 'center' }}>
+              <div style={{
+                fontFamily: "'Archivo Black', sans-serif", fontSize: 30,
+                color: BAND_COLORS[stuck.nearest.band] ?? '#FFD51F',
+              }}>
+                {String(stuck.nearest.band).toUpperCase()}
+              </div>
+              <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, color: 'var(--cream)', opacity: .55, marginTop: 4 }}>
+                NEAREST TREASURE, FROM WHERE YOU LEFT OFF
+              </div>
+            </div>
+          )}
+
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 17, color: '#FFD51F' }}>
+              {formatWait(stuck.msUntilPlayable)}
+            </div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, color: 'var(--cream)', opacity: .55, marginTop: 4 }}>
+              UNTIL YOUR NEXT DIG
+            </div>
+          </div>
+
+          <div
+            onClick={onDismissStuck}
+            style={{
+              marginTop: 6, padding: '10px 18px', background: '#FFD51F',
+              border: '3px solid #0C0C10', boxShadow: '4px 4px 0 #0C0C10',
+              fontFamily: "'Archivo Black', sans-serif", fontSize: 13,
+              color: '#0C0C10', cursor: 'pointer',
+            }}
+          >
+            OK
+          </div>
+        </div>
+      )}
 
       {showToast && (
         <div style={{

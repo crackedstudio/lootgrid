@@ -1,7 +1,7 @@
 # LOOTGRID v2 — Implementation Plan
 
 **Source:** `docs/briefing.md` (the outside review)
-**Status:** Phases 1–5 shipped. Phase 0 was skipped at the user's direction — worth
+**Status:** Phases 1–6 shipped. Phase 0 was skipped at the user's direction — worth
 knowing, because it means everything below is being built without the funnel that would
 tell us whether any of it worked. §0-A was decided (stop relaying reveals). §0-B is half-resolved: proximity
 targeting shipped, the Compass's explicit choice did not. §0-D still gates
@@ -407,7 +407,35 @@ Nothing here is optional before real money (§0-D).
 
 ---
 
-## Phase 6 — The first eight minutes
+## Phase 6 — The first eight minutes ✅ shipped
+
+**Measurement warning, stated plainly.** This is the phase whose success is a
+funnel question — did more players reach a first treasure, did they come back —
+and Phase 0 was skipped, so none of it can be answered. Everything below is a
+reasoned bet, not a validated change. If any phase should be followed by
+instrumentation, it is this one.
+
+| Decision | Why |
+|---|---|
+| The first treasure is **placed, not found** | Leaving it to chance is a ~2% proposition: a first bar buys ~20 digs against 24 treasures on 3,600 tiles. No top-grossing mobile game leaves the first win to chance — Clash Royale's tutorial cannot be lost, Candy Crush level one cannot be failed |
+| Hunts became **ownable** (`hunts.owner_id`) rather than a tutorial *zone* | A separate zone needs its own map, replenishment and bots, and teaches the game somewhere the game is not. One nullable column and one predicate gets a reserved treasure sitting on the real board among real ones — and it is the mechanism a sponsored or personal hunt wants later |
+| The tutorial pays **XP and energy, not cash** | Direct conflict with the review: §6 asks for "a real prize", §7a forbids real money before the gate. §7a is later and stronger, and a cash tutorial prize is fifty wallets and fifty prizes — exactly the hole Phase 5 closed. What the tutorial must deliver is the *fantasy* of finding and winning, which energy and XP deliver |
+| The start cell is **searched for, not picked** | The script says "this one is a clue" and only 17% of the board is. Promising a guaranteed hint and then rolling for it repeats the exact mistake this phase exists to fix |
+| Onboarding cut to **two cards**, cash unmentioned | All three old cards were lying by the end of Phase 5 — including "speed and skill", which Phase 4 deliberately removed. Cash is real but two days away for a new account, so selling it on card one means refusing it minutes later |
+| The grid got **two zoom levels** | Deferred from Phase 2. At a tappable tile size the board is ~3,240px — nine screens by nine. Navigate in the overview, play in the dig view |
+
+**Two bugs the end-to-end check caught**, both from owned hunts being excluded
+from `liveHuntsIn`: Survey read `hot` when the placed treasure was one tile
+away (it could not see the player's own hunt), and the tutorial's first clue
+paid a hint about a treasure on the other side of the map. Both now include the
+player's reserved hunts.
+
+**Still not built:** the refill offer on the empty-energy screen. There is no
+shop until Phase 7 — the surface is built and waiting for it.
+
+---
+
+### Original plan
 
 Highest-impact phase for retention, lowest technical risk. Depends on Phases
 1–4 for the mechanics it teaches to actually exist — **do not build the tutorial
@@ -445,7 +473,7 @@ Phase 2  Resize + retune          ✅ needs 1
 Phase 3  Survey + real tiles      ✅ needs 1 (mystery), 2 (survey tuning)
 Phase 4  The Crack                ✅ needs 3 (hints worth using)
 Phase 5  Keys + rank + wallet     ✅ the money gate, part 2
-Phase 6  First-run experience     ── needs 1–4 to be truthful
+Phase 6  First-run experience     ✅ needs 1–4 to be truthful
 Phase 7  Shop                     ── needs 3 (Compass), 5 (keys boundary)
 ```
 

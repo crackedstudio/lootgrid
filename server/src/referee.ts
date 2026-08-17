@@ -1,4 +1,4 @@
-import { ASYNC, CRACK, ENERGY, NET, PUZZLE_HUNT_XP, RACE } from './config';
+import { ASYNC, CRACK, ENERGY, NET, PUZZLE_HUNT_XP, RACE, TUTORIAL } from './config';
 import * as admission from './admission';
 import * as escrow from './chain/escrow';
 import * as director from './director';
@@ -428,7 +428,21 @@ function resolve(huntId: string, now = Date.now()): void {
   // overwhelming majority of what is on the map rewarded nothing at all.
   if (hunt.kind === 'puzzle') {
     const player = store.getPlayer(winner.playerId);
-    if (player) store.awardXp(player, PUZZLE_HUNT_XP);
+    if (player) {
+      // A placed first treasure pays more, and pays in energy as well as XP.
+      //
+      // Energy because the moment after a first win is exactly when a new
+      // player wants to keep going and the four-hour bar is about to stop them.
+      // Not cash: a prize handed to a brand-new ungated wallet is the sybil
+      // hole phase 5 closed. See tutorial.ts.
+      const placed = hunt.ownerId === winner.playerId;
+      store.awardXp(player, placed ? TUTORIAL.reward.xp : PUZZLE_HUNT_XP);
+      if (placed) {
+        const view = energy.refund(player, TUTORIAL.reward.energy, now);
+        store.savePlayerEnergy(player);
+        rooms.toPlayer(player.id, { t: 'energy', ...view });
+      }
+    }
   }
 
   rooms.broadcast(rooms.huntRoom(huntId), {

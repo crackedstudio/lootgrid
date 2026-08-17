@@ -264,6 +264,31 @@ export const WALLET = {
   minTierForCash: 'prospector' as const,
 } as const;
 
+/**
+ * The first sixty seconds.
+ *
+ * Four out of five new players never found a single treasure in their first
+ * session, and that was on a grid a seventeenth of the current size. No
+ * top-grossing mobile game leaves the first win to chance — this one does not
+ * either. See tutorial.ts.
+ */
+export const TUTORIAL = {
+  /** Keep the start cell off the edges, so all eight neighbours exist. */
+  margin: 4,
+  /**
+   * Where the placed treasure sits relative to the start cell.
+   *
+   * Close enough to reach in one move after the survey, far enough that the
+   * survey is doing visible work rather than pointing at the tile you are
+   * standing on. Chebyshev distance 2 reads `burning` on the SURVEY bands.
+   */
+  treasureOffset: { r: 2, c: 1 },
+  /** Long enough to survive a session and a night's sleep. */
+  ttlMs: 48 * 60 * 60 * 1000,
+  /** What the placed treasure pays. Energy AND xp — see tutorial.ts on why not cash. */
+  reward: { xp: 100, energy: 10 },
+} as const;
+
 export const RACE = {
   /**
    * When the first player completes, hold the result open this long and collect
