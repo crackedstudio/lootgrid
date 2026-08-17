@@ -1,7 +1,7 @@
 # LOOTGRID v2 — Implementation Plan
 
 **Source:** `docs/briefing.md` (the outside review)
-**Status:** Phases 1, 2 and 3 shipped. Phase 0 was skipped at the user's direction — worth
+**Status:** Phases 1–4 shipped. Phase 0 was skipped at the user's direction — worth
 knowing, because it means everything below is being built without the funnel that would
 tell us whether any of it worked. §0-A was decided (stop relaying reveals). §0-B is half-resolved: proximity
 targeting shipped, the Compass's explicit choice did not. §0-D still gates
@@ -314,7 +314,28 @@ keeps deciding *whether* and *which tier*, but not *which hunt*. Compass (Phase
 
 ---
 
-## Phase 4 — The Crack
+## Phase 4 — The Crack ✅ shipped
+
+| Decision | Why |
+|---|---|
+| `generate` gained a **context carrying the hunt's cell** | The Crack is the first module whose answer must BE the treasure. `deduction` and `search` invent their own targets from the seed; if The Crack did that, hints would describe a position nobody is picking and the whole economy would price unusable information. The module **throws** rather than falling back — a seed-derived answer would generate cleanly, play convincingly, and be unwinnable by deduction |
+| Hints used = hints **held**, not "applied" | There is no apply endpoint and there should not be: a player who has seen a hint cannot un-see it before picking. Held is the honest measure and cannot be gamed by declining to declare |
+| Snapshotted at the **lock**, persisted | Hints can arrive in the fifteen seconds before the reveal; recomputing at resolution could cost a tiebreak already earned. It is also the raw material for the report card the shop sells |
+| Settlement window becomes the **game's own limit** | 400ms was sized for jitter between players who started together. Here it would silently restore "first to answer wins" — the exact thing the phase removes |
+| `startedAt` dropped from the tiebreak entirely | Arrival order is who loaded the page first. Correct → fewer hints → deterministic hash, and nothing else |
+| All-wrong **reopens** the hunt | Open question #5, answered yes. The money is escrowed for whoever finds it; burning it because the first triers were wrong is the house keeping a pot nobody won. Those who guessed still spent their one attempt |
+| The first lock **closes entry** | Once someone has answered, the hunt is being decided. Entry costs 3 energy, so refusing a latecomer beats charging them and cutting them off mid-window |
+| Puzzle hunts draw from **all four** reflex games | They were hardcoded to `memory`, so three modules had never been served since the cash pool stopped drawing them. Puzzle hunts are now most of the map, so that is where the variety lives |
+
+**Also fixed:** the deduction solver test was the slowest in the suite by an
+order of magnitude after Phase 2's resize (O(probes × options × cells), and
+cells went 216 → 3,600). It passed alone and timed out under parallel load.
+Sample reduced from 25 boards to 8 — the strategy is deterministic, so the
+property is demonstrated either way.
+
+---
+
+### Original plan
 
 Replaces tap-speed with deduction as the win condition. Largest referee change
 in the plan.
@@ -393,7 +414,7 @@ Phase 0  Instrumentation          ── independent, NOT DONE (skipped)
 Phase 1  Rotation + private fog   ✅ the money gate, part 1
 Phase 2  Resize + retune          ✅ needs 1
 Phase 3  Survey + real tiles      ✅ needs 1 (mystery), 2 (survey tuning)
-Phase 4  The Crack                ── needs 3 (hints worth using)
+Phase 4  The Crack                ✅ needs 3 (hints worth using)
 Phase 5  Keys + rank + wallet     ── the money gate, part 2
 Phase 6  First-run experience     ── needs 1–4 to be truthful
 Phase 7  Shop                     ── needs 3 (Compass), 5 (keys boundary)

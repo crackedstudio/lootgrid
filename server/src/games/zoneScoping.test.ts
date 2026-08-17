@@ -16,14 +16,29 @@ import type { GameType, ZoneKind } from '../types';
  * human zone; an empty pool cannot be.
  */
 
-/** The reflex modules. Every one of these guards money and assumes a human. */
-const HUMAN_ONLY: GameType[] = ['tap', 'math', 'sequence'];
+/**
+ * What a human zone may draw for money.
+ *
+ * One entry, and that is the phase 4 change: this was the three reflex modules,
+ * so a cash prize went to whoever tapped or calculated fastest. The reflex
+ * modules still exist and still assume a human — they guard XP now.
+ */
+const HUMAN_CASH: GameType[] = ['crack'];
 
 describe('human zones', () => {
-  it('draw cash games only from the reflex pool', () => {
+  it('draw cash games only from the human cash pool', () => {
     for (let i = 0; i < 200; i++) {
       const type = gameTypeForBlock(`salt-${i}`, `hunt-${i}`, 'cash', 'human');
-      expect(HUMAN_ONLY).toContain(type);
+      expect(HUMAN_CASH).toContain(type);
+    }
+  });
+
+  it('never decide money on a reflex game', () => {
+    // The feeling matters more than the fairness here: "I lost because my phone
+    // is slow" is a belief no server-side settlement window can argue with.
+    for (let i = 0; i < 200; i++) {
+      const type = gameTypeForBlock(`salt-${i}`, `hunt-${i}`, 'cash', 'human');
+      expect(['tap', 'math', 'sequence', 'memory']).not.toContain(type);
     }
   });
 
@@ -42,7 +57,17 @@ describe('human zones', () => {
     for (let i = 0; i < 400; i++) {
       seen.add(gameTypeForBlock(`s${i}`, `h${i}`, 'cash', 'human'));
     }
-    expect([...seen].sort()).toEqual([...HUMAN_ONLY].sort());
+    expect([...seen].sort()).toEqual([...HUMAN_CASH].sort());
+  });
+
+  it('keep the reflex modules alive on puzzle hunts', () => {
+    // They did not get deleted, they got demoted. Puzzle hunts are the
+    // overwhelming majority of the map, so this is where the variety lives.
+    const seen = new Set<GameType>();
+    for (let i = 0; i < 400; i++) {
+      seen.add(gameTypeForBlock(`s${i}`, `h${i}`, 'puzzle', 'human'));
+    }
+    expect([...seen].sort()).toEqual(['math', 'memory', 'sequence', 'tap']);
   });
 });
 
@@ -60,7 +85,7 @@ describe('agent zones', () => {
     // intervals are too regular, which is every agent that ever plays it.
     for (let i = 0; i < 200; i++) {
       const type = gameTypeForBlock(`s${i}`, `h${i}`, 'cash', 'agent');
-      expect(HUMAN_ONLY).not.toContain(type);
+      expect(HUMAN_CASH).not.toContain(type);
       expect(AGENT_ONLY).toContain(type);
     }
   });

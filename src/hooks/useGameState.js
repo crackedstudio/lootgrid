@@ -69,8 +69,12 @@ const INITIAL = {
 const cellKey = (r, c) => `${r},${c}`;
 
 /** Fresh render state for whichever game the block handed us. */
-function initGame(gameType, spec) {
+function initGame(gameType, spec, huntId) {
   switch (gameType) {
+    case 'crack':
+      // `huntId` rides along so the panel can filter to hints about THIS hunt.
+      // A hint about another treasure says nothing about these six doors.
+      return { picked: null, doors: spec.candidates.length, huntId };
     case 'tap':
       return { taps: 0, target: spec.target, remainingMs: spec.limitMs };
     case 'sequence':
@@ -529,7 +533,7 @@ export function useGameState() {
         huntId: hunt.id,
         huntPrize: hunt.prizeLabel,
         attempt: { attemptId: res.attemptId, gameType: res.gameType, spec: res.spec, limitMs: res.limitMs },
-        game: initGame(res.gameType, res.spec),
+        game: initGame(res.gameType, res.spec, hunt.id),
         rivals: [],
         outcome: null,
         failReason: null,
@@ -583,6 +587,26 @@ export function useGameState() {
     senderRef.current?.add('tap', undefined, taps >= s.game.target);
     set({ game: { ...s.game, taps } });
   }, [set]);
+
+  /**
+   * Commit a door.
+   *
+   * Optimistic like every other input, but final in a way the others are not:
+   * one lock per attempt, and the server refuses a second. The pick is sent as
+   * the cell rather than the index so the server validates against its own copy
+   * of the doors rather than trusting a number the client chose.
+   */
+  const onCrackLock = useCallback(
+    door => {
+      const s = stateRef.current;
+      if (!s.game || s.outcome || s.game.picked !== null) return;
+      const cell = s.attempt?.spec?.candidates?.[door];
+      if (!cell) return;
+      senderRef.current?.add('lock', cell, true);
+      set({ game: { ...s.game, picked: door } });
+    },
+    [set],
+  );
 
   const onSeqTap = useCallback(
     tile => {
@@ -642,6 +666,7 @@ export function useGameState() {
     onSeqTap,
     onMemPad,
     onMathPick,
+    onCrackLock,
     setField,
     doShare,
     toast,

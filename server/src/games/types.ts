@@ -31,6 +31,21 @@ export type StepResult =
    */
   | { kind: 'reject'; reason: string; fatal: boolean };
 
+/**
+ * What a module may know about the block beyond its seed.
+ *
+ * Added for The Crack, which is the first module whose answer must BE the
+ * hunt's cell rather than a puzzle derived from the salt — hints describe the
+ * treasure's real position, so a door that is some other cell makes every hint
+ * noise. Optional, and every other module ignores it: `deduction` and `search`
+ * deliberately invent their own targets, because for them the block is a puzzle
+ * that happens to sit on a tile.
+ */
+export interface GenerateContext {
+  /** Where the treasure actually is. */
+  cell: { r: number; c: number };
+}
+
 export interface GeneratedGame<Spec, Secret> {
   spec: Spec;
   secret: Secret;
@@ -78,8 +93,14 @@ export interface GameModule<Spec = unknown, Secret = unknown, State = unknown, I
    */
   durable?: boolean;
 
-  /** Deterministic from the block's seed: same block, same game, every time. */
-  generate(seed: string, difficulty: Difficulty): GeneratedGame<Spec, Secret>;
+  /**
+   * Deterministic from the block's seed: same block, same game, every time.
+   *
+   * `ctx` carries facts about the block that are not in the seed. Ignore it
+   * unless the game is genuinely about the treasure's location — see
+   * {@link GenerateContext}.
+   */
+  generate(seed: string, difficulty: Difficulty, ctx?: GenerateContext): GeneratedGame<Spec, Secret>;
 
   /**
    * What the client is allowed to see at the start. Takes `secret` so a game can

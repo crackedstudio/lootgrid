@@ -253,6 +253,48 @@ export const ASYNC = {
   },
 } as const;
 
+/**
+ * The Crack — the one way to win money.
+ *
+ * ─────────────────────────── what it replaces ───────────────────────────
+ *
+ * Every design decision in this codebase pointed at deduction, and then the
+ * prize went to whoever tapped fourteen times fastest. Someone who worked out
+ * the location and someone who wandered onto the tile by luck competed
+ * identically, on thumb speed. Worse than the unfairness is the *feeling*: "I
+ * lost because my phone is slow" is a belief no amount of server-side fairness
+ * can argue with, and it is the belief a reflex race on a cheap Android
+ * produces.
+ *
+ * Six doors, the same six for everyone, fifteen seconds, everyone locks, all
+ * reveal at once. Right pick wins.
+ *
+ * ─────────────────────────── what decides it ───────────────────────────
+ *
+ * Correctness first, then **fewer hints used**, then a deterministic hash of
+ * the hunt and player. Elapsed time appears nowhere, and neither does arrival
+ * order: both are proxies for hardware and connection. That is the whole point
+ * — phone speed and internet speed stop mattering entirely.
+ *
+ * The hint tiebreak is doing real work. It means the player who reached the
+ * answer on fewer purchased hints beats the one who bought their way to the
+ * same answer, so spending actively costs you the close ones. It is the third
+ * of the four anti-pay-to-win rules, and the only one that lives in the
+ * scoring rather than in a cap.
+ *
+ * ─────────────────────────── why six ───────────────────────────
+ *
+ * A blind guess is 1-in-6, which is a real chance and a poor plan. Three good
+ * hints typically leave two, which is a coin flip you earned. Fewer doors and
+ * hints would be decisive rather than helpful; more and a hintless player would
+ * never win at all, which removes the free path the legal argument rests on.
+ */
+export const CRACK = {
+  doors: 6,
+  /** Everyone gets the same fifteen seconds. Long enough to think, not to look up. */
+  limitMs: 15_000,
+} as const;
+
 export const TAP = {
   target: 14,
   limitMs: 6_000,

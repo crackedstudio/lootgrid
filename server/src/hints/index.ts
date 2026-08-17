@@ -217,6 +217,18 @@ export function countForPlayer(playerId: string, now = Date.now()): number {
 }
 
 /**
+ * How many live hints the player holds about this hunt.
+ *
+ * The Crack's tiebreak reads this at the moment an answer is locked. "Held"
+ * rather than "applied" is deliberate — there is no apply endpoint, because a
+ * player who has seen a hint cannot un-see it before picking, so held is the
+ * honest measure of how much information was bought before answering.
+ */
+export function countForHunt(playerId: string, huntId: string, now = Date.now()): number {
+  return hintRepo.ofPlayer(playerId, now).filter(h => h.huntId === huntId).length;
+}
+
+/**
  * Whether the player holds any live hint pointing at this hunt.
  *
  * Drives phase 1's gate metric. Says nothing about whether those hints were

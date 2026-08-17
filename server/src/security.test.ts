@@ -186,7 +186,9 @@ describe('game secrecy', () => {
 
   it('never returns the secret through publicSpec', () => {
     for (const [type, mod] of Object.entries(MODULES)) {
-      const { spec, secret } = mod.generate('a-salt', 'med');
+      // The cell is only meaningful to `crack`, whose answer IS the treasure;
+      // every other module ignores it.
+      const { spec, secret } = mod.generate('a-salt', 'med', { cell: { r: 12, c: 20 } });
       const pub = JSON.stringify(mod.publicSpec(spec, secret));
       if (secret !== null) {
         // Math is the only module with a secret, and it must survive this.

@@ -1,13 +1,17 @@
 /**
  * Every game module, human and agent.
  *
- * The first four are reflex and arithmetic games for human zones; the last
- * three are the agent-native ones from phase 6. The split is not cosmetic —
- * `games/index.ts` draws from different pools per zone kind precisely because
- * an agent plays the first four perfectly and is *rejected* by their bot
- * checks for doing so.
+ * `crack` is the only one that decides money on a human zone. The four reflex
+ * and arithmetic games below it now guard XP alone — they were deciding cash on
+ * thumb speed, which is not the skill this game is built around. The last three
+ * are the agent-native ones from phase 6.
+ *
+ * The split is not cosmetic: `games/index.ts` draws from different pools per
+ * zone kind precisely because an agent plays the reflex games perfectly and is
+ * *rejected* by their bot checks for doing so.
  */
 export type GameType =
+  | 'crack'
   | 'tap'
   | 'math'
   | 'sequence'
@@ -139,6 +143,16 @@ export interface Attempt {
   /** Module-owned runtime state. In memory only — never persisted. */
   state: unknown;
   elapsedMs: number | null;
+  /**
+   * Hints held about this hunt at the moment the answer was committed.
+   *
+   * Null until the attempt completes, and null for games that do not use it.
+   * The Crack's tiebreak: correct pick first, then fewer hints. Snapshotted at
+   * the decision rather than recomputed at resolution, because a hint arriving
+   * in the fifteen seconds before the reveal must not cost someone a tiebreak
+   * they had already earned.
+   */
+  hintsUsed: number | null;
   failReason: string | null;
   progress: number;
   /** Instrumentation. The reason this slice exists — read these off real devices. */

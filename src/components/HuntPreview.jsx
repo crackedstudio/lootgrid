@@ -1,6 +1,34 @@
 import Mascot from './Mascot';
 
 /**
+ * What a block's game is called, and what it asks of you.
+ *
+ * Shown before entry. The blurbs describe the *shape* of the challenge, never
+ * anything that would help solve a specific one.
+ */
+const GAME_NAMES = {
+  crack: 'THE CRACK',
+  tap: 'TAP CHALLENGE',
+  math: 'MATH DASH',
+  sequence: 'SEQUENCE DIG',
+  memory: 'MEMORY DIG',
+  deduction: 'DEDUCTION',
+  negotiation: 'NEGOTIATION',
+  search: 'SEARCH',
+};
+
+const GAME_BLURBS = {
+  crack: 'SIX DOORS · 15s · YOUR HINTS NARROW THEM · SPEED DOES NOT COUNT',
+  tap: 'REFLEXES · XP ONLY',
+  math: 'ARITHMETIC UNDER TIME · XP ONLY',
+  sequence: 'ORDER AND AIM · XP ONLY',
+  memory: 'RECALL A SEQUENCE · XP ONLY',
+  deduction: 'NARROW A HIDDEN CELL WITHIN A PROBE BUDGET',
+  negotiation: 'FIND THE LEAST YOU CAN PAY',
+  search: 'CATCH SOMETHING THAT RUNS WHEN YOU LOOK',
+};
+
+/**
  * The price, shown before the wallet is ever prompted.
  *
  * A 402 arrives mid-entry, so this appears in place of the enter button and the
@@ -80,10 +108,30 @@ export default function HuntPreview({ hunt, onConfirm, onClose, onPay }) {
               {/* The tier is drawn per block and decides the prize, the fee and
                   how hard the game generates — so it belongs next to the money. */}
               {hunt.difficulty ? `${hunt.difficulty.toUpperCase()} · ` : ''}
-              {isCash ? 'PRE-FUNDED PRIZE' : 'PUZZLE REWARD'}
+              {isCash ? 'PRE-FUNDED PRIZE' : 'XP REWARD'}
             </div>
           </div>
         </div>
+
+        {/*
+          What game this is, BEFORE any energy is committed.
+          The type used to be hidden until you had already entered, so a choice
+          between two hunts was a choice with no information in it. It is fixed
+          by the block's salt and checkable afterwards, so hiding it protected
+          nothing. Hide the answer, not the shape.
+        */}
+        {hunt.gameType && (
+          <div style={{
+            border: '2px solid rgba(245,239,227,.15)', padding: '10px 12px', marginBottom: 12,
+          }}>
+            <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 13, color: 'var(--cream)' }}>
+              {GAME_NAMES[hunt.gameType] ?? hunt.gameType.toUpperCase()}
+            </div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, color: 'var(--cream)', opacity: .45, marginTop: 4 }}>
+              {GAME_BLURBS[hunt.gameType] ?? ''}
+            </div>
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 10, marginBottom: 18 }}>
           <div style={{ flex: 1, border: '2px solid rgba(245,239,227,.15)', padding: '10px 12px' }}>

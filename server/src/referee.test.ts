@@ -49,7 +49,10 @@ describe('referee', () => {
 
   describe('opening an attempt', () => {
     it('charges energy and returns the block spec', () => {
-      const hunt = huntOfType('tap');
+      // A cash hunt, so the cash entry cost applies. `tap` is a puzzle game as
+      // of phase 4 — asking for it here charged the puzzle price and made this
+      // test quietly about something else.
+      const hunt = huntOfType('crack');
       const player = makePlayer('0xaaa');
       const before = energy.currentEnergy(player, T0);
 
@@ -57,9 +60,18 @@ describe('referee', () => {
       expect(res.ok).toBe(true);
       if (!res.ok) return;
 
-      expect(res.gameType).toBe('tap');
+      expect(res.gameType).toBe('crack');
       expect(energy.currentEnergy(player, T0)).toBe(before - ENERGY.costCashHunt);
       expect(res.attempt.startedAt).toBe(T0);
+    });
+
+    it('charges the puzzle price on a puzzle block', () => {
+      const hunt = huntOfType('tap');
+      const player = makePlayer('0xa11');
+      const before = energy.currentEnergy(player, T0);
+
+      expect(referee.openAttempt(player, hunt, T0).ok).toBe(true);
+      expect(energy.currentEnergy(player, T0)).toBe(before - ENERGY.costPuzzleHunt);
     });
 
     it('refuses a second attempt on the same block', () => {
@@ -93,7 +105,7 @@ describe('referee', () => {
     });
 
     it('keeps shadow-banned players out of cash blocks', () => {
-      const hunt = huntOfType('tap');
+      const hunt = huntOfType('crack');
       const player = makePlayer('0xbad');
       player.shadowBanned = true;
       // Indistinguishable from the block having just closed — on purpose.

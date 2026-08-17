@@ -12,6 +12,7 @@ interface Row {
   status: string;
   last_seq: number;
   elapsed_ms: number | null;
+  hints_used: number | null;
   fail_reason: string | null;
   progress: number;
   intervals: string;
@@ -42,6 +43,7 @@ function toDomain(r: Row): Attempt {
     // reflex attempt has always looked like.
     state: r.state === null ? null : (JSON.parse(r.state) as unknown),
     elapsedMs: r.elapsed_ms,
+    hintsUsed: r.hints_used,
     failReason: r.fail_reason,
     progress: r.progress,
     intervals: JSON.parse(r.intervals) as number[],
@@ -69,6 +71,7 @@ function build() {
     finish: db.prepare(`
       UPDATE attempts
          SET status = @status, last_seq = @lastSeq, elapsed_ms = @elapsedMs,
+             hints_used = @hintsUsed,
              fail_reason = @failReason, progress = @progress, intervals = @intervals,
              max_clock_skew_ms = @maxClockSkewMs, finished_at = @finishedAt
        WHERE id = @id
@@ -137,6 +140,7 @@ export function finish(a: Attempt, now = Date.now()): void {
     status: a.status,
     lastSeq: a.lastSeq,
     elapsedMs: a.elapsedMs,
+    hintsUsed: a.hintsUsed,
     failReason: a.failReason,
     progress: a.progress,
     intervals: JSON.stringify(a.intervals),

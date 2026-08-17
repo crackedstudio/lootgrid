@@ -105,9 +105,20 @@ describe('game assignment', () => {
     }
   });
 
-  it('always uses memory for puzzle blocks', () => {
-    for (let i = 0; i < 50; i++) {
-      expect(gameTypeForBlock(`salt-${i}`, `hunt-${i}`, 'puzzle')).toBe('memory');
+  it('draws puzzle blocks from the whole reflex pool', () => {
+    // Puzzle hunts were hardcoded to `memory`, so three of the four reflex
+    // modules had never once been served since the cash pool stopped drawing
+    // them. Puzzle hunts are now the overwhelming majority of the map, so this
+    // is where that variety has to live.
+    const seen = new Set<string>();
+    for (let i = 0; i < 200; i++) seen.add(gameTypeForBlock(`salt-${i}`, `hunt-${i}`, 'puzzle'));
+    expect(seen).toEqual(new Set(['tap', 'math', 'sequence', 'memory']));
+  });
+
+  it('never puts a reflex game on a cash block', () => {
+    // Losing a prize because your phone stuttered is the thing phase 4 removes.
+    for (let i = 0; i < 200; i++) {
+      expect(gameTypeForBlock(`salt-${i}`, `hunt-${i}`, 'cash')).toBe('crack');
     }
   });
 
@@ -115,9 +126,11 @@ describe('game assignment', () => {
     expect(gameTypeForBlock('s', 'h', 'cash')).toBe(gameTypeForBlock('s', 'h', 'cash'));
   });
 
-  it('spreads across the cash games', () => {
+  it('serves exactly one cash game, whatever the salt', () => {
+    // Every deep competitive game has one way to win and puts its variety
+    // upstream of that. The variety here is the map, the hints and the market.
     const seen = new Set<string>();
     for (let i = 0; i < 200; i++) seen.add(gameTypeForBlock(`s${i}`, `h${i}`, 'cash'));
-    expect(seen.size).toBeGreaterThan(1);
+    expect(seen).toEqual(new Set(['crack']));
   });
 });

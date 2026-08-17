@@ -271,7 +271,12 @@ export function blockGame(hunt: Hunt): BlockGame {
   const zoneKind = getZone(hunt.zoneId)?.kind ?? 'human';
   const type = gameTypeForBlock(hunt.salt, hunt.id, hunt.kind, zoneKind);
   const mod = moduleFor(type);
-  const { spec, secret, limitMs } = mod.generate(hunt.salt, hunt.difficulty);
+  // The cell goes in because The Crack's answer must BE the treasure — hints
+  // describe its real position, so a door that is some other cell would make
+  // every hint noise. Every other module ignores it.
+  const { spec, secret, limitMs } = mod.generate(hunt.salt, hunt.difficulty, {
+    cell: { r: hunt.r, c: hunt.c },
+  });
   const game: BlockGame = { type, spec, secret, limitMs };
 
   hunt.game = game;

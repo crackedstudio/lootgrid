@@ -94,6 +94,7 @@ export default function App() {
           onMgTap={game.onMgTap}
           onMemPad={game.onMemPad}
           onMathPick={game.onMathPick}
+          onCrackLock={game.onCrackLock}
           onSeqTap={game.onSeqTap}
           onExit={game.exitMinigame}
         />

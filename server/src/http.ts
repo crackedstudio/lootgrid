@@ -262,6 +262,14 @@ export function registerRoutes(app: App): void {
         // player choosing between two hunts is choosing between those.
         difficulty: h.difficulty,
         prizeLabel: h.prizeLabel,
+        // What game this block runs, before anyone commits energy to it.
+        //
+        // The type was hidden until you had already entered, so a player chose
+        // between hunts with no idea what they were walking into. It is a
+        // property of the block, fixed by the salt at creation and checkable
+        // afterwards — hiding it protected nothing. Hide the answer, not the
+        // shape.
+        gameType: store.blockGame(store.getHunt(h.id) ?? h).type,
         status: h.status,
         chasers: store.chaserCount(h.id),
       })),
