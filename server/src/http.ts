@@ -473,6 +473,15 @@ export function registerRoutes(app: App): void {
     if (!spent.ok) throw conflict('insufficient_energy', 'out of energy', spent.energy);
     store.savePlayerEnergy(player);
 
+    // Read BEFORE advancing, because advancing is what makes it false.
+    //
+    // `isFirstStepCell` tests `tutorialStep === 0`, and `advance` below moves
+    // it to 1. Consulting it after the advance — which is what happened — meant
+    // `wantTrue` was never set on the walkthrough's first dig, so the hint was
+    // drawn honestly and was false about a quarter of the time. The guarantee
+    // held only by luck, and the test for it failed roughly one run in four.
+    const firstWalkthroughDig = tutorial.isFirstStepCell(player, zone, r, c);
+
     tutorial.advance(player, zone, { kind: 'dig', r, c }, now);
 
     const cell = { r, c, type, byHandle: player.handle, at: now };
@@ -553,7 +562,7 @@ export function registerRoutes(app: App): void {
         wantTrue:
           type === 'trap' && TILES.trap.falseHint
             ? false
-            : tutorial.isFirstStepCell(player, zone, r, c)
+            : firstWalkthroughDig
               ? true
               : undefined,
       },

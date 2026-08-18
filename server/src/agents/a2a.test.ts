@@ -9,7 +9,7 @@ import { env } from '../env';
 import * as hints from '../hints';
 import * as market from '../market';
 import * as store from '../store';
-import { freshWorld, huntOfType, makePlayer, teardownWorld } from '../testing/harness';
+import { freshWorld, huntOfType, makeAgedPlayer, teardownWorld } from '../testing/harness';
 import type { Hunt, Player } from '../types';
 import * as driver from './driver';
 import * as identity from './identity';
@@ -119,8 +119,8 @@ beforeEach(() => {
     if (other.id !== hunt.id) store.setHuntStatus(store.getHunt(other.id)!, 'expired');
   }
 
-  seller = makePlayer(SELLER, '@seller');
-  buyer = makePlayer(BUYER, '@buyer');
+  seller = makeAgedPlayer(SELLER, '@seller');
+  buyer = makeAgedPlayer(BUYER, '@buyer');
 
   for (const [player, holder] of [
     [seller, 'seller'],

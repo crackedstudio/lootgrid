@@ -4,7 +4,7 @@ import * as agentRepo from '../db/repos/agents';
 import { env } from '../env';
 import * as store from '../store';
 import { GRID } from '../config';
-import { freshWorld, makePlayer, teardownWorld } from '../testing/harness';
+import { freshWorld, makeAgedPlayer, teardownWorld } from '../testing/harness';
 import { candidates, type DeductionState } from '../games/deduction';
 import * as driver from './driver';
 import * as identity from './identity';
@@ -72,7 +72,7 @@ beforeEach(() => {
   mut.RPC_URL = 'http://localhost:0';
   mut.CHAIN = 'celoSepolia';
 
-  makePlayer(PLAYER, '@owner');
+  makeAgedPlayer(PLAYER, '@owner');
   agentId = identity.addressFor(PLAYER);
   agentRepo.create(agentId, PLAYER);
   agentRepo.setVault(agentId, VAULT);
@@ -228,7 +228,7 @@ describe('the chain is the authority on whether it may act', () => {
 
   it('does not wake an agent without a vault', async () => {
     const other = '0x00000000000000000000000000000000000000b0';
-    makePlayer(other, '@novault');
+    makeAgedPlayer(other, '@novault');
     agentRepo.create(identity.addressFor(other), other);
 
     // Nothing to spend and nothing to protect.

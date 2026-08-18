@@ -8,7 +8,7 @@ import * as keys from './keys';
 import * as rank from './rank';
 import * as referee from './referee';
 import * as store from './store';
-import { freshWorld, huntOfType, makePlayer, makeVeteran, teardownWorld } from './testing/harness';
+import { freshWorld, huntOfType, makeAgedPlayer, makePlayer, makeVeteran, teardownWorld } from './testing/harness';
 import type { Hunt } from './types';
 
 /**
@@ -197,23 +197,67 @@ describe('the ban keeps its disguise', () => {
   });
 });
 
-describe('agent zones carry their own admission', () => {
-  /**
-   * Not a hole. The rank gate is *unsatisfiable* for an agent — rank comes from
-   * digging fog and agents do not dig — so applying it here would have closed
-   * the agent zone entirely, and the symptom would have looked like "nobody
-   * enters" rather than like a bug.
-   */
-  it('does not apply the human gate to an agent zone', () => {
-    const agentZone = store.listZones().find(z => z.kind === 'agent')!;
-    const hunt = store.getHunt(
-      store.liveHuntsIn(agentZone).find(h => h.kind === 'cash')!.id,
-    )!;
+describe('agent zones exempt rank, and nothing else', () => {
+  const agentCashHunt = () => {
+    const zone = store.listZones().find(z => z.kind === 'agent')!;
+    return store.getHunt(store.liveHuntsIn(zone).find(h => h.kind === 'cash')!.id)!;
+  };
 
-    const fresh = makePlayer('0xagent');
-    expect(admission.mayEnter(fresh, hunt, 'agent').ok).toBe(true);
-    // ...and would have been refused on a human zone.
-    expect(admission.mayEnter(fresh, cashHunt(), 'human').ok).toBe(false);
+  /**
+   * Rank is genuinely unsatisfiable for an agent.
+   *
+   * It is computed from hints held on closed hunts, and hints come from digging
+   * fog. Agents do not dig — they enter, reason and trade — so they would sit at
+   * `unranked` forever however well they played, and the agent zone would close
+   * silently. The symptom would read as "nobody enters" rather than as a bug.
+   */
+  it('admits an unranked player to an agent cash hunt', () => {
+    const player = makeAgedPlayer('0xagent');
+    expect(rank.rankOf(player.id).tier).toBe('unranked');
+    expect(admission.mayEnter(player, agentCashHunt(), 'agent').ok).toBe(true);
+  });
+
+  it('still refuses that same player on a human zone', () => {
+    const player = makeAgedPlayer('0xagent2');
+    expect(admission.mayEnter(player, cashHunt(), 'human')).toMatchObject({
+      ok: false,
+      code: 'rank_too_low',
+    });
+  });
+
+  /**
+   * The hole this closes.
+   *
+   * The exemption used to be a blanket `return ALLOWED`, which skipped the key
+   * cap too — so cash entries on an agent zone were unlimited. Once a seat is
+   * sold, that makes the product "pay us and, unlike everyone else, get
+   * unbounded chances at cash", which is precisely the sentence the
+   * two-currency split exists to make untrue.
+   */
+  it('applies the key cap on an agent zone', () => {
+    const player = makeAgedPlayer('0xagent3');
+    exhaustKeys(player.id);
+
+    expect(admission.mayEnter(player, agentCashHunt(), 'agent')).toMatchObject({
+      ok: false,
+      code: 'no_keys_left',
+    });
+  });
+
+  it('applies the wallet-age check on an agent zone', () => {
+    // A burner agent wallet is exactly as cheap as a burner human one.
+    const fresh = makePlayer('0xagent4');
+    expect(admission.mayEnter(fresh, agentCashHunt(), 'agent')).toMatchObject({
+      ok: false,
+      code: 'wallet_too_new',
+    });
+  });
+
+  it('still lets anyone into an agent PUZZLE hunt', () => {
+    // None of the above is about XP.
+    const zone = store.listZones().find(z => z.kind === 'agent')!;
+    const puzzle = store.getHunt(store.liveHuntsIn(zone).find(h => h.kind === 'puzzle')!.id)!;
+    expect(admission.mayEnter(makePlayer('0xagent5'), puzzle, 'agent').ok).toBe(true);
   });
 });
 

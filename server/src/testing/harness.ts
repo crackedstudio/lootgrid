@@ -121,4 +121,24 @@ export function makeVeteran(id: string, handle = `@${id}`) {
   return player;
 }
 
+/**
+ * An account old enough to enter a cash hunt, with no prospecting history.
+ *
+ * Exactly the shape of an agent's owner: agent zones exempt the RANK check —
+ * rank comes from digging fog and agents do not dig — but they are still
+ * subject to wallet age and the key cap, because a burner agent wallet is as
+ * cheap as a burner human one.
+ *
+ * Distinct from {@link makeVeteran}, which also grants resolved hints. Use that
+ * for human zones and this for agent ones, so a test that accidentally relies
+ * on rank on an agent zone fails rather than passing for the wrong reason.
+ */
+export function makeAgedPlayer(id: string, handle = `@${id}`) {
+  const player = makePlayer(id, handle);
+  const born = Date.now() - 30 * DAY_MS;
+  getDb().prepare('UPDATE players SET created_at = ? WHERE id = ?').run(born, id);
+  player.createdAt = born;
+  return player;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
