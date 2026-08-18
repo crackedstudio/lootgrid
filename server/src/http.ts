@@ -702,15 +702,6 @@ export function registerRoutes(app: App): void {
     };
   });
 
-  /**
-   * The five numbers, in one place.
-   *
-   * Prometheus carries all of these and is the right home for graphing them,
-   * but a funnel nobody can read without a Grafana login is a funnel nobody
-   * reads. This is the version you can curl during a playtest.
-   */
-  app.get('/audit/funnel', async () => funnel.report());
-
   // ---- shop ----
 
   /**
@@ -1336,6 +1327,22 @@ export function registerRoutes(app: App): void {
     if (!env.METRICS_TOKEN) throw notFound('not_found');
     if (req.headers.authorization !== `Bearer ${env.METRICS_TOKEN}`) throw notFound('not_found');
   };
+
+  /**
+   * The five funnel numbers, in one place.
+   *
+   * Prometheus carries all of these and is the right home for graphing them,
+   * but a funnel nobody can read without a Grafana login is a funnel nobody
+   * reads. This is the version you can curl during a playtest.
+   *
+   * Under /debug and behind the metrics token, NOT under /audit. That prefix
+   * means something specific in this server — hint sets, zone seeds and
+   * Director transcripts are published there precisely so a player can check
+   * our honesty without asking us. Conversion rate and retention are the
+   * opposite: our numbers, about them. Filing them beside the audit trail
+   * would have served a competitor our funnel on an open endpoint.
+   */
+  app.get('/debug/funnel', { preHandler: debugGuard }, async () => funnel.report());
 
   app.get('/debug/attempts/:id', { preHandler: debugGuard }, async req => {
     const { id } = parse(idParams, req.params);

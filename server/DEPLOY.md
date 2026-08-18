@@ -25,20 +25,117 @@ has to exist before `AUTH_MODE=chain` will work.
 
 ```bash
 cd contracts
-forge install foundry-rs/forge-std --no-git   # first time only
-forge test                                     # 10 tests should pass
+forge install foundry-rs/forge-std --no-git                                   # first time only
+git clone --depth 1 -b v5.7.0 https://github.com/OpenZeppelin/openzeppelin-contracts.git lib/openzeppelin-contracts
+git clone --depth 1 -b v5.7.0 https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable.git lib/openzeppelin-contracts-upgradeable
+forge test                                                                    # 41 tests should pass
 
-forge script script/Deploy.s.sol \
+REGISTRY_OWNER=0xYourMultisig forge script script/Deploy.s.sol \
   --rpc-url $CELO_SEPOLIA_RPC_URL \
   --private-key $DEPLOYER_KEY \
   --broadcast --verify
 ```
 
-Note the deployed address — it goes in `PLAYER_REGISTRY_ADDRESS`.
+The script prints two addresses. **`PLAYER_REGISTRY_ADDRESS` is the proxy**, not
+the implementation — the implementation changes on every upgrade.
 
-The contract holds no funds, has no owner and no upgrade path, so the deployer
-key has no lasting authority and losing it costs you nothing. Deploy to Celo
-Sepolia first; use the same command with the mainnet RPC when you go live.
+> 🔑 **`REGISTRY_OWNER` must be a multisig.**
+>
+> The registry is UUPS-upgradeable, which makes the owner the highest-value key
+> in the system — higher than the escrow's game signer. It holds no funds, but it
+> holds *authentication authority*: an implementation where `isBound` returns
+> true unconditionally impersonates every player at once. The escrow signer, by
+> contrast, can only ever move escrowed prizes.
+>
+> Two things bound that risk, and neither replaces a multisig:
+> - Upgrades are **timelocked 48 hours**. They must be proposed first, emit
+>   `UpgradeProposed`, and cannot execute early. The delay does not let players
+>   exit — there is nothing to exit — it buys time to *notice*.
+> - Ownership transfer is two-step, so the seat cannot go to a typo.
+>
+> **Monitor `UpgradeProposed` and alert on it.** An unexpected proposal is the
+> only warning you get, and the timelock is worthless if nobody is watching.
+
+The deployer key itself has no lasting authority — ownership is assigned to
+`REGISTRY_OWNER` during construction. Deploy to Celo Sepolia first; use the same
+command with the mainnet RPC when you go live.
+
+### Upgrading later
+
+```bash
+# 1. propose. Starts the 48h clock and emits UpgradeProposed(impl, codehash, payloadHash, eta).
+#    The implementation must already hold code — its codehash is pinned now, so
+#    the bytecode reviewed during the window is the bytecode that executes.
+#    Pass the migration calldata (or 0x for none); its hash is pinned too.
+cast send $PROXY "proposeUpgrade(address,bytes)" $NEW_IMPL 0x --private-key $OWNER_KEY --rpc-url $RPC
+
+# 2. watch. 0 means ARMED NOW; type(uint64).max means idle or expired.
+cast call $PROXY "upgradeReadyIn()(uint64)" --rpc-url $RPC
+cast call $PROXY "pendingUpgrade()(address,bytes32,uint64,bool)" --rpc-url $RPC
+
+# 3. execute, after UPGRADE_DELAY and within UPGRADE_GRACE (7 days).
+#    The payload must byte-match what was proposed.
+cast send $PROXY "upgradeToAndCall(address,bytes)" $NEW_IMPL 0x --private-key $OWNER_KEY --rpc-url $RPC
+
+# abandon instead
+cast send $PROXY "cancelUpgrade()" --private-key $OWNER_KEY --rpc-url $RPC
+```
+
+**A proposal expires.** Past `UPGRADE_DELAY + UPGRADE_GRACE` it reverts
+`UpgradeExpired` and must be re-proposed — which emits a fresh `UpgradeProposed`.
+That is deliberate: without it a matured proposal is a permanently armed
+zero-delay upgrade whose only public warning fired arbitrarily long ago.
+
+**A pending proposal is cancelled by an ownership transfer**, so an outgoing
+owner cannot arm one and hand the seat over.
+
+**`renounceOwnership()` reverts.** Renouncing would permanently remove the
+ability to patch the system's sole authentication authority — strictly worse
+than a bad upgrade, which a later upgrade can undo.
+
+Storage is append-only: never reorder or remove existing variables, and take new
+slots from the `__gap`. Verify with:
+
+```bash
+forge inspect PlayerRegistry storage      # slots 0-2 must never move
+```
+
+`test_upgrade_succeedsAfterDelayAndPreservesStorage` covers the layout with a V2
+that declares a real storage variable, but it cannot catch every reordering —
+diff the `forge inspect` output before and after any storage change.
+
+---
+
+## 1b. Deploy LootGridActions (optional)
+
+Only if you want gameplay published on chain. Skip it and the game is unchanged —
+the chain records nothing the server does not already own.
+
+```bash
+cd contracts
+ACTIONS_OWNER=0xYourMultisig \
+ACTIONS_RELAYER=0xHotWalletAddress \
+forge script script/DeployActions.s.sol \
+  --rpc-url $CELO_RPC_URL --private-key $DEPLOYER_KEY --broadcast --verify
+```
+
+No proxy, on purpose: it holds no funds and no state, so a redeploy is cheaper and
+safer than carrying an upgrade key.
+
+Two keys, and they must be different:
+
+| Key | Where it lives | If it leaks |
+| --- | --- | --- |
+| `ACTIONS_RELAYER` | `RELAY_PRIVATE_KEY` on the VPS | Attacker writes false game logs. Rotate with `setRelayer` — one transaction, immediate. |
+| `ACTIONS_OWNER` | Cold / multisig | Attacker re-points the relayer. Still cannot touch funds or identity. |
+
+**Never reuse `REGISTRY_OWNER` here.** That key can impersonate every player; this
+one writes log lines. Keeping them apart is what makes the relayer key
+cheap to lose.
+
+Fund the relayer with a small CELO float and monitor it — an unfunded relayer
+does not break the game, it just stops recording (rows pile up as `pending`,
+then `dead`).
 
 ---
 
@@ -152,6 +249,20 @@ Worth alerting on:
 | `lootgrid_winner_elapsed_ms` | Distribution shifting down sharply is a cheating signal. |
 | `lootgrid_ws_connections` | Growth with no players means sockets aren't being reaped. |
 | `lootgrid_http_request_duration_seconds` | SQLite is synchronous; a slow disk shows up here first. |
+| `lootgrid_relay_dead_total` | **The relay alert.** A dead row is a game event that will never reach the chain. Non-zero means investigate; `last_error` in `relay_queue` says why. |
+| `lootgrid_relay_queue_depth{status="pending"}` | Sustained growth means the relayer cannot keep up with play — raise `RELAY_MAX_IN_FLIGHT`. (`RELAY_BATCH_SIZE` no longer exists — batching went out with the reveal relay, so the relay now sends one transaction per action always.) |
+
+If the relay is enabled, inspect stuck work directly:
+
+```bash
+sqlite3 /data/lootgrid.db \
+  "SELECT kind, status, attempts, substr(last_error,1,80) FROM relay_queue
+    WHERE status IN ('dead','pending') ORDER BY id DESC LIMIT 20;"
+```
+
+A relay outage is never a gameplay outage — `enqueue` is fire-and-forget by
+design. Treat a growing queue as a billing and verifiability problem, not an
+incident.
 
 The `/debug/attempts/:id` endpoint returns per-attempt interval distributions and
 σ. In production it's gated behind `METRICS_TOKEN` and returns 404 without it —
@@ -172,9 +283,38 @@ distributions from `/debug/attempts/:id` and adjust:
 
 ---
 
+## 6b. Secrets
+
+Four secrets can move money or impersonate people. None belongs in a `.env` on
+the box, and all four should be rotatable without a code change.
+
+| Secret | What it is | Blast radius if it leaks |
+| --- | --- | --- |
+| `ESCROW_TREASURY_PRIVATE_KEY` | The float that funds prize pots | **Everything in the treasury.** Nothing in the contract bounds this — keep the balance small and top it up on a schedule |
+| `AGENT_MASTER_KEY` | Derives every house-run agent's key | Every hosted agent's spending rights at once — bounded per player by the vault's `perTxCap` / `perDayCap` / allowlist, and stoppable by the owner's `kill()` |
+| `DEEPSEEK_API_KEY` | Buys inference on the house account | A balance someone else can spend. Not player data — but under a paid agent tier it is revenue |
+| `METRICS_TOKEN` | Gates `/metrics` and `/debug/*` | Attempt timings, queue depth, and the funnel (conversion, retention) |
+
+Ordering note: the escrow treasury and the agent master key are the two the
+codebase itself calls out as the most dangerous on the box. Treat
+`DEEPSEEK_API_KEY` as third rather than as an API key, because it is attached to
+a balance.
+
+**Rotation.** `AGENT_MASTER_KEY` rotates by re-binding, which every player must
+then approve, because binding is their transaction — so plan it, do not do it
+under incident pressure.
+
+---
+
 ## 7. Security checklist
 
 - [ ] `AUTH_MODE=chain` (the server refuses `dev` in production)
+- [ ] The four secrets in §6b are injected, not written to disk
+- [ ] `/debug/funnel` returns 404 without the metrics token — it carries
+      conversion rate and retention, and lives under `/debug` rather than
+      `/audit` for that reason
+- [ ] `/audit/*` **is** meant to be public: hint sets, zone seeds and Director
+      transcripts are published so players can check our honesty
 - [ ] `CORS_ORIGINS` set to explicit origins
 - [ ] `METRICS_TOKEN` set and non-trivial
 - [ ] App reachable **only** via Caddy — compose uses `expose`, not `ports`, so

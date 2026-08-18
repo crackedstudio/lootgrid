@@ -153,6 +153,29 @@ describe('map secrecy', () => {
     expect(res.statusCode).toBeGreaterThanOrEqual(400);
   });
 
+  /**
+   * `/audit/*` is the honesty trail and is deliberately public — hint sets,
+   * zone seeds and Director transcripts are published there precisely so a
+   * player can check us without asking.
+   *
+   * The funnel is the opposite: our numbers about them. Conversion rate and
+   * retention on an open endpoint is a competitor's homework. It lives under
+   * /debug behind the metrics token, and this asserts it has not drifted back.
+   */
+  it('does not serve the funnel from the public audit prefix', async () => {
+    const res = await app.inject({ method: 'GET', url: '/audit/funnel' });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('keeps conversion and retention out of every public payload', async () => {
+    for (const path of ['/zones', '/audit/zones/ridge', '/market/stats']) {
+      const body = (await app.inject({ method: 'GET', url: path })).body;
+      for (const leak of ['payingRatio', 'payingPlayers', 'retention']) {
+        expect(body, `${path} leaked ${leak}`).not.toContain(leak);
+      }
+    }
+  });
+
   it('never serves a live hunt salt', async () => {
     const salts = store
       .listZones()
