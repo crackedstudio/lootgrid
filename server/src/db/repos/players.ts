@@ -13,6 +13,7 @@ interface Row {
   trust_score: number;
   shadow_banned: number;
   xp: number;
+  tutorial_step: number;
   created_at: number;
   last_seen_at: number;
 }
@@ -28,6 +29,7 @@ const toDomain = (r: Row): Player => ({
   trustScore: r.trust_score,
   shadowBanned: r.shadow_banned === 1,
   xp: r.xp,
+  tutorialStep: r.tutorial_step,
   createdAt: r.created_at,
 });
 
@@ -56,6 +58,12 @@ function build() {
     // together cannot lose one. XP is cheap, but silently dropping a reward the
     // player watched themselves earn is not.
     addXp: db.prepare('UPDATE players SET xp = xp + ? WHERE id = ?'),
+    // MAX, so this is a high-water mark rather than an assignment. Two advances
+    // arriving out of order — a survey ack racing the dig that preceded it —
+    // cannot walk the walkthrough backwards onto a step already taught.
+    setTutorialStep: db.prepare(
+      'UPDATE players SET tutorial_step = MAX(tutorial_step, ?) WHERE id = ?',
+    ),
   };
 }
 const s = () => (cache ??= build());
@@ -115,6 +123,10 @@ export function touch(id: string, now = Date.now()): void {
 export function addXp(id: string, amount: number): void {
   if (amount <= 0) return;
   s().addXp.run(amount, id);
+}
+
+export function setTutorialStep(id: string, step: number): void {
+  s().setTutorialStep.run(step, id);
 }
 
 export function setPass(id: string, until: number | null): void {

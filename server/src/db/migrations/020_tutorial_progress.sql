@@ -1,0 +1,29 @@
+-- How far through the walkthrough a player has got.
+--
+-- ─────────────────────────── why this needs storing at all ──────────────────
+--
+-- The first walkthrough inferred its position from the map: step 1 was done
+-- once the start cell was revealed, and everything after that was step 3.
+--
+--   const index = !hasRevealed(start.r, start.c) ? 0 : 2;
+--
+-- That expression can never return 1, so the Survey step — the one teaching the
+-- mechanic the whole game is built on — was unreachable from the day it was
+-- written. It could not have been otherwise: surveys leave no mark on the map
+-- and are not persisted anywhere, so a position derived from reveals has no way
+-- to see one happen.
+--
+-- The lesson generalises. A walkthrough that teaches N things needs to know
+-- which of the N have been done, and only some of them are visible in the
+-- world. Reading a hint, taking a survey, understanding what a key is — none of
+-- those leave a tile behind. So the position is recorded rather than inferred.
+--
+-- ─────────────────────────── a high-water mark, not a cursor ────────────────
+--
+-- One integer, moved forward only, never backwards. That makes every advance
+-- idempotent: a client that fires the same step twice, a retried request, or a
+-- player who digs the tutorial cell again all land on the same number. There is
+-- no "go back and re-teach" path and there should not be — the reference in
+-- HOW TO PLAY is the thing you return to, not the coach marks.
+
+ALTER TABLE players ADD COLUMN tutorial_step INTEGER NOT NULL DEFAULT 0;

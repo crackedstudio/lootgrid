@@ -5,6 +5,7 @@ import type { App } from './appTypes';
 import { GRID, TUTORIAL } from './config';
 import { tileType } from './grid';
 import { registerRoutes } from './http';
+import * as hints from './hints';
 import * as referee from './referee';
 import * as store from './store';
 import * as tutorial from './tutorial';
@@ -43,6 +44,16 @@ const gridFor = (who: string) =>
     .inject({ method: 'GET', url: '/zones/ridge/grid', headers: { 'x-player': who } })
     .then(r => r.json());
 
+const post = (who: string, url: string) =>
+  app.inject({ method: 'POST', url, headers: { 'x-player': who } });
+
+const dig = (who: string, r: number, c: number) =>
+  post(who, `/zones/ridge/tiles/${r}/${c}/open`);
+const survey = (who: string, r: number, c: number) =>
+  post(who, `/zones/ridge/survey/${r}/${c}`);
+const enter = (who: string, huntId: string) => post(who, `/hunts/${huntId}/attempts`);
+const ack = (who: string) => post(who, '/zones/ridge/tutorial/ack');
+
 describe('the treasure is placed, not found', () => {
   it('reserves one within reach of where the player is told to start', async () => {
     const g = await gridFor(NEWBIE);
@@ -70,9 +81,49 @@ describe('the treasure is placed, not found', () => {
     const zone = store.getZone('ridge')!;
     const hunt = tutorial.ensureHunt(makePlayer(NEWBIE), zone)!;
     expect(hunt.difficulty).toBe('easy');
-    // Never The Crack: that is the cash game, and a tutorial must not teach a
-    // mechanic the player is two days away from being allowed to use.
-    expect(store.blockGame(hunt).type).not.toBe('crack');
+  });
+
+  it('plays The Crack, even though it is a puzzle hunt', () => {
+    // This assertion is the reverse of what it used to be, and the reversal is
+    // deliberate.
+    //
+    // The old rule was "never The Crack — a tutorial must not teach a mechanic
+    // the player is two days away from being allowed to use." The cost of that
+    // rule is larger than the thing it was protecting against: a puzzle hunt
+    // draws one of the four reflex games, which have decided nothing since
+    // phase 4, so the walkthrough spent its one guaranteed find teaching a
+    // tapping race that never comes back — immediately after teaching hints,
+    // which it then never connected to anything.
+    //
+    // The Crack is where hints become the win. Showing it once, on an XP hunt,
+    // is also the clearest possible statement of what the two-day wait is FOR.
+    // A player who has seen the doors knows what they are waiting for; one who
+    // has not is just waiting.
+    const zone = store.getZone('ridge')!;
+    const hunt = tutorial.ensureHunt(makePlayer(NEWBIE), zone)!;
+    expect(store.blockGame(hunt).type).toBe('crack');
+  });
+
+  it('hands out a TRUE hint on the first dig', async () => {
+    // Found on the first end-to-end run: the tutorial's hint was a SHARP one,
+    // the tier roll made it false, and at The Crack all six doors read RULED
+    // OUT. The one hunt a new player cannot lose demonstrated deduction
+    // failing, with nothing else in their inventory to check it against.
+    await gridFor(NEWBIE);
+    const zone = store.getZone('ridge')!;
+    const start = tutorial.startCell(makePlayer(NEWBIE), zone);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/zones/ridge/tiles/${start.r}/${start.c}/open`,
+      headers: { 'x-player': NEWBIE },
+    });
+    const hint = res.json().hint;
+    expect(hint).toBeTruthy();
+
+    // The published honesty numbers are untouched: the hint comes from the
+    // hunt's already-committed set, so this chose one rather than inventing it.
+    const set = store.getHunt(hint.huntId) ? hints.forHunt(store.getHunt(hint.huntId)!) : [];
+    expect(set.find(h => h.id === hint.id)?.isTrue).toBe(true);
   });
 
   it('commits its hint set like any other hunt', () => {
@@ -163,28 +214,86 @@ describe('the script only promises what the board delivers', () => {
     expect(before.index).toBe(0);
     expect(before.step.action).toBe('dig');
 
-    await app.inject({
-      method: 'POST',
-      url: `/zones/ridge/tiles/${before.step.r}/${before.step.c}/open`,
-      headers: { 'x-player': NEWBIE },
-    });
+    await dig(NEWBIE, before.step.r, before.step.c);
 
     const after = (await gridFor(NEWBIE)).tutorial;
-    expect(after.index).toBeGreaterThan(before.index);
-    expect(after.step.action).toBe('enter');
+    expect(after.index).toBe(1);
+    // The hint the dig just paid, which is the step that used to be skipped.
+    expect(after.step.id).toBe('hint');
   });
 
-  it('points the last step at the placed treasure', async () => {
+  it('does not advance on a dig somewhere else', async () => {
+    // Otherwise the script marches on while the player wanders, and every coach
+    // mark after that describes an action they never took.
+    const before = (await gridFor(NEWBIE)).tutorial;
+    await dig(NEWBIE, (before.step.r + 20) % 60, (before.step.c + 20) % 60);
+    expect((await gridFor(NEWBIE)).tutorial.index).toBe(before.index);
+  });
+
+  it('reaches every step, and the survey step is one of them', async () => {
+    // The bug this is here for: the old position was derived from the map with
+    // `!hasRevealed(start) ? 0 : 2`, an expression that cannot return 1. The
+    // Survey step — the mechanic the whole game is built on — was unreachable
+    // from the day it was written, and no test noticed because none of them
+    // asked for the whole sequence.
+    const seen: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const t = (await gridFor(NEWBIE)).tutorial;
+      if (!t.step) break;
+      seen.push(t.step.id);
+
+      if (t.step.action === 'dig') await dig(NEWBIE, t.step.r, t.step.c);
+      else if (t.step.action === 'survey') await survey(NEWBIE, t.step.r, t.step.c);
+      else if (t.step.action === 'enter') await enter(NEWBIE, t.huntId);
+      else await ack(NEWBIE);
+    }
+
+    expect(seen).toEqual([
+      // `race` before `enter`, and the order is load-bearing. It ran the other
+      // way first, on the reasoning that an explanation belongs beside the thing
+      // it explains — which put a four-line paragraph in front of a player with
+      // The Crack's fifteen-second clock already running behind it. The first
+      // scripted run of the walkthrough timed out reading its own last card.
+      'dig', 'hint', 'survey', 'reading', 'find', 'energy', 'race', 'enter',
+    ]);
+    expect((await gridFor(NEWBIE)).tutorial.done).toBe(true);
+  });
+
+  it('points the find step at the placed treasure', async () => {
     const g = await gridFor(NEWBIE);
-    await app.inject({
-      method: 'POST',
-      url: `/zones/ridge/tiles/${g.tutorial.step.r}/${g.tutorial.step.c}/open`,
-      headers: { 'x-player': NEWBIE },
-    });
+    await dig(NEWBIE, g.tutorial.step.r, g.tutorial.step.c);
+    await ack(NEWBIE);
+    const t = (await gridFor(NEWBIE)).tutorial;
+    await survey(NEWBIE, t.step.r, t.step.c);
+    await ack(NEWBIE);
 
     const after = (await gridFor(NEWBIE)).tutorial;
     const hunt = store.getHunt(after.huntId)!;
+    expect(after.step.id).toBe('find');
     expect({ r: after.step.r, c: after.step.c }).toEqual({ r: hunt.r, c: hunt.c });
+  });
+
+  it('lets you dig your own reserved treasure instead of 409ing', async () => {
+    // The walkthrough says "both of them point here, dig it". Before this, that
+    // tap answered `is_hunt` — "open this one from the hunt sheet" — because the
+    // handler only treated an UNOWNED treasure as a find. An instruction that
+    // errors is worse than no instruction.
+    const zone = store.getZone('ridge')!;
+    const hunt = tutorial.ensureHunt(makePlayer(NEWBIE), zone)!;
+    const res = await dig(NEWBIE, hunt.r, hunt.c);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().found).toBe(true);
+  });
+
+  it('an ack cannot skip a step that needs a real action', async () => {
+    // The client says THAT it acknowledged; the server decides whether the
+    // current step was one that could be. Otherwise a replayed ack walks
+    // straight past the digging.
+    const before = (await gridFor(NEWBIE)).tutorial;
+    expect(before.step.action).toBe('dig');
+    await ack(NEWBIE);
+    await ack(NEWBIE);
+    expect((await gridFor(NEWBIE)).tutorial.index).toBe(before.index);
   });
 });
 

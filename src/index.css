@@ -10,22 +10,36 @@ html, body {
   padding: 0;
 }
 
+/*
+  On a phone the app *is* the page: no padding, no centring, no dotted backdrop
+  to peek around the edges of, and no scrolling the document itself. The
+  desktop branch below puts all of that back, because there the app is a phone
+  mock sitting on a desk.
+*/
 body {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
+  min-height: 100dvh;
   font-family: 'Space Grotesk', sans-serif;
   background: #16140F;
-  background-image: radial-gradient(circle, rgba(245,239,227,.05) 1px, transparent 1px);
-  background-size: 22px 22px;
-  padding: 28px;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
-#root {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+@media (min-width: 900px) {
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-image: radial-gradient(circle, rgba(245,239,227,.05) 1px, transparent 1px);
+    background-size: 22px 22px;
+    padding: 28px;
+    overflow: auto;
+  }
+
+  #root {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
 }
 
 /* ---- LOOTGRID surface themes ---- */
@@ -91,4 +105,162 @@ body {
 @keyframes lg-blink2 {
   0%, 92%, 100% { transform: scaleY(1); }
   96%            { transform: scaleY(.1); }
+}
+
+/*
+  The walkthrough's "look here" for a HUD element rather than a tile.
+
+  A tile gets a pointer ring drawn on it; energy, keys, the hints drawer and
+  the survey toggle are chrome and cannot carry one, so they pulse instead.
+  Deliberately slow and low-contrast — this runs while the player is reading a
+  sentence, and something flashing hard next to text is a thing you look away
+  from.
+*/
+@keyframes lg-flash {
+  0%, 100% { filter: none; transform: none; }
+  50%      { filter: brightness(1.35); transform: scale(1.06); }
+}
+.lg-flash { animation: lg-flash 1.4s ease-in-out infinite; }
+
+/*
+  ─────────────────────── restored from LOOTGRID.dc.html ───────────────────────
+
+  These three were in the design and were lost on the way into React. They are
+  not decoration: they are the entire tactile layer of a dig.
+
+  `lg-thwack` fires only on a tile opened *this session* (see runtimeOpened) —
+  a reveal that replays its entrance on every re-render reads as a glitch.
+  `lg-dust` is the puff under a character who is digging.
+  `lg-costfloat` already existed here but was never wired to anything.
+*/
+@keyframes lg-thwack {
+  0%   { transform: scale(.62); }
+  55%  { transform: scale(1.14); }
+  100% { transform: scale(1); }
+}
+@keyframes lg-dust {
+  0%   { transform: translateY(0) scale(1); opacity: .55; }
+  100% { transform: translateY(-9px) scale(.2); opacity: 0; }
+}
+@keyframes lg-winpop {
+  0%, 66% { transform: scale(0); opacity: 0; }
+  74%     { transform: scale(1.18); opacity: 1; }
+  86%     { transform: scale(1); opacity: 1; }
+  100%    { transform: scale(.65) translateY(-12px); opacity: 0; }
+}
+
+/*
+  Press feedback. Every tappable surface in the shipped build was a div with
+  `cursor: pointer` and no active state, so a tap produced nothing at all until
+  the server answered — 400ms+ of dead air on the connections this targets.
+
+  `:active` costs nothing and fires on touch-down, before any network.
+*/
+.lg-press { transition: transform .07s ease-out, box-shadow .07s ease-out; }
+.lg-press:active { transform: scale(.92); }
+
+/*
+  "Look here" for a tile the walkthrough is pointing at.
+
+  ─────────────────────────── why a ring and not a tint ───────────────────────
+
+  The overview draws 3,600 cells across ~370px, so a cell is about six pixels
+  and a 2px outline on one of them is not findable — it was there for two
+  phases and reads as a rendering artefact. Nothing drawn INSIDE a six-pixel
+  box can be seen against 3,599 others.
+
+  So the beacon is drawn over the grid rather than in a cell, and it is
+  deliberately much larger than the thing it marks: two rings expanding out of
+  the target, which the eye catches from motion rather than from colour. The
+  cell underneath stays visible in the hole at the centre.
+*/
+@keyframes lg-beacon {
+  0%   { transform: translate(-50%, -50%) scale(.35); opacity: 1; }
+  70%  { opacity: .35; }
+  100% { transform: translate(-50%, -50%) scale(1.6);  opacity: 0; }
+}
+.lg-beacon {
+  position: absolute;
+  width: 64px;
+  height: 64px;
+  border: 3px solid #2CE66A;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: lg-beacon 1.5s ease-out infinite;
+}
+/* The second ring is the same animation half a beat behind, which is what makes
+   it read as a pulse travelling outward rather than as a thing throbbing. */
+.lg-beacon-2 { animation-delay: .75s; }
+
+/* The dot that survives the pulse, so the target is still findable at the
+   moment a ring has faded and the next has not started. */
+@keyframes lg-beacon-core {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .45; }
+}
+.lg-beacon-core {
+  position: absolute;
+  width: 13px;
+  height: 13px;
+  border: 3px solid #0C0C10;
+  background: #2CE66A;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  animation: lg-beacon-core 1.5s ease-in-out infinite;
+}
+
+/*
+  The dig view's tile is 54px, so the border is legible there — what it lacks
+  is any reason for the eye to go to it. A pulse supplies that without moving
+  the tile, which would shift its neighbours on a grid this dense.
+
+  ─────────────────────────── on its own element, not the tile ────────────────
+
+  The first version animated `box-shadow` on the tile itself, and a CSS
+  animation outranks an inline style — so the marked tile lost the offset drop
+  shadow every other tile on the board has, and read as sunk into the page. The
+  ring is its own absolutely-positioned child instead, which composes with
+  whatever the tile is already doing: the drop shadow, the dig press, the hunt
+  bob.
+*/
+@keyframes lg-tilepulse {
+  0%   { box-shadow: 0 0 0 0 rgba(44, 230, 106, .9); }
+  100% { box-shadow: 0 0 0 10px rgba(44, 230, 106, 0); }
+}
+.lg-tilepulse {
+  position: absolute;
+  inset: -3px;
+  pointer-events: none;
+  animation: lg-tilepulse 1.4s ease-out infinite;
+}
+
+/*
+  ─────────────────────────── the app frame ───────────────────────────
+
+  Mobile first and mobile literally: fill the viewport. `dvh` rather than `vh`
+  so that the Android URL bar collapsing does not push the nav bar off the
+  bottom, and safe-area padding so a notch or a gesture bar does not sit on top
+  of the controls.
+
+  Above 900px there is no phone to fit and a full-bleed board looks broken, so
+  the desktop branch restores the design's phone mock — including the border and
+  offset shadow, which is the one place they were ever meant to be.
+*/
+.lg-frame {
+  width: 100dvw;
+  height: 100dvh;
+  padding-top: env(safe-area-inset-top, 0);
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  padding-left: env(safe-area-inset-left, 0);
+  padding-right: env(safe-area-inset-right, 0);
+}
+
+@media (min-width: 900px) {
+  .lg-frame {
+    width: 390px;
+    height: 844px;
+    padding: 0;
+    border: 4px solid #0C0C10;
+    box-shadow: 16px 16px 0 #0C0C10;
+  }
 }

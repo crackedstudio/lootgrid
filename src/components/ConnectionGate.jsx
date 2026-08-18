@@ -41,7 +41,7 @@ export default function ConnectionGate({ fatal, status }) {
       {fatal && (
         <>
           <div style={{
-            fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700,
+            fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700,
             letterSpacing: '.12em', color: '#FF3D3D', border: '2px solid #FF3D3D',
             padding: '6px 10px', marginTop: 4,
           }}>
@@ -61,7 +61,7 @@ export default function ConnectionGate({ fatal, status }) {
           </div>
 
           <div style={{
-            fontFamily: "'Space Mono', monospace", fontSize: 9, color: 'var(--cream)',
+            fontFamily: "'Space Mono', monospace", fontSize: 11, color: 'var(--cream)',
             opacity: .4, marginTop: 8, textAlign: 'center', lineHeight: 1.6,
           }}>
             start the referee with:<br />cd server && npm run dev

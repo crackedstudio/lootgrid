@@ -129,7 +129,7 @@ function PrizeClaim({ huntId }) {
 
       {owed > 0n && waiting > 0 && (
         <div style={{
-          marginTop: 8, width: 300, fontFamily: "'Space Mono', monospace", fontSize: 9,
+          marginTop: 8, width: 300, fontFamily: "'Space Mono', monospace", fontSize: 11,
           lineHeight: 1.5, color: 'var(--cream)', opacity: .55, textAlign: 'center',
         }}>
           CLAIMED. THE ESCROW HOLDS IT FOR A SHORT WINDOW BEFORE IT CAN BE MOVED.
@@ -138,7 +138,7 @@ function PrizeClaim({ huntId }) {
 
       {error && (
         <div style={{
-          marginTop: 8, width: 300, fontFamily: "'Space Mono', monospace", fontSize: 9,
+          marginTop: 8, width: 300, fontFamily: "'Space Mono', monospace", fontSize: 11,
           fontWeight: 700, color: '#FF3D3D', textAlign: 'center',
         }}>{error}</div>
       )}
@@ -163,7 +163,7 @@ export default function WinScreen({ state, onShare, onBackToMap, onShowTranscrip
           <Mascot color="#FFD51F" mole size={62} />
         </div>
 
-        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.18em', color: '#FFD51F', marginBottom: 10 }}>
+        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.18em', color: '#FFD51F', marginBottom: 10 }}>
           FIRST TO CRACK IT
         </div>
 
@@ -173,7 +173,7 @@ export default function WinScreen({ state, onShare, onBackToMap, onShowTranscrip
           padding: '20px 26px 24px', width: 300,
           animation: 'lg-pop .42s ease-out both',
         }}>
-          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.14em', color: '#0C0C10', opacity: .55 }}>
+          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.14em', color: '#0C0C10', opacity: .55 }}>
             YOU WON
           </div>
           <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 44, lineHeight: 1, color: '#0C0C10', marginTop: 4, marginBottom: 16 }}>
@@ -186,20 +186,20 @@ export default function WinScreen({ state, onShare, onBackToMap, onShowTranscrip
               <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 15, color: '#0C0C10' }}>
                 {(winData.elapsedMs / 1000).toFixed(2)}s
               </div>
-              <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, color: '#0C0C10', opacity: .5, marginTop: 4 }}>YOUR TIME</div>
+              <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, color: '#0C0C10', opacity: .5, marginTop: 4 }}>YOUR TIME</div>
             </div>
             <div style={{ flex: 1, border: '2px solid #0C0C10', padding: '10px 12px' }}>
               <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 15, color: '#0C0C10' }}>
                 {winData.beat} rival{winData.beat === 1 ? '' : 's'}
               </div>
-              <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, color: '#0C0C10', opacity: .5, marginTop: 4 }}>YOU BEAT</div>
+              <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, color: '#0C0C10', opacity: .5, marginTop: 4 }}>YOU BEAT</div>
             </div>
           </div>
 
           {/* The salt reveal: proof the block was where the server committed it,
               rather than moved to wherever a favoured player happened to dig. */}
           {winData.reveal && (
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, color: '#0C0C10', opacity: .45, lineHeight: 1.5 }}>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: '#0C0C10', opacity: .45, lineHeight: 1.5 }}>
               VERIFIED r{winData.reveal.r},c{winData.reveal.c}<br />
               SALT {String(winData.reveal.salt).slice(0, 16)}…
             </div>
@@ -225,7 +225,7 @@ export default function WinScreen({ state, onShare, onBackToMap, onShowTranscrip
           <div
             onClick={onShowTranscript}
             style={{
-              marginTop: 12, fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700,
+              marginTop: 12, fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700,
               color: 'var(--cream)', opacity: .6, cursor: 'pointer', letterSpacing: '.08em',
               textDecoration: 'underline',
             }}

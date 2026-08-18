@@ -37,6 +37,16 @@ const INITIAL = {
   surveyMode: false,
   /** Total XP. Paid by puzzle tiles and by the treasures that carry no cash. */
   xp: 0,
+  /**
+   * Entries left today, and standing.
+   *
+   * `/me` has returned both since phase 5 — "the two currencies, side by side
+   * on purpose" — and the client stored neither, so the one boundary the whole
+   * design rests on (money buys looking, never a chance at a prize) was
+   * invisible to the only person it is meant to reassure.
+   */
+  keys: null,
+  rank: null,
 
   // session
   status: 'connecting', // connecting | online | offline
@@ -68,12 +78,39 @@ const INITIAL = {
   /** Hunt id whose Director transcript is open, or null. */
   transcriptFor: null,
 
-  boardTab: 'daily',
   showToast: false,
   toastText: '',
+
+  /**
+   * Energy-cost numbers floating off the tile that was just tapped, and the
+   * set of cells uncovered during this session.
+   *
+   * Both exist to answer the same question — *did my tap register?* — which
+   * the shipped build could not answer for as long as the round-trip took.
+   * `digging` holds the cells with a request in flight, so the board can show
+   * the dig starting rather than waiting for permission to have started.
+   */
+  floats: [],
+  justOpened: {},
+  digging: {},
 };
 
 const cellKey = (r, c) => `${r},${c}`;
+
+/**
+ * A short buzz, where the device supports one.
+ *
+ * Guarded rather than assumed: `vibrate` is absent on iOS Safari and can be
+ * blocked by a user gesture policy, and a missing haptic must never be the
+ * reason an action fails.
+ */
+function buzz(pattern) {
+  try {
+    navigator.vibrate?.(pattern);
+  } catch {
+    /* haptics are a nicety; never let one break a dig */
+  }
+}
 
 /** Fresh render state for whichever game the block handed us. */
 function initGame(gameType, spec, huntId) {
@@ -131,6 +168,23 @@ export function useGameState() {
     [set],
   );
 
+  /**
+   * Throw a `−N ⚡` off a tile, the design's `spendFloat`.
+   *
+   * Fired on touch, not on response. If the server later refuses the dig the
+   * float has already gone; that is the right trade, because the alternative
+   * is showing nothing at all for the length of a round-trip and a refused dig
+   * is rare next to a slow one.
+   */
+  const spendFloat = useCallback(
+    (r, c, amt) => {
+      const id = `fl${Date.now()}${Math.random()}`;
+      set(s => ({ floats: [...s.floats, { id, r, c, amt }] }));
+      setTimeout(() => set(s => ({ floats: s.floats.filter(f => f.id !== id) })), 750);
+    },
+    [set],
+  );
+
   const clearMemTimers = useCallback(() => {
     memTimers.current.forEach(clearTimeout);
     memTimers.current = [];
@@ -154,6 +208,8 @@ export function useGameState() {
           energy: me.energy,
           zones: zones.zones,
           xp: me.xp ?? 0,
+          keys: me.keys ?? null,
+          rank: me.rank ?? null,
           shop,
         });
         socket.connect();
@@ -439,6 +495,25 @@ export function useGameState() {
 
   const dismissStuck = useCallback(() => set({ stuck: null }), [set]);
 
+  /**
+   * "Got it" on a walkthrough step that has no tap.
+   *
+   * Four of the eight steps teach something with no control attached — what a
+   * hint is, what a survey band means, what energy is, what a key is. The
+   * server decides whether the current step was one that could be acknowledged,
+   * so this cannot skip a step that needs a real dig.
+   */
+  const ackTutorial = useCallback(async () => {
+    const zoneId = stateRef.current.mapZone;
+    if (!zoneId) return;
+    try {
+      const res = await post(`/zones/${zoneId}/tutorial/ack`);
+      set(s => (s.grid && s.mapZone === zoneId ? { grid: { ...s.grid, tutorial: res.tutorial } } : null));
+    } catch {
+      /* a coach mark that will not advance is not worth an error toast */
+    }
+  }, [set]);
+
   const loadShop = useCallback(async () => {
     try {
       set({ shop: await fetchShop() });
@@ -510,6 +585,10 @@ export function useGameState() {
           surveys: { ...prev.surveys, [cellKey(cell.r, cell.c)]: res.reading },
         }));
         toast(String(res.reading.band).toUpperCase());
+        // A survey advances the walkthrough now. It used not to be able to:
+        // surveys leave nothing on the map, and the server derived its position
+        // from reveals, so the Survey step was unreachable. See migration 020.
+        if (stateRef.current.grid?.tutorial?.step) void refreshTutorial();
       } catch (err) {
         if (err.code === 'insufficient_energy') {
           if (err.body?.details) set({ energy: err.body.details });
@@ -519,7 +598,7 @@ export function useGameState() {
         toast('SURVEY FAILED');
       }
     },
-    [set, toast],
+    [set, toast, refreshTutorial],
   );
 
   /** Digging and surveying are different actions on the same tile. */
@@ -540,18 +619,74 @@ export function useGameState() {
 
       if (cell.opened) return;
 
-      if (cell.hunt) {
-        const cost = cell.hunt.kind === 'cash' ? 3 : 2;
-        if (s.energy.value < cost) return toast(`NEED ${cost} ENERGY TO HUNT`);
-        return set({ huntPreview: cell.hunt });
+      // ─────────────────── tapping a treasure you can already see ──────────
+      //
+      // This used to open the preview straight from `cell.hunt` without asking
+      // the server anything. Two problems with that, and the second is the one
+      // that bit:
+      //
+      //   * the cached hunt can be stale — expired, or already won by somebody
+      //     else — so the preview could offer an entry into a hunt that no
+      //     longer exists, and the refusal only arrived after the player had
+      //     committed to it;
+      //   * it produced no server event, so the walkthrough's "both of them
+      //     point here, dig it" step could never complete. The tutorial's
+      //     treasure is on the player's own map from the start, so it arrives
+      //     here as a known hunt rather than as fog, and the tap went nowhere
+      //     the server could see. The coach repeated itself forever.
+      //
+      // Going through the open endpoint fixes both: it is the same call the
+      // fog path makes, it costs no energy on a treasure cell, and the server
+      // answers with the hunt as it is right now.
+      if (cell.hunt && s.energy.value < (cell.hunt.kind === 'cash' ? 3 : 2)) {
+        return toast(`NEED ${cell.hunt.kind === 'cash' ? 3 : 2} ENERGY TO HUNT`);
       }
 
       // A trap costs double, but its type is fog until it is opened — so this
       // checks the cheapest possible price and lets the server refuse the rest.
-      if (s.energy.value < DIG_COST) return toast('OUT OF ENERGY — REGENERATING');
+      if (!cell.hunt && s.energy.value < DIG_COST) return toast('OUT OF ENERGY — REGENERATING');
+
+      /*
+        ───────────────────────── the tap answers itself ─────────────────────
+
+        Everything between here and the `await` runs in the same frame as the
+        touch. It is the design's `onTile`, which was synchronous and so never
+        had to think about this: it set `opened`, threw the cost float and
+        decremented the bar on the spot.
+
+        Making the board server-authoritative was right — the client must not
+        know what is under a tile — but the feedback went out along with the
+        authority, and a dig became a tap followed by up to a second of nothing
+        on exactly the connections this game targets.
+
+        So the split is: the client may assert *that* a dig started and *what
+        it cost*, because it knows both of those, and stays silent about what
+        was found, because it does not know that and must not guess.
+
+        The energy shown is a floor rather than a prediction. DIG_COST is the
+        cheapest a dig can be; a trap costs double and corrects upward when the
+        server says so — a correction that lands as the penalty arriving, not
+        as a number glitching.
+      */
+      const key = cellKey(cell.r, cell.c);
+      const clearDigging = () => set(prev => {
+        const digging = { ...prev.digging };
+        delete digging[key];
+        return { digging };
+      });
+
+      if (!cell.hunt) {
+        buzz(10);
+        spendFloat(cell.r, cell.c, DIG_COST);
+        set(prev => ({
+          digging: { ...prev.digging, [key]: true },
+          energy: { ...prev.energy, value: Math.max(0, prev.energy.value - DIG_COST) },
+        }));
+      }
 
       try {
         const res = await post(`/zones/${s.mapZone}/tiles/${cell.r}/${cell.c}/open`);
+        clearDigging();
 
         // ─────────────────────── you dug up a treasure ───────────────────────
         //
@@ -571,10 +706,18 @@ export function useGameState() {
                 : { ...prev.grid, hunts: [...prev.grid.hunts, res.hunt] },
             };
           });
-          toast(res.alreadyFound ? 'ALREADY YOURS' : 'TREASURE FOUND — YOU FOUND IT FIRST');
+          // Only announce a find when something was actually found. Tapping a
+          // treasure already sitting on your map is navigation, not discovery,
+          // and "TREASURE FOUND" every time you open the same one is noise.
+          if (!cell.hunt) {
+            // The best event in the game gets the only long pattern in it.
+            if (!res.alreadyFound) buzz([40, 60, 120]);
+            toast(res.alreadyFound ? 'ALREADY YOURS' : 'TREASURE FOUND — YOU FOUND IT FIRST');
+          }
           // Straight into the preview: the head start is short and it is spent
           // deciding, not navigating back to a tile you just uncovered.
           set({ huntPreview: res.hunt });
+          if (stateRef.current.grid?.tutorial?.step) void refreshTutorial();
           return;
         }
 
@@ -583,7 +726,12 @@ export function useGameState() {
           const reveals = { ...prev.grid.reveals, [cellKey(cell.r, cell.c)]: res.cell };
           // A mystery tile opens neighbours on the house.
           for (const b of res.bonus ?? []) reveals[cellKey(b.r, b.c)] = b;
-          return { energy: res.energy, grid: { ...prev.grid, reveals } };
+          // Tiles uncovered this session animate in. Tracked separately from
+          // the reveal itself so a re-render — or a reload that replays the
+          // whole map — does not make eighty tiles pop at once.
+          const justOpened = { ...prev.justOpened, [key]: true };
+          for (const b of res.bonus ?? []) justOpened[cellKey(b.r, b.c)] = true;
+          return { energy: res.energy, grid: { ...prev.grid, reveals }, justOpened };
         });
 
         // A reveal can pay out a hint. Prepend so the newest is first, and
@@ -599,11 +747,23 @@ export function useGameState() {
         // Say what the tile actually did. The whole point of phase 3 is that
         // these labels stopped being decorative — a player who is not told
         // "that cost double" learns nothing from having paid it.
-        if (res.cell.type === 'trap') toast('TRAP — DOUBLE COST, AND THE HINT LIES');
-        else if (res.cell.type === 'clue') toast('CLUE FOUND');
-        else if (res.bonus?.length) toast(`MYSTERY — ${res.bonus.length} FREE TILE`);
-        else if (res.xp) toast(`PUZZLE — +${res.xp.gained} XP`);
-        else if (res.hint) toast('HINT FOUND');
+        //
+        // The buzz carries the same distinction one beat earlier and without
+        // reading: a trap stutters, a reward is a single clean pulse, an empty
+        // tile says nothing at all. Silence for the common case is what keeps
+        // the other two legible.
+        if (res.cell.type === 'trap') {
+          buzz([15, 40, 15]);
+          // The extra energy a trap costs has already been taken by the server.
+          // Show the difference so the penalty is visible where it was paid,
+          // rather than only as a bar that moved further than expected.
+          const extra = Math.max(0, s.energy.value - DIG_COST - (res.energy?.value ?? 0));
+          if (extra > 0) spendFloat(cell.r, cell.c, extra);
+          toast('TRAP — DOUBLE COST, AND THE HINT LIES');
+        } else if (res.cell.type === 'clue') { buzz(25); toast('CLUE FOUND'); }
+        else if (res.bonus?.length) { buzz(25); toast(`MYSTERY — ${res.bonus.length} FREE TILE`); }
+        else if (res.xp) { buzz(25); toast(`PUZZLE — +${res.xp.gained} XP`); }
+        else if (res.hint) { buzz(25); toast('HINT FOUND'); }
 
         if (res.xp) set({ xp: res.xp.total });
         if (res.alreadyOpen) toast('ALREADY OPEN');
@@ -614,15 +774,27 @@ export function useGameState() {
         // is still running.
         if (stateRef.current.grid?.tutorial?.step) void refreshTutorial();
       } catch (err) {
+        // The optimistic decrement has to be undone on every failure path, or
+        // a flaky connection quietly bills the player for digs that never
+        // happened. `res.energy` is authoritative on success; here there is no
+        // response, so fall back to what the error carried and otherwise put
+        // back exactly what was taken.
+        clearDigging();
+        if (!cell.hunt) {
+          set(prev =>
+            err.body?.details
+              ? { energy: err.body.details }
+              : { energy: { ...prev.energy, value: Math.min(prev.energy.max, prev.energy.value + DIG_COST) } },
+          );
+        }
         if (err.code === 'insufficient_energy') {
-          if (err.body?.details) set({ energy: err.body.details });
           void fetchStuck();
           return;
         }
         toast('COULD NOT OPEN TILE');
       }
     },
-    [set, toast, onSurvey, fetchStuck, refreshTutorial],
+    [set, toast, onSurvey, fetchStuck, refreshTutorial, spendFloat],
   );
 
   /**
@@ -690,6 +862,12 @@ export function useGameState() {
         winData: null,
         shared: false,
       });
+
+      // Entering is the walkthrough's last step. Refreshed here so the coach
+      // clears the moment the doors go up — the race is explained on the step
+      // BEFORE this one, deliberately, because a card that needs reading while
+      // a fifteen-second clock runs is a card that costs the player the hunt.
+      if (stateRef.current.grid?.tutorial?.step) void refreshTutorial();
     } catch (err) {
       set({ huntPreview: null, paying: false });
       if (err.code === 'no_wallet') return toast('NO WALLET TO PAY WITH');
@@ -716,7 +894,7 @@ export function useGameState() {
       if (err.code === 'not_your_hunt') return toast('THAT ONE IS SOMEBODY ELSE\u2019S');
       toast('COULD NOT ENTER HUNT');
     }
-  }, [set, toast]);
+  }, [set, toast, refreshTutorial]);
 
   const exitMinigame = useCallback(() => {
     const s = stateRef.current;
@@ -822,6 +1000,7 @@ export function useGameState() {
     backToMap,
     onTile,
     onSurvey,
+    ackTutorial,
     dismissStuck,
     loadShop,
     buy,

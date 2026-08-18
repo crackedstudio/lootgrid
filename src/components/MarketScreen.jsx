@@ -46,7 +46,7 @@ const TIER_COLOR = { 1: '#29E6E6', 2: '#FFD51F', 3: '#FF7A1A' };
 function Label({ children, dark }) {
   return (
     <div style={{
-      fontFamily: MONO, fontSize: 9, fontWeight: 700, letterSpacing: '.16em',
+      fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.16em',
       color: dark ? '#0C0C10' : 'var(--cream)', opacity: .55,
     }}>{children}</div>
   );
@@ -98,7 +98,7 @@ function ListingCard({ listing, onBuy, onBid, busy, trust }) {
     <div style={CARD}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
         <div style={{
-          fontFamily: MONO, fontSize: 9, fontWeight: 700, letterSpacing: '.14em',
+          fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.14em',
           color: '#0C0C10', background: TIER_COLOR[listing.tier] ?? '#FFD51F',
           padding: '3px 7px', border: '2px solid #0C0C10',
         }}>
@@ -123,23 +123,23 @@ function ListingCard({ listing, onBuy, onBid, busy, trust }) {
         {/* Who you would be paying. Shown next to the warnings, not buried:
             the seller is as much of the trade as the hint is. */}
         <div style={{
-          fontFamily: MONO, fontSize: 9, fontWeight: 700,
+          fontFamily: MONO, fontSize: 11, fontWeight: 700,
           color: TRUST_TONE[badge.tone], opacity: badge.tone === 'neutral' ? .55 : 1,
         }}>
           SELLER {badge.text}
         </div>
         {listing.sold > 0 && (
-          <div style={{ fontFamily: MONO, fontSize: 9, fontWeight: 700, color: '#FF3D3D' }}>
+          <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: '#FF3D3D' }}>
             {listing.sold} ALREADY SOLD
           </div>
         )}
         {overpriced(listing) && (
-          <div style={{ fontFamily: MONO, fontSize: 9, fontWeight: 700, color: '#0C0C10', opacity: .55 }}>
+          <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: '#0C0C10', opacity: .55 }}>
             MODEL SAYS {formatCents(listing.suggestedCents)}
           </div>
         )}
         {!listing.rational && (
-          <div style={{ fontFamily: MONO, fontSize: 9, fontWeight: 700, color: '#FF3D3D' }}>
+          <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: '#FF3D3D' }}>
             WORTH LESS THAN THE PRIZE SHARE
           </div>
         )}
@@ -171,7 +171,7 @@ function TradeCard({ trade, onSync, onPay, onRelease }) {
           fontFamily: "'Space Grotesk', sans-serif", fontSize: 13, color: '#0C0C10',
         }}>
           {describeHint(delivered.hint.payload)}
-          <div style={{ fontFamily: MONO, fontSize: 9, fontWeight: 700, marginTop: 6, opacity: .7 }}>
+          <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, marginTop: 6, opacity: .7 }}>
             {tierLabel(delivered.hint.tier).toUpperCase()} · RIGHT {reliabilityPct(delivered.hint)}% OF THE TIME
           </div>
         </div>
@@ -408,7 +408,7 @@ export default function MarketScreen({ state }) {
                 <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 13, color: '#0C0C10' }}>
                   {describeHint(h.payload)}
                 </div>
-                <div style={{ fontFamily: MONO, fontSize: 9, fontWeight: 700, marginTop: 6, color: '#0C0C10', opacity: .6 }}>
+                <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, marginTop: 6, color: '#0C0C10', opacity: .6 }}>
                   {tierLabel(h.tier).toUpperCase()} · RIGHT {reliabilityPct(h)}% OF THE TIME
                 </div>
                 <div style={{ display: 'flex', marginTop: 10 }}>

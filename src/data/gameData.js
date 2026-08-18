@@ -16,32 +16,16 @@ export const ZONE_COPY = {
   hollow: { tag: 'EXPERT', diff: 'EXPERT',   blurb: 'High-stakes vault grid. Hardest games, richest loot.' },
 };
 
-export const BOARD_DATA = {
-  daily: [
-    { rank:1, handle:'@maya',   won:'$48.20', finds:9 },
-    { rank:2, handle:'@ama',    won:'$36.00', finds:7 },
-    { rank:3, handle:'@deji',   won:'$24.50', finds:6 },
-    { rank:4, handle:'@0xKofi', won:'$18.00', finds:5 },
-    { rank:5, handle:'@otaiki', won:'$12.00', finds:4, you:true },
-    { rank:6, handle:'@zara',   won:'$8.40',  finds:3 },
-    { rank:7, handle:'@tomi',   won:'$5.00',  finds:2 },
-  ],
-  all: [
-    { rank:1, handle:'@deji',   won:'$1,204', finds:212 },
-    { rank:2, handle:'@maya',   won:'$980',   finds:188 },
-    { rank:3, handle:'@otaiki', won:'$642',   finds:141, you:true },
-    { rank:4, handle:'@ama',    won:'$511',   finds:120 },
-    { rank:5, handle:'@0xKofi', won:'$430',   finds:103 },
-    { rank:6, handle:'@zara',   won:'$295',   finds:77  },
-  ],
-};
+/*
+  BOARD_DATA and PROFILE_FINDS used to live here: seven invented leaderboard
+  rows and four invented profile events, carried over from the design prototype
+  and rendered as if they were real. They are deleted rather than commented out.
 
-export const PROFILE_FINDS = [
-  { type:'found',  label:'CRACKED A HUNT', meta:'$12.00 · beat 38 · 2h ago', color:'#FFD51F' },
-  { type:'clue',   label:'FOUND A CLUE',   meta:'eastern ridge · 5h ago',    color:'#29E6E6' },
-  { type:'puzzle', label:'SOLVED A PUZZLE',meta:'+120 XP · yesterday',        color:'#8A3DFF' },
-  { type:'found',  label:'CRACKED A HUNT', meta:'$5.50 · beat 12 · 2d ago',  color:'#FFD51F' },
-];
+  A fabricated number in a game where rank gates access to cash is not set
+  dressing — it is the thing that makes every other number on screen deniable.
+  BoardScreen and YouScreen now read /me and say plainly where the server has no
+  answer yet. See docs/DESIGN_VS_BUILD.md §4.1.
+*/
 
 /**
  * Two cards, and every sentence in them has to be true.

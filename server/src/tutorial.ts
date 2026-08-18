@@ -6,6 +6,7 @@ import { hash, hashInt, randomHex } from './hash';
 import * as hints from './hints';
 import { cellKey, tileType } from './grid';
 import { logger } from './logger';
+import * as store from './store';
 import type { Hunt, Player, Zone } from './types';
 
 /**
@@ -28,15 +29,43 @@ import type { Hunt, Player, Zone } from './types';
  *
  * ─────────────────────────── what it teaches, in order ──────────────────────
  *
- * The script is three taps and each one exists to make a word mean something:
+ * Eight steps, each one existing to make a word mean something. Everything is
+ * taught by doing it once on a real board — there is no sandbox, no fake grid,
+ * and nothing here that behaves differently from the game it is teaching.
  *
- *   1. A **clue** tile. Guaranteed, so the first tap always pays. The lesson is
- *      that the labels on this board are real — which is the lesson the old
- *      first tap taught in reverse, by landing on a "trap" that did nothing.
- *   2. A **survey**. The onboarding has promised warmth since phase 0 about a
+ *   1. **Dig.** A clue tile, guaranteed, so the first tap always pays. The
+ *      lesson is that the labels on this board are real — which is the lesson
+ *      the old first tap taught in reverse, by landing on a "trap" that did
+ *      nothing. Says what a dig costs while the bar is visibly moving.
+ *   2. **The hint you just earned.** Where hints live, and that we publish how
+ *      often each one lies. A player who never opens the drawer never plays
+ *      the game we built.
+ *   3. **Survey.** The onboarding has promised warmth since phase 0 about a
  *      mechanic that did not exist until phase 3. This is where the promise is
  *      kept, and it reads `burning`, because the treasure is right there.
- *   3. The **treasure**. Placed, reserved, and XP-paying.
+ *   4. **The reading.** What five bands mean and how to walk them. This is the
+ *      only step that teaches a *strategy* rather than a control.
+ *   5. **Dig the treasure.** Hint and reading agree; the player acts on both.
+ *   6. **Energy.** Taught at the first moment the player has spent enough to
+ *      care: what the bar is, how fast it comes back, that it is the only thing
+ *      we sell, and that it never buys a chance at a prize.
+ *   7. **The race**, explained *before* it starts. It ran second at first, on
+ *      the reasoning that an explanation belongs beside the thing it explains —
+ *      which put a four-line paragraph in front of a player with a live
+ *      fifteen-second clock behind it. The first scripted run of the
+ *      walkthrough timed out reading its own last card. An explanation racing a
+ *      countdown is not an explanation.
+ *   8. **Enter.** Keys are taught here because this is the only moment the word
+ *      means anything, and the walkthrough ends by handing over the controls
+ *      rather than by talking over them.
+ *
+ * ─────────────────────────── why the position is stored ─────────────────────
+ *
+ * The first version derived its position from the map — step 1 done once the
+ * start cell was open, everything after that step 3 — which made the Survey
+ * step unreachable, because a survey leaves no mark to derive anything from.
+ * Half the steps above teach things that are invisible on the board, so the
+ * position lives on the player. See migration 020.
  *
  * ─────────────────────────── why it pays XP, not cash ───────────────────────
  *
@@ -123,30 +152,6 @@ function freeCellNear(zone: Zone, start: { r: number; c: number }): { r: number;
   return null;
 }
 
-export interface TutorialStep {
-  /** What the player is asked to do. The client renders a pointer at the cell. */
-  action: 'dig' | 'survey' | 'enter';
-  r: number;
-  c: number;
-  copy: string;
-}
-
-export interface TutorialState {
-  /** Null once the player has finished, or opted out. */
-  step: TutorialStep | null;
-  /** 0-based index into the script, for a progress dot. */
-  index: number;
-  total: number;
-  huntId: string | null;
-}
-
-/**
- * The player's tutorial hunt in this zone, creating it on first ask.
- *
- * Idempotent: a player has at most one live reserved hunt per zone, so calling
- * this on every grid load is safe and a reconnect does not scatter treasure
- * across the map.
- */
 export function ensureHunt(player: Player, zone: Zone, now = Date.now()): Hunt | null {
   const existing = huntRepo.listOwned(zone.id, zone.epoch, player.id);
   if (existing.length > 0) return existing[0]!;
@@ -210,57 +215,214 @@ export function ensureHunt(player: Player, zone: Zone, now = Date.now()): Hunt |
   return hunt;
 }
 
+/** Which HUD element the coach mark should point at, if any. */
+export type TutorialHighlight = 'energy' | 'keys' | 'hints' | 'survey' | null;
+
+export interface TutorialStep {
+  /** Stable key, so the client can special-case a step without index maths. */
+  id: string;
+  /**
+   * What finishes this step.
+   *
+   * `read` is the odd one out and is deliberate: four of the eight steps teach
+   * something that has no tap — what a hint is, what a band means, what energy
+   * is, what a key is. Those advance on acknowledgement. A walkthrough that can
+   * only teach controls can only teach half a game.
+   */
+  action: 'dig' | 'survey' | 'enter' | 'read';
+  /** Where to point on the map. Null for steps that are about the HUD. */
+  r: number | null;
+  c: number | null;
+  title: string;
+  copy: string;
+  highlight: TutorialHighlight;
+}
+
+export interface TutorialState {
+  step: TutorialStep | null;
+  index: number;
+  total: number;
+  huntId: string | null;
+  done: boolean;
+}
+
 /**
- * Where the player is in the script.
+ * The script.
  *
- * Derived from what they have actually done rather than stored as a cursor:
- * progress is a fact about reveals and hunts, so a cursor could disagree with
- * the board. It also means the tutorial cannot get stuck — a player who wanders
- * off and digs elsewhere simply finds the script waiting where they left it.
+ * Written as a function of the two cells it points at rather than as a
+ * constant, because every step that has a target needs one of them and neither
+ * is known until a player and a zone exist.
+ *
+ * ─────────────────────────── the rules these were written to ────────────────
+ *
+ * The same three that govern the onboarding cards, plus one more that only
+ * applies once someone is holding the controls:
+ *
+ *   * No crypto vocabulary.
+ *   * No promise the game cannot keep in the next sixty seconds.
+ *   * Say what the player will DO, not what the system is.
+ *   * **Never describe a cost the player is not about to pay.** Energy is
+ *     taught at step 6, not step 1, because that is the first moment the bar
+ *     has moved enough to be worth looking at. A number explained before it
+ *     matters is a number nobody reads.
  */
-export function stateFor(
-  player: Player,
-  zone: Zone,
-  hasRevealed: (r: number, c: number) => boolean,
-  now = Date.now(),
-): TutorialState {
-  const hunt = ensureHunt(player, zone, now);
-  const start = startCell(player, zone);
-  const total = 3;
-
-  // No hunt to lead to — either the cell was taken or the player has already
-  // won it. Either way there is nothing to teach.
-  if (!hunt) return { step: null, index: total, total, huntId: null };
-
-  const script: TutorialStep[] = [
+function scriptFor(start: { r: number; c: number }, hunt: Hunt): TutorialStep[] {
+  return [
     {
+      id: 'dig',
       action: 'dig',
-      ...start,
-      copy: 'DIG HERE. THIS ONE IS A CLUE — IT ALWAYS PAYS.',
+      r: start.r,
+      c: start.c,
+      title: 'DIG THIS TILE',
+      copy: 'Tap it. Digging uncovers what is underneath and costs 2 energy. This one is a CLUE tile, and a clue always pays a hint.',
+      highlight: 'energy',
     },
     {
+      id: 'hint',
+      action: 'read',
+      r: null,
+      c: null,
+      title: 'THAT IS A HINT',
+      copy: 'It says roughly where treasure is. Every hint carries how often that kind turns out to be TRUE — 90%, 70% or 50%. We publish it because some of them lie. Your hints live in the drawer at the bottom.',
+      highlight: 'hints',
+    },
+    {
+      id: 'survey',
       action: 'survey',
       r: start.r + 1,
       c: start.c,
-      copy: 'NOW SURVEY. IT READS THE GROUND WITHOUT DIGGING IT.',
+      title: 'NOW SURVEY',
+      copy: 'The toggle at the top has switched to SURVEY 6⚡ for you. Tap the marked tile to read it: surveying uncovers nothing and costs 6 energy, and it tells you how close the nearest treasure is. It is the thinking move.',
+      highlight: 'survey',
     },
     {
+      id: 'reading',
+      action: 'read',
+      r: null,
+      c: null,
+      title: 'WHAT THAT READING MEANS',
+      copy: 'That is how far the nearest treasure is from the tile you just surveyed — not what is under it. One reading only narrows things a little. Survey again ten or twenty tiles away and compare: wherever the readings run hottest is where to start digging.',
+      highlight: null,
+    },
+    {
+      id: 'find',
+      action: 'dig',
+      r: hunt.r,
+      c: hunt.c,
+      title: 'YOUR HINT AND YOUR READING AGREE',
+      copy: 'Both of them point here. You are back on DIG 2⚡ — tap the marked tile and take a look.',
+      highlight: null,
+    },
+    {
+      id: 'energy',
+      action: 'read',
+      r: null,
+      c: null,
+      title: 'ABOUT THAT BAR',
+      copy: 'Energy is what limits you: 40 of it, and one point back every 6 minutes. It is the only thing we sell — it buys you more looking, never a better chance at the prize.',
+      highlight: 'energy',
+    },
+    {
+      id: 'race',
+      action: 'read',
+      r: null,
+      c: null,
+      title: 'HOW YOU WIN IT',
+      copy: 'Six doors, and everyone racing sees the same six. Your hints rule doors out. Everyone picks inside fifteen seconds and all the picks turn over together — so nothing is decided by how fast your phone is or how good your signal is.',
+      highlight: null,
+    },
+    {
+      id: 'enter',
       action: 'enter',
       r: hunt.r,
       c: hunt.c,
-      copy: 'SOMETHING IS BURIED HERE. GO AND TAKE IT.',
+      title: 'NOW GO AND TAKE IT',
+      copy: 'A cash treasure costs one KEY to enter. You get 5 keys a day, everyone gets the same 5, and there is no way to buy more — not with money, not with anything. This one pays XP, so it is free. Open it, and pick a door.',
+      highlight: 'keys',
     },
   ];
-
-  // Step 1 is done once the start cell is open; step 2 once they have surveyed
-  // — which leaves no trace on the map, so it is treated as done as soon as
-  // step 1 is, and the client advances it locally. Step 3 ends when the hunt
-  // stops being live.
-  const index = !hasRevealed(start.r, start.c) ? 0 : 2;
-
-  return { step: script[index] ?? null, index, total, huntId: hunt.id };
 }
 
-/** Whether this tile is a clue, so the script can promise one honestly. */
+/** How many steps there are. Exported so the funnel can ask "how far did they get". */
+export const TUTORIAL_STEPS = 8;
+
+export function stateFor(
+  player: Player,
+  zone: Zone,
+  now = Date.now(),
+): TutorialState {
+  const index = player.tutorialStep;
+  if (index >= TUTORIAL_STEPS) {
+    return { step: null, index: TUTORIAL_STEPS, total: TUTORIAL_STEPS, huntId: null, done: true };
+  }
+
+  const hunt = ensureHunt(player, zone, now);
+  // No hunt to lead to — either the cell was taken or the player has already
+  // won it. Either way there is nothing left to teach, and a coach mark
+  // pointing at a treasure that is not there is worse than no coach mark.
+  if (!hunt) {
+    return { step: null, index, total: TUTORIAL_STEPS, huntId: null, done: false };
+  }
+
+  const script = scriptFor(startCell(player, zone), hunt);
+  return {
+    step: script[index] ?? null,
+    index,
+    total: TUTORIAL_STEPS,
+    huntId: hunt.id,
+    done: false,
+  };
+}
+
+/**
+ * What the player just did.
+ *
+ * `dig` carries the cell so a dig somewhere else does not advance a step that
+ * is pointing at a particular tile — otherwise the walkthrough would march on
+ * while the player wandered, and the coach marks would end up describing
+ * actions they never took.
+ */
+export type TutorialEvent =
+  | { kind: 'dig'; r: number; c: number }
+  | { kind: 'survey' }
+  | { kind: 'enter' }
+  | { kind: 'ack' };
+
+/**
+ * Move the walkthrough on, if this event is the one the current step is waiting
+ * for.
+ *
+ * Called from the routes that already do the thing — not from a client that
+ * reports having done it. A walkthrough the client can advance on its own is a
+ * walkthrough that can be skipped by accident and cannot be trusted as a funnel
+ * measurement.
+ */
+export function advance(player: Player, zone: Zone, event: TutorialEvent, now = Date.now()): void {
+  const state = stateFor(player, zone, now);
+  const step = state.step;
+  if (!step) return;
+
+  const matches =
+    (step.action === 'dig' && event.kind === 'dig' && step.r === event.r && step.c === event.c) ||
+    (step.action === 'survey' && event.kind === 'survey') ||
+    (step.action === 'enter' && event.kind === 'enter') ||
+    (step.action === 'read' && event.kind === 'ack');
+
+  if (matches) store.setTutorialStep(player, state.index + 1);
+}
+
+/**
+ * Is this the walkthrough's very first dig?
+ *
+ * Used to guarantee that first hint is a true one. See the note at the call
+ * site in http.ts — a lie handed to a player who holds nothing to check it
+ * against teaches the wrong lesson on the one hunt they cannot lose.
+ */
+export function isFirstStepCell(player: Player, zone: Zone, r: number, c: number): boolean {
+  if (player.tutorialStep !== 0) return false;
+  const start = startCell(player, zone);
+  return start.r === r && start.c === c;
+}
+
 export const isClue = (zone: Zone, r: number, c: number): boolean =>
   tileType(zone, r, c) === 'clue';

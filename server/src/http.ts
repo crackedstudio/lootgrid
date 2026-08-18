@@ -293,7 +293,7 @@ export function registerRoutes(app: App): void {
        * property of this player's view of this map, and because a tutorial that
        * needs a second round trip is a tutorial that stutters on 3G.
        */
-      tutorial: tutorial.stateFor(player, zone, (r, c) => !!store.getReveal(zone, player.id, r, c)),
+      tutorial: tutorial.stateFor(player, zone),
       // What THIS PLAYER may see: treasures already public, ones they personally
       // dug up, and anything reserved for them.
       //
@@ -425,13 +425,20 @@ export function registerRoutes(app: App): void {
     // written to the player's fog, and the reward for spending a dig on the
     // right cell is the find itself.
     const treasure = store.huntAt(zone, r, c);
-    if (treasure && treasure.ownerId === null) {
-      const found = store.discoverHunt(treasure, player.id, now);
+    // A treasure reserved for THIS player is theirs and is already on their map,
+    // so digging it is a find like any other. Without this branch it fell
+    // through to the 409 below and the walkthrough's own instruction — "both of
+    // them point here, dig it" — answered "open this one from the hunt sheet".
+    // An instruction that errors is worse than no instruction.
+    if (treasure && (treasure.ownerId === null || treasure.ownerId === player.id)) {
+      const mine = treasure.ownerId === player.id;
+      const found = mine ? false : store.discoverHunt(treasure, player.id, now);
       if (found) metrics.huntsDiscovered.inc({ kind: treasure.kind });
+      tutorial.advance(player, zone, { kind: 'dig', r, c }, now);
       const hunt = store.getHunt(treasure.id) ?? treasure;
       return {
         found: true,
-        alreadyFound: !found,
+        alreadyFound: !found && !mine,
         hunt: {
           id: hunt.id,
           r: hunt.r,
@@ -465,6 +472,8 @@ export function registerRoutes(app: App): void {
     const spent = energy.spend(player, cost, now, 'dig');
     if (!spent.ok) throw conflict('insufficient_energy', 'out of energy', spent.energy);
     store.savePlayerEnergy(player);
+
+    tutorial.advance(player, zone, { kind: 'dig', r, c }, now);
 
     const cell = { r, c, type, byHandle: player.handle, at: now };
     const opened = store.addReveal(zone, { ...cell, playerId: player.id });
@@ -524,7 +533,29 @@ export function registerRoutes(app: App): void {
             : type === 'trap'
               ? TILES.trap.guaranteedHint
               : false,
-        wantTrue: type === 'trap' && TILES.trap.falseHint ? false : undefined,
+        /*
+          A trap always lies; the walkthrough's first clue always tells the
+          truth; everything else draws honestly from the committed set.
+
+          The middle case is new and is worth stating. Tier is drawn by the
+          same roll either way, so the first hint can be a SHARP one — a
+          coin flip by design — and on a first playthrough it lands with
+          nothing to cross-check it against. Observed on the first end-to-end
+          run of the new script: the tutorial's hint was false, so at The
+          Crack all six doors read RULED OUT and the one hunt a new player
+          cannot lose demonstrated deduction failing.
+
+          This does not touch the published honesty numbers. `pickFrom`
+          filters the hunt's already-committed set, exactly as the trap path
+          does in the other direction — the same hint that was going to exist
+          either way, chosen rather than rolled.
+        */
+        wantTrue:
+          type === 'trap' && TILES.trap.falseHint
+            ? false
+            : tutorial.isFirstStepCell(player, zone, r, c)
+              ? true
+              : undefined,
       },
     );
 
@@ -597,6 +628,7 @@ export function registerRoutes(app: App): void {
     store.savePlayerEnergy(player);
 
     metrics.surveysTaken.inc({ band: reading.band });
+    tutorial.advance(player, zone, { kind: 'survey' }, now);
     return { reading, energy: spent.energy };
   });
 
@@ -824,6 +856,8 @@ export function registerRoutes(app: App): void {
       throw conflict(result.error, undefined, result.detail);
     }
 
+    if (zone) tutorial.advance(player, zone, { kind: 'enter' });
+
     return {
       attemptId: result.attempt.id,
       gameType: result.gameType,
@@ -832,6 +866,30 @@ export function registerRoutes(app: App): void {
       startedAt: result.attempt.startedAt,
       energy: energy.view(player, Date.now()),
     };
+  });
+
+  /**
+   * "Got it" on a walkthrough step that has no tap.
+   *
+   * Half the steps teach something with no control attached — what a hint is,
+   * what a survey band means, what energy is, what a key is. Those need an
+   * acknowledgement, and it has to be a server call rather than client state:
+   * the position is a column on the player (migration 020), so a client that
+   * advanced locally would show the right thing until the next reload and the
+   * wrong thing after it.
+   *
+   * Deliberately not "set step N". The client says *that* it acknowledged, and
+   * the server decides whether the current step was one that could be — so a
+   * replayed or spoofed ack cannot skip a step that requires a real dig.
+   */
+  app.post('/zones/:id/tutorial/ack', async req => {
+    const player = await requirePlayer(req);
+    const { id } = parse(zoneParams, req.params);
+    const zone = store.getZone(id);
+    if (!zone) throw notFound('no_such_zone');
+
+    tutorial.advance(player, zone, { kind: 'ack' });
+    return { tutorial: tutorial.stateFor(player, zone) };
   });
 
   /** Resume after a reconnect — the attempt kept running without you. */

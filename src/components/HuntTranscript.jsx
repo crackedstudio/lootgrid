@@ -40,18 +40,18 @@ function Row({ entry }) {
       display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0',
       borderBottom: '1px solid rgba(12,12,16,.12)',
     }}>
-      <div style={{ fontFamily: MONO, fontSize: 9, fontWeight: 700, color: '#0C0C10', opacity: .5, width: 26 }}>
+      <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: '#0C0C10', opacity: .5, width: 26 }}>
         {entry.round}
       </div>
       <div style={{ fontFamily: BLACK, fontSize: 14, color: '#0C0C10', width: 22 }}>
         {entry.directive.difficulty}
       </div>
-      <div style={{ fontFamily: MONO, fontSize: 9, fontWeight: 700, color: '#0C0C10', flex: 1 }}>
+      <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: '#0C0C10', flex: 1 }}>
         {entry.directive.roundType.toUpperCase()}
       </div>
       {entry.directive.twist !== 'none' && (
         <div style={{
-          fontFamily: MONO, fontSize: 8, fontWeight: 700, padding: '2px 6px',
+          fontFamily: MONO, fontSize: 11, fontWeight: 700, padding: '2px 6px',
           border: `2px solid ${TWIST_COLOR[entry.directive.twist] ?? '#0C0C10'}`,
           color: TWIST_COLOR[entry.directive.twist] ?? '#0C0C10',
         }}>
@@ -100,7 +100,7 @@ export default function HuntTranscript({ huntId, onClose }) {
       }}>
         <div style={{ flexShrink: 0, padding: '16px 18px 12px', borderBottom: '3px solid #0C0C10' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ fontFamily: MONO, fontSize: 9, fontWeight: 700, letterSpacing: '.16em', color: '#0C0C10', opacity: .55 }}>
+            <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.16em', color: '#0C0C10', opacity: .55 }}>
               HOW THIS HUNT WAS RUN
             </div>
             <div onClick={onClose} style={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, color: '#0C0C10', opacity: .5, cursor: 'pointer' }}>
@@ -134,7 +134,7 @@ export default function HuntTranscript({ huntId, onClose }) {
                     ? 'CHAIN CHECKS OUT'
                     : 'CHAIN DOES NOT MATCH'}
               </div>
-              <div style={{ fontFamily: MONO, fontSize: 9, lineHeight: 1.6, color: '#0C0C10', opacity: .75, marginTop: 6 }}>
+              <div style={{ fontFamily: MONO, fontSize: 11, lineHeight: 1.6, color: '#0C0C10', opacity: .75, marginTop: 6 }}>
                 {live
                   ? 'The salt stays secret until the hunt ends — publishing it now would hand over the map. Come back afterwards to check the rounds.'
                   : check?.ok
@@ -147,7 +147,7 @@ export default function HuntTranscript({ huntId, onClose }) {
               <div style={{ display: 'flex', gap: 10, padding: '10px 0 4px' }}>
                 {['#', 'DIFF', 'ROUND', '', 'HASH'].map((h, i) => (
                   <div key={i} style={{
-                    fontFamily: MONO, fontSize: 8, fontWeight: 700, letterSpacing: '.1em',
+                    fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.1em',
                     color: '#0C0C10', opacity: .4, width: i === 0 ? 26 : i === 1 ? 22 : undefined,
                     flex: i === 2 ? 1 : undefined,
                   }}>{h}</div>
@@ -156,7 +156,7 @@ export default function HuntTranscript({ huntId, onClose }) {
 
               {data.entries.map(entry => <Row key={entry.round} entry={entry} />)}
 
-              <div style={{ fontFamily: MONO, fontSize: 8, color: '#0C0C10', opacity: .45, marginTop: 14, lineHeight: 1.6, wordBreak: 'break-all' }}>
+              <div style={{ fontFamily: MONO, fontSize: 11, color: '#0C0C10', opacity: .45, marginTop: 14, lineHeight: 1.6, wordBreak: 'break-all' }}>
                 HEAD {data.chainHead}
                 {data.attestation && <><br />SIGNED BY THE REFEREE AT RESOLUTION</>}
               </div>

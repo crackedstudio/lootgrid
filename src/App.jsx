@@ -23,16 +23,31 @@ export default function App() {
   const showGrid = state.view === 'map' && !!state.mapZone;
   const showNavBar = ['map', 'market', 'agent', 'hunts', 'board', 'you'].includes(state.view);
 
+  /*
+    ─────────────────────────── the frame ───────────────────────────
+
+    This used to be a hard 390x844 with a 4px border and a 16px offset shadow.
+
+    None of that was a design decision. `390x844` is the Claude Design canvas's
+    `$preview` viewport — the size of the little phone mock in the design tool —
+    and the border and shadow are the frame drawn *around* that mock. The
+    prototype styled its root to match so it would look like a phone on a
+    desktop screen. We copied the screenshot border and shipped it as a spec.
+
+    On a 360x640 Android — squarely inside the audience this game is built for —
+    the bottom of every screen, including the nav bar, sat off-canvas.
+
+    So: fill the viewport, in `dvh` rather than `vh` so the Android URL bar
+    collapsing does not clip the nav, and keep the frame only as a desktop
+    affordance where there is room for it and nothing to lose by it. `lg-frame`
+    is in index.css because a media query cannot be written inline.
+  */
   return (
     <div
-      className="lg-root"
+      className="lg-root lg-frame"
       style={{
         position: 'relative',
-        width: 390,
-        height: 844,
         background: 'var(--surface)',
-        border: '4px solid #0C0C10',
-        boxShadow: '16px 16px 0 #0C0C10',
         overflow: 'hidden',
         display: 'flex',
         flexDirection: 'column',
@@ -59,7 +74,7 @@ export default function App() {
       )}
 
       {showGrid && (
-        <GridScreen state={state} onBackZones={game.backZones} onTile={game.onTile} onToggleSurvey={game.toggleSurveyMode} onDismissStuck={game.dismissStuck} onBuy={game.buy} onSpendRefill={game.spendRefill} />
+        <GridScreen state={state} onBackZones={game.backZones} onTile={game.onTile} onToggleSurvey={game.toggleSurveyMode} onDismissStuck={game.dismissStuck} onBuy={game.buy} onSpendRefill={game.spendRefill} onAckTutorial={game.ackTutorial} />
       )}
 
       {state.view === 'market' && <MarketScreen state={state} />}
@@ -69,14 +84,8 @@ export default function App() {
       {state.view === 'hunts' && (
         <HuntsScreen state={state} setField={game.setField} />
       )}
-      {state.view === 'board' && (
-        <BoardScreen
-          state={state}
-          onTabDaily={() => game.setField('boardTab', 'daily')}
-          onTabAll={() => game.setField('boardTab', 'all')}
-        />
-      )}
-      {state.view === 'you' && <YouScreen state={state} />}
+      {state.view === 'board' && <BoardScreen state={state} />}
+      {state.view === 'you' && <YouScreen state={state} onNav={game.setView} />}
 
       {/* ---- overlays ---- */}
       {state.huntPreview && (

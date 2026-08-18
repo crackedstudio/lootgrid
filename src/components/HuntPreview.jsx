@@ -43,7 +43,7 @@ function PaymentStep({ quote, onPay, onClose }) {
         border: '3px solid #FFD51F', background: 'rgba(255,213,31,.1)',
         padding: '14px 16px', marginBottom: 16,
       }}>
-        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.14em', color: '#FFD51F' }}>
+        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.14em', color: '#FFD51F' }}>
           ENTRY FEE
         </div>
         <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 34, lineHeight: 1.1, color: 'var(--cream)', marginTop: 4 }}>
@@ -90,7 +90,7 @@ export default function HuntPreview({ hunt, onConfirm, onClose, onPay }) {
         animation: 'lg-rise .25s ease-out',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.16em', color: 'var(--cream)', opacity: .55 }}>
+          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.16em', color: 'var(--cream)', opacity: .55 }}>
             {isCash ? 'TREASURE HUNT' : 'PUZZLE HUNT'}
           </div>
           <div onClick={onClose} style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, fontWeight: 700, color: 'var(--cream)', opacity: .5, cursor: 'pointer' }}>✕ CLOSE</div>
@@ -104,7 +104,7 @@ export default function HuntPreview({ hunt, onConfirm, onClose, onPay }) {
             <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 28, lineHeight: 1, color: isCash ? '#FFD51F' : '#8A3DFF' }}>
               {hunt.prizeLabel}
             </div>
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.12em', color: 'var(--cream)', opacity: .55, marginTop: 6 }}>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.12em', color: 'var(--cream)', opacity: .55, marginTop: 6 }}>
               {/* The tier is drawn per block and decides the prize, the fee and
                   how hard the game generates — so it belongs next to the money. */}
               {hunt.difficulty ? `${hunt.difficulty.toUpperCase()} · ` : ''}
@@ -127,7 +127,7 @@ export default function HuntPreview({ hunt, onConfirm, onClose, onPay }) {
             <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 13, color: 'var(--cream)' }}>
               {GAME_NAMES[hunt.gameType] ?? hunt.gameType.toUpperCase()}
             </div>
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, color: 'var(--cream)', opacity: .45, marginTop: 4 }}>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, color: 'var(--cream)', opacity: .45, marginTop: 4 }}>
               {GAME_BLURBS[hunt.gameType] ?? ''}
             </div>
           </div>
@@ -137,17 +137,17 @@ export default function HuntPreview({ hunt, onConfirm, onClose, onPay }) {
           <div style={{ flex: 1, border: '2px solid rgba(245,239,227,.15)', padding: '10px 12px' }}>
             {/* Real, from the server — how many people have a live attempt open. */}
             <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 15, color: 'var(--cream)' }}>{hunt.chasers ?? 0}</div>
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, color: 'var(--cream)', opacity: .45, marginTop: 4 }}>CHASING NOW</div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, color: 'var(--cream)', opacity: .45, marginTop: 4 }}>CHASING NOW</div>
           </div>
           <div style={{ flex: 1, border: '2px solid rgba(245,239,227,.15)', padding: '10px 12px' }}>
             <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 15, color: '#FF3D3D' }}>{cost}⚡</div>
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, color: 'var(--cream)', opacity: .45, marginTop: 4 }}>COST</div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, color: 'var(--cream)', opacity: .45, marginTop: 4 }}>COST</div>
           </div>
         </div>
 
         {/* You don't learn which game it is until you commit — knowing in advance
             would let you warm up for one and skip the others. */}
-        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: 'var(--cream)', opacity: .4, marginBottom: 18, lineHeight: 1.5 }}>
+        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: 'var(--cream)', opacity: .4, marginBottom: 18, lineHeight: 1.5 }}>
           The challenge is fixed to this block — everyone racing it plays the same game.
         </div>
 

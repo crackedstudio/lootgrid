@@ -31,7 +31,7 @@ function RivalBars({ rivals, chasers }) {
   if (rivals.length === 0) {
     return (
       <div style={{ padding: '10px 0', borderBottom: '2px solid rgba(245,239,227,.12)', marginBottom: 12 }}>
-        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, letterSpacing: '.14em', color: 'var(--cream)', opacity: .45 }}>
+        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.14em', color: 'var(--cream)', opacity: .45 }}>
           {chasers > 1 ? `${chasers - 1} RIVALS CHASING` : "YOU'RE ALONE ON THIS ONE"}
         </div>
       </div>
@@ -41,18 +41,18 @@ function RivalBars({ rivals, chasers }) {
   const colors = ['#FF3D3D', '#29E6E6', '#B7FF3B', '#2F6BFF', '#FF7A1A'];
   return (
     <div style={{ padding: '10px 0', borderBottom: '2px solid rgba(245,239,227,.12)', marginBottom: 12 }}>
-      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, letterSpacing: '.14em', color: 'var(--cream)', opacity: .5, marginBottom: 8 }}>
+      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.14em', color: 'var(--cream)', opacity: .5, marginBottom: 8 }}>
         {rivals.length} RIVAL{rivals.length === 1 ? '' : 'S'} CHASING
       </div>
       {rivals.map((r, i) => {
         const color = colors[i % colors.length];
         return (
           <div key={r.handle} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, color, width: 58, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.handle}</div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, color, width: 58, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.handle}</div>
             <div style={{ flex: 1, height: 8, background: 'rgba(245,239,227,.1)', border: '1.5px solid #0C0C10', overflow: 'hidden' }}>
               <div style={{ height: '100%', background: color, width: `${r.pct}%`, transition: 'width .2s linear' }} />
             </div>
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color, width: 32, textAlign: 'right', flexShrink: 0 }}>{r.pct}%</div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color, width: 32, textAlign: 'right', flexShrink: 0 }}>{r.pct}%</div>
           </div>
         );
       })}
@@ -64,7 +64,7 @@ function TimerBar({ pct, label }) {
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.12em', color: 'var(--cream)', opacity: .55 }}>TIME</div>
+        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.12em', color: 'var(--cream)', opacity: .55 }}>TIME</div>
         <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 14, color: pct < 30 ? '#FF3D3D' : '#FF7A1A' }}>{label}</div>
       </div>
       <div style={{ height: 8, border: '2px solid #0C0C10', background: 'rgba(245,239,227,.1)', overflow: 'hidden' }}>
@@ -83,7 +83,7 @@ function TapGame({ game, spec, locked, onTap }) {
   return (
     <>
       <TimerBar pct={timePct} label={`${(game.remainingMs / 1000).toFixed(1)}s`} />
-      <div style={{ textAlign: 'center', marginBottom: 20, fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.16em', color: 'var(--cream)', opacity: .6 }}>
+      <div style={{ textAlign: 'center', marginBottom: 20, fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.16em', color: 'var(--cream)', opacity: .6 }}>
         MASH TO CRACK IT
       </div>
       <div style={{ display: 'flex', gap: 4, marginBottom: 24, justifyContent: 'center' }}>
@@ -122,7 +122,7 @@ function MemGame({ game, locked, onPad }) {
   const active = game.phase === 'input' && !locked;
   return (
     <>
-      <div style={{ textAlign: 'center', marginBottom: 16, fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.14em', color: 'var(--cream)', opacity: .6 }}>
+      <div style={{ textAlign: 'center', marginBottom: 16, fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.14em', color: 'var(--cream)', opacity: .6 }}>
         {game.phase === 'watch' ? 'WATCH THE SEQUENCE' : `REPEAT: ${game.index}/${game.sequence.length}`}
       </div>
       <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginBottom: 28 }}>
@@ -154,13 +154,13 @@ function MathGame({ game, locked, onPick }) {
   return (
     <>
       <div style={{ textAlign: 'center', marginBottom: 8 }}>
-        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.14em', color: 'var(--cream)', opacity: .55, marginBottom: 8 }}>
+        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.14em', color: 'var(--cream)', opacity: .55, marginBottom: 8 }}>
           SOLVE {game.count} IN A ROW
         </div>
         {/* Per question, not per attempt — a directed round can be shorter than
             the one before it, and a player racing a clock is owed the number. */}
         {game.maxAnswerMs != null && (
-          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.14em', color: '#FFD51F', opacity: .8, marginBottom: 8 }}>
+          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.14em', color: '#FFD51F', opacity: .8, marginBottom: 8 }}>
             {(game.maxAnswerMs / 1000).toFixed(1)}s PER QUESTION
           </div>
         )}
@@ -174,7 +174,7 @@ function MathGame({ game, locked, onPick }) {
         <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 52, lineHeight: 1, color: 'var(--cream)', letterSpacing: '-.02em' }}>
           {game.question.q}
         </div>
-        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, color: 'var(--cream)', opacity: .4, marginTop: 8 }}>=  ?</div>
+        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, color: 'var(--cream)', opacity: .4, marginTop: 8 }}>=  ?</div>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, maxWidth: 240, margin: '0 auto 20px' }}>
         {game.question.options.map(opt => {
@@ -207,7 +207,7 @@ function SeqGame({ game, locked, onTap }) {
   return (
     <>
       <div style={{ textAlign: 'center', marginBottom: 16 }}>
-        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.14em', color: 'var(--cream)', opacity: .55 }}>
+        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.14em', color: 'var(--cream)', opacity: .55 }}>
           TAP IN ORDER: 1 → {game.n}
         </div>
         <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 26, color: 'var(--cream)', marginTop: 6 }}>
@@ -295,7 +295,7 @@ function CrackGame({ game, spec, locked, hints, onLock }) {
               </div>
               {zoneHints.length > 0 && (
                 <div style={{
-                  fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700,
+                  fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700,
                   color: '#0C0C10', opacity: .7,
                 }}>
                   {ruledOut ? 'RULED OUT' : `${agrees.length}/${zoneHints.length} AGREE`}
@@ -307,7 +307,7 @@ function CrackGame({ game, spec, locked, hints, onLock }) {
       </div>
 
       <div style={{
-        fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700,
+        fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700,
         color: 'var(--cream)', opacity: .5, textAlign: 'center', marginTop: 12,
       }}>
         {locked || game.picked !== null
@@ -370,7 +370,7 @@ export default function Minigame({ state, onMgTap, onMemPad, onMathPick, onSeqTa
           <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 26, color: '#FF3D3D', textAlign: 'center', animation: 'lg-shake .4s ease' }}>
             {FAIL_COPY[failReason] || 'HUNT FAILED'}
           </div>
-          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: 'var(--cream)', opacity: .4 }}>
+          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: 'var(--cream)', opacity: .4 }}>
             {failReason}
           </div>
         </div>

@@ -45,7 +45,7 @@ export default function HomeScreen({ state, onEnter, onSkipIntro }) {
             justifyContent: 'center', fontFamily: "'Archivo Black', sans-serif", fontSize: 13, color: '#0C0C10',
           }}>L</div>
           <div style={{
-            fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700,
+            fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700,
             letterSpacing: '.18em', color: 'var(--cream)', opacity: .55,
           }}>CRACKED STUDIOS</div>
         </div>
@@ -54,7 +54,7 @@ export default function HomeScreen({ state, onEnter, onSkipIntro }) {
           border: `2px solid ${online ? '#07955F' : '#FF7A1A'}`, padding: '3px 8px',
         }}>
           <div style={{ width: 7, height: 7, background: online ? '#07955F' : '#FF7A1A', animation: 'lg-bob 1s ease-in-out infinite' }} />
-          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.12em', color: online ? '#07955F' : '#FF7A1A' }}>
+          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.12em', color: online ? '#07955F' : '#FF7A1A' }}>
             {online ? 'LIVE' : 'CONNECTING'}
           </div>
         </div>
@@ -101,7 +101,7 @@ export default function HomeScreen({ state, onEnter, onSkipIntro }) {
         padding: '13px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', zIndex: 2,
       }}>
         <div>
-          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, letterSpacing: '.14em', color: '#FFD51F' }}>HUNTS LIVE ON THE GRID</div>
+          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.14em', color: '#FFD51F' }}>HUNTS LIVE ON THE GRID</div>
           <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 29, lineHeight: 1, color: 'var(--cream)', marginTop: 4 }}>
             {liveHunts}
           </div>
@@ -110,7 +110,7 @@ export default function HomeScreen({ state, onEnter, onSkipIntro }) {
           <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 22, lineHeight: 1, color: '#2CE66A' }}>
             {zones.length}
           </div>
-          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, letterSpacing: '.1em', color: 'var(--cream)', opacity: .5, marginTop: 4 }}>ZONES OPEN</div>
+          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.1em', color: 'var(--cream)', opacity: .5, marginTop: 4 }}>ZONES OPEN</div>
         </div>
       </div>
 
@@ -128,7 +128,7 @@ export default function HomeScreen({ state, onEnter, onSkipIntro }) {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 13 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
             <div style={{ width: 7, height: 7, background: '#07955F' }} />
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, color: '#07955F' }}>powered by MiniPay</div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, color: '#07955F' }}>powered by MiniPay</div>
           </div>
           <div onClick={onSkipIntro} style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, fontWeight: 700, letterSpacing: '.08em', color: 'var(--cream)', opacity: .55, cursor: 'pointer' }}>
             skip intro →

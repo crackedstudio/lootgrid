@@ -44,6 +44,11 @@ export interface Player {
   /** When the pass's daily top-up was last taken. Claimed, never pushed. */
   passToppedUpAt: number | null;
   /**
+   * How far through the walkthrough this player has got. A high-water mark:
+   * the index of the next step to teach, `TUTORIAL_STEPS` once finished.
+   */
+  tutorialStep: number;
+  /**
    * UTC day this player was last recorded active, in memory only.
    *
    * Not a column — it exists so `markSeen` can skip a write it already made

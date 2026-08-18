@@ -22,7 +22,7 @@ export default function OnboardingScreen({ state, onNext, onSkip }) {
           <Mascot color="#FFD51F" mole size={58} />
         </div>
 
-        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.18em', color: onb.bg, marginBottom: 12 }}>
+        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.18em', color: onb.bg, marginBottom: 12 }}>
           {onb.kick}
         </div>
         <div style={{

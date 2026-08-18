@@ -197,6 +197,23 @@ export function awardXp(p: Player, amount: number): void {
   }
 }
 
+/**
+ * Move the walkthrough forward. Never backwards — see migration 020.
+ *
+ * Never throws, for the same reason `awardXp` does not: a coach mark that
+ * fails to advance must not cost the player the dig they already paid for.
+ */
+export function setTutorialStep(p: Player, step: number): void {
+  if (step <= p.tutorialStep) return;
+  try {
+    playerRepo.setTutorialStep(p.id, step);
+    p.tutorialStep = step;
+    playerCache.set(p.id, p);
+  } catch (err) {
+    logger.warn({ err, playerId: p.id, step }, 'tutorial advance failed — the action stands');
+  }
+}
+
 /** The Cycle Pass expiry. Mirrored onto the cached player — energy reads it. */
 /**
  * Record that a player was here today. See `playerRepo.seen`.
@@ -343,7 +360,17 @@ export function blockGame(hunt: Hunt): BlockGame {
   // for human zones, agent-native ones for agent zones. A missing zone falls
   // back to 'human', the stricter branch.
   const zoneKind = getZone(hunt.zoneId)?.kind ?? 'human';
-  const type = gameTypeForBlock(hunt.salt, hunt.id, hunt.kind, zoneKind);
+  // A reserved hunt is a walkthrough hunt, and it plays The Crack regardless of
+  // its kind.
+  //
+  // It is a `puzzle` hunt, so the draw above would hand it one of the four
+  // reflex games — and the walkthrough would spend its one guaranteed find
+  // teaching a tapping race that decides nothing and that the player will never
+  // meet again, while The Crack, which decides every cash hunt in the game, is
+  // first seen by someone who has already spent two days earning the right to
+  // enter one. Teaching the wrong resolution is worse than teaching none.
+  const type =
+    hunt.ownerId !== null ? 'crack' : gameTypeForBlock(hunt.salt, hunt.id, hunt.kind, zoneKind);
   const mod = moduleFor(type);
   // The cell goes in because The Crack's answer must BE the treasure — hints
   // describe its real position, so a door that is some other cell would make

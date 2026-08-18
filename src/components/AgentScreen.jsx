@@ -44,7 +44,7 @@ const CARD = { border: '3px solid #0C0C10', background: 'var(--card)', padding: 
 function Label({ children, dark }) {
   return (
     <div style={{
-      fontFamily: MONO, fontSize: 9, fontWeight: 700, letterSpacing: '.16em',
+      fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.16em',
       color: dark ? '#0C0C10' : 'var(--cream)', opacity: .55,
     }}>{children}</div>
   );
@@ -86,7 +86,7 @@ function Knob({ field, value, onChange, disabled }) {
         style={{ width: '100%', accentColor: '#8A3DFF', marginTop: 6 }}
       />
       {field.help && (
-        <div style={{ fontFamily: MONO, fontSize: 8, color: '#0C0C10', opacity: .5 }}>
+        <div style={{ fontFamily: MONO, fontSize: 11, color: '#0C0C10', opacity: .5 }}>
           {field.help}
         </div>
       )}
@@ -161,7 +161,7 @@ export default function AgentScreen() {
         <div style={{ fontFamily: BLACK, fontSize: 22, color: '#0C0C10', lineHeight: 1, marginTop: 2 }}>
           SPENDS, NEVER HOLDS
         </div>
-        <div style={{ fontFamily: MONO, fontSize: 8, color: '#0C0C10', opacity: .5, marginTop: 6 }}>
+        <div style={{ fontFamily: MONO, fontSize: 11, color: '#0C0C10', opacity: .5, marginTop: 6 }}>
           {agent.id}
         </div>
       </div>
@@ -188,7 +188,7 @@ export default function AgentScreen() {
           flexShrink: 0, padding: '12px 16px', borderBottom: '3px solid #0C0C10',
           background: 'rgba(255,61,61,.14)',
         }}>
-          <div style={{ fontFamily: MONO, fontSize: 9, lineHeight: 1.6, color: 'var(--cream)' }}>
+          <div style={{ fontFamily: MONO, fontSize: 11, lineHeight: 1.6, color: 'var(--cream)' }}>
             STOPPED HERE — <strong>NOT YET ON CHAIN</strong>. Until you send this,
             it can still spend within its caps.
           </div>
@@ -251,7 +251,7 @@ export default function AgentScreen() {
               >PUSH CAPS ON CHAIN</Button>
             )}
           </div>
-          <div style={{ fontFamily: MONO, fontSize: 8, color: '#0C0C10', opacity: .5, marginTop: 8, lineHeight: 1.5 }}>
+          <div style={{ fontFamily: MONO, fontSize: 11, color: '#0C0C10', opacity: .5, marginTop: 8, lineHeight: 1.5 }}>
             Saving here stops bad trades early. The caps that actually bind live
             in your vault — push them to change what it can spend.
           </div>
@@ -263,7 +263,7 @@ export default function AgentScreen() {
           <div style={{ fontFamily: BLACK, fontSize: 26, color: '#0C0C10', marginTop: 4 }}>
             {millsToUsd(agent.remainingMills)}
           </div>
-          <div style={{ fontFamily: MONO, fontSize: 8, color: '#0C0C10', opacity: .5 }}>
+          <div style={{ fontFamily: MONO, fontSize: 11, color: '#0C0C10', opacity: .5 }}>
             LEFT OF {centsToUsd(agent.config.dailyBudgetCents)} — HINTS AND THINKING TOGETHER
           </div>
 
@@ -277,7 +277,7 @@ export default function AgentScreen() {
                   void hash;
                 }, 'Agent bound and vault created. Fund it to let it trade.')}
               >CREATE ITS VAULT</Button>
-              <div style={{ fontFamily: MONO, fontSize: 8, color: '#0C0C10', opacity: .5, marginTop: 8, lineHeight: 1.5 }}>
+              <div style={{ fontFamily: MONO, fontSize: 11, color: '#0C0C10', opacity: .5, marginTop: 8, lineHeight: 1.5 }}>
                 Two transactions you sign: one binds the agent, one creates a
                 vault you own. It can spend from that vault and never withdraw
                 from it.
@@ -309,11 +309,11 @@ export default function AgentScreen() {
             <div style={{ height: 8 }} />
             {ledger.entries.slice(0, 12).map(entry => (
               <div key={entry.id} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                <div style={{ fontFamily: MONO, fontSize: 9, color: '#0C0C10', opacity: .7 }}>
+                <div style={{ fontFamily: MONO, fontSize: 11, color: '#0C0C10', opacity: .7 }}>
                   {entry.kind === 'hint' ? 'HINT' : 'THINKING'}
                   {entry.huntId ? ` · ${entry.huntId.slice(0, 14)}` : ''}
                 </div>
-                <div style={{ fontFamily: MONO, fontSize: 9, fontWeight: 700, color: '#0C0C10' }}>
+                <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: '#0C0C10' }}>
                   {millsToUsd(entry.amountMills)}
                 </div>
               </div>
@@ -323,7 +323,7 @@ export default function AgentScreen() {
 
         {!agent.inferenceLive && (
           <div style={{ ...CARD, borderColor: '#FF7A1A' }}>
-            <div style={{ fontFamily: MONO, fontSize: 9, lineHeight: 1.6, color: '#0C0C10' }}>
+            <div style={{ fontFamily: MONO, fontSize: 11, lineHeight: 1.6, color: '#0C0C10' }}>
               Thinking is switched off, so your agent plays a simple deterministic
               line instead of reasoning. It still competes; it just will not be
               clever, and it costs nothing while this is the case.

@@ -27,7 +27,7 @@ function ChipRow({ options, active, color, onChange }) {
 function Field({ label, children }) {
   return (
     <div style={{ marginBottom: 20 }}>
-      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.16em', color: 'var(--cream)', opacity: .55, marginBottom: 10 }}>{label}</div>
+      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.16em', color: 'var(--cream)', opacity: .55, marginBottom: 10 }}>{label}</div>
       {children}
     </div>
   );
@@ -42,7 +42,7 @@ export default function HuntsScreen() {
   return (
     <div className="lg-scroll" style={{ flex: 1, overflow: 'auto', background: 'var(--surface)', display: 'flex', flexDirection: 'column' }}>
       <div style={{ flexShrink: 0, padding: '16px 16px 14px', borderBottom: '3px solid #0C0C10', background: 'var(--card)' }}>
-        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.18em', color: '#0C0C10', opacity: .55 }}>CREATE</div>
+        <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.18em', color: '#0C0C10', opacity: .55 }}>CREATE</div>
         <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 22, color: '#0C0C10', lineHeight: 1, marginTop: 2 }}>A HUNT</div>
       </div>
 

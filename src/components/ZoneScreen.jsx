@@ -28,13 +28,13 @@ export default function ZoneScreen({ state, onGoHome, onEnterZone }) {
             justifyContent: 'center', fontFamily: "'Archivo Black', sans-serif", fontSize: 15, color: '#0C0C10', cursor: 'pointer',
           }}>L</div>
           <div>
-            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, fontWeight: 700, letterSpacing: '.18em', color: '#0C0C10', opacity: .55 }}>PICK A GRID</div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, letterSpacing: '.18em', color: '#0C0C10', opacity: .55 }}>PICK A GRID</div>
             <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 20, color: '#0C0C10', lineHeight: 1, marginTop: 2 }}>THE WORLD</div>
           </div>
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, fontWeight: 700, color: '#0C0C10' }}>⚡ {energy.value}/{energy.max}</div>
-          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, color: '#0C0C10', opacity: .5, marginTop: 3 }}>YOUR ENERGY</div>
+          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: '#0C0C10', opacity: .5, marginTop: 3 }}>YOUR ENERGY</div>
         </div>
       </div>
 
@@ -61,7 +61,7 @@ export default function ZoneScreen({ state, onGoHome, onEnterZone }) {
                     <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 17, color: '#0C0C10', lineHeight: 1 }}>{zone.name}</div>
                     {copy.tag && (
                       <div style={{
-                        fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700,
+                        fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700,
                         letterSpacing: '.12em', color: '#0C0C10', background: zone.accent,
                         border: '2px solid #0C0C10', padding: '2px 6px', whiteSpace: 'nowrap',
                       }}>{copy.tag}</div>
@@ -74,11 +74,11 @@ export default function ZoneScreen({ state, onGoHome, onEnterZone }) {
                     <div>
                       {/* Real count from the server, not a decorative number. */}
                       <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 16, color: '#0C0C10' }}>{zone.hunts}</div>
-                      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, color: '#0C0C10', opacity: .5 }}>LIVE HUNTS</div>
+                      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, color: '#0C0C10', opacity: .5 }}>LIVE HUNTS</div>
                     </div>
                     <div>
                       <div style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 16, color: '#0C0C10' }}>{copy.diff ?? 'OPEN'}</div>
-                      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, fontWeight: 700, color: '#0C0C10', opacity: .5 }}>DIFFICULTY</div>
+                      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, fontWeight: 700, color: '#0C0C10', opacity: .5 }}>DIFFICULTY</div>
                     </div>
                   </div>
                 </div>
