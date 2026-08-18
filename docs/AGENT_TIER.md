@@ -372,7 +372,106 @@ Small, but they arrive on day one.
 
 ---
 
-## 10. Order of work
+## 10. Can one house agent handle every task, at 100 seats?
+
+Short answer: **every task, yes. At 100 seats simultaneously, not as written** —
+one constant has to move, and it has to be measured against the provider's real
+limit rather than guessed.
+
+### 10.1 Most of what an agent does costs nothing
+
+Worth establishing first, because it is better news than it sounds.
+`driver.driveOne()` performs six things per tick, and **only one of them
+consults the model**:
+
+| Task | Cost | Where |
+| --- | --- | --- |
+| Check it may still spend | 1 RPC read | `vaultChain.readVault` |
+| Answer rivals' messages | **arithmetic** | `negotiate` — no model, deliberately |
+| Settle agreed trades | chain write | `settleAgreements` |
+| Decide whether to enter | **arithmetic** | `budget.viableFor` |
+| Decide whether to buy a hint | **arithmetic** | `budget.canBuyHint` |
+| **Take a turn in a hunt** | **1 model call** | `runtime` → `inference` |
+
+The negotiation path being model-free is not an optimisation, it is a security
+property: a message from a rival is attacker-controlled input arriving at
+something that can spend money, so the reply comes from a function that cannot
+be persuaded of anything. It happens to also mean the house pays nothing for the
+most conversational-looking part of the tier.
+
+So "can the house agent handle every task" resolves to: **can it take enough
+turns.**
+
+### 10.2 It cannot, at 100 seats, with `MAX_IN_FLIGHT = 4`
+
+At full utilisation — every seat holding its `MAX_CONCURRENT = 3` attempts,
+thirteen calls spread over a ten-minute attempt:
+
+    3 attempts x 13 calls / 10 min  = 3.9 calls/min per agent
+    x 100 seats                     = 390 calls/min = 6.5 calls/sec
+
+Against the global gate:
+
+| Provider latency | Capacity | Demand | Utilisation |
+| --- | --- | --- | --- |
+| 1s | 4.0 calls/sec | 6.5 | **163%** |
+| 2s | 2.0 calls/sec | 6.5 | **325%** |
+| 5s | 0.8 calls/sec | 6.5 | **813%** |
+
+`MAX_IN_FLIGHT = 4` was sized when agents were a handful of demo accounts. At a
+hundred paying seats it is the binding constraint, ahead of cost and ahead of
+the serial sweep.
+
+That figure is peak rather than average — agents idle when no viable hunt exists,
+and today's supply (§6) means they idle a great deal. But peak is what matters
+here: a new hunt appearing is precisely the moment every agent wants a turn at
+once.
+
+### 10.3 What saturation does to a paying customer
+
+This is the part that turns a capacity number into a refund conversation.
+
+Turns are queued per tenant, so a backed-up queue does not drop work — it
+delays it. But an attempt carries `deadlineAt`, and the timer wheel expires it:
+a turn that arrives after the deadline is a **lost hunt**.
+
+So the failure mode is not "the tier feels slow". It is **paid seats losing
+hunts because our queue was busy**, which is indistinguishable to the player from
+their agent being bad.
+
+The serial sweep has a quieter version of the same problem. `tick()` opens with
+
+```ts
+if (ticking) return;
+```
+
+so an overrun **skips** rather than queues. At 200ms of RPC latency a pass over
+100 agents takes 20 seconds against a 5-second tick, and the only symptom is
+agents being served less often — no error, no log line, nothing in a dashboard.
+
+### 10.4 What to change, in order
+
+1. **Raise `MAX_IN_FLIGHT`, against a measured provider limit.** Not a guess: the
+   ceiling is DeepSeek's per-account concurrency, which §9.2 says we do not
+   currently know. Find it, set the gate below it, and alert on rejections.
+2. **Add a per-seat rate**, distinct from the per-seat budget (§9.2). Without it
+   one agent can hold every in-flight slot while ninety-nine wait.
+3. **Make the sweep concurrent and cache the vault read** — `AGENTS_BYO.md`
+   §5.2 Stage 0. At 100 seats this is comfortable at 20–50ms and overruns at
+   200ms, so it is a latency-sensitivity problem rather than a wall.
+4. **Instrument the queue against the deadline.** `agentQueueDepth` exists;
+   what does not is "turns that arrived too late to matter". That number is the
+   one that predicts refunds.
+5. **Alarm on skipped sweeps.** A silent `return` is the worst shape a
+   degradation can have.
+
+None of this is large. The point of stating it is that a hundred paid seats is
+not the same system as five demo accounts, and the constant that separates them
+is currently a `4`.
+
+---
+
+## 11. Order of work
 
 1. **Decide §6.1 first** — does the agent tier pay cash at all? Everything else
    is shaped by that answer, and the XP-only version is dramatically simpler.
@@ -387,3 +486,7 @@ Small, but they arrive on day one.
    `.env`, a low-balance alarm, and billing on measured usage. Selling compute we
    cannot meter accurately is how a tier ends up subsidised without anyone
    noticing.
+8. **And the capacity floor from §10** — `MAX_IN_FLIGHT` raised against a
+   measured provider limit, plus the late-turn metric. A paid seat that loses a
+   hunt to our queue is a refund, and at present nothing would tell us it had
+   happened.
