@@ -512,6 +512,25 @@ export const reputationReadFailures = new Counter({
 });
 
 /** Queue depth in the shared runtime. One busy tenant must not starve a hunt. */
+/**
+ * Tokens the provider actually charged for.
+ *
+ * The reconciliation against `budget.CALL_MILLS`, which is a fixed estimate
+ * because the budget must be checked BEFORE a call. Under house-funded tokens
+ * this is the difference between a seat that is profitable and one that is
+ * quietly subsidised — and a fixed estimate cannot notice a prompt that grew.
+ *
+ * Compare `sum(rate(lootgrid_inference_tokens_total)) * price` against the
+ * provider's invoice. A gap means the estimate needs re-deriving, not that the
+ * cap needs raising.
+ */
+export const inferenceTokens = new Counter({
+  name: 'lootgrid_inference_tokens_total',
+  help: 'Tokens billed by the provider, by direction',
+  labelNames: ['direction', 'model'],
+  registers: [registry],
+});
+
 export const agentQueueDepth = new Gauge({
   name: 'lootgrid_agent_queue_depth',
   help: 'Turns waiting in the multi-tenant inference pool',

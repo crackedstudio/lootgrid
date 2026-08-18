@@ -27,27 +27,44 @@ import type { Difficulty } from '../types';
  * A turn in these games is a small prompt: the rules, the history so far, and a
  * request for one structured move. Call it 1,500 input and 200 output tokens.
  *
- *   flash   1500 × 0.14/1M + 200 × 0.28/1M  =  $0.000266   ≈ 266 mills / 1000
+ *   flash   1500 × 0.14/1M + 200 × 0.28/1M  =  $0.000266
  *   pro     1500 × 0.435/1M + 200 × 0.87/1M =  $0.000827
  *
- * So ~0.27 mills per call on flash, not 5,000. And the call count is bounded by
- * the game modules themselves — deduction allows at most 8 probes plus a commit,
- * search 8 probes, negotiation 10 rounds — so a hunt is about ten calls, not
- * two hundred. Roughly 3 mills of thinking per hunt, against the ~$1 the
- * architecture feared.
+ * ─────────────────────────── a unit error, corrected ────────────────────────
+ *
+ * This block previously read "~0.27 mills per call on flash" and priced a call
+ * at 1 mill. That converted **dollars as if they were cents**: a mill is a
+ * thousandth of a CENT ({@link MILLS_PER_CENT} = 1000), so $0.000266 is 0.0266
+ * cents — **26.6 mills**, not 0.27. The house was under-billing itself 27x on
+ * flash and 41x on pro.
+ *
+ * It mattered in two places beyond the ledger. `viableFor` puts inference on the
+ * cost side of EV, which is the right place, but with a cost 27x too low — so
+ * agents entered hunts that were genuinely negative-EV believing they were
+ * ahead. And under house-funded tokens it is the difference between a seat that
+ * is profitable and one that is quietly subsidised.
+ *
+ * The call count is still bounded by the game modules themselves — deduction
+ * allows at most ⌈log₂ cells⌉ probes plus a commit, search five, negotiation
+ * five — so a hunt is about thirteen calls, not two hundred. Roughly 350 mills
+ * of thinking per hunt on flash, against the ~$1 the architecture feared. Still
+ * two orders of magnitude cheaper than the fear; simply not four.
  *
  * ─────────────────────────── but the prizes fell too ────────────────────────
  *
  * §7's 8%-of-a-$12-prize was computed against a prize band this game no longer
  * has. Prizes are $0.01–$5.00 (prizes.ts), so the ratio that matters is:
  *
- *   hard  $5.00   inference ~0.05% of the prize
- *   med   $0.50   inference ~0.5%
- *   easy  $0.01   inference ~27%   ← and ~83% on v4-pro
+ * At the corrected prices and the current band (prizes.ts), a hunt's worth of
+ * thinking is:
  *
- * The easy tier does not survive contact with inference costs. At more than two
- * entrants it is negative EV before a single hint is bought, which is why
- * {@link viableFor} exists and why agent zones do not draw easy hunts.
+ *   hard  $5.00   ~350 mills   0.07% of the prize
+ *   med   $1.20   ~350 mills   0.29%
+ *   easy  $0.60   ~350 mills   0.58%
+ *
+ * Comfortable at every tier — but that is a statement about ONE entrant. The
+ * house pays per entrant with no divisor, so {@link viableFor} protects the
+ * agent's EV and not ours. See docs/AGENTS_BYO.md §1.3.
  */
 
 /**
@@ -59,12 +76,12 @@ import type { Difficulty } from '../types';
  * before making it. Overestimating slightly is the safe direction.
  */
 export const CALL_MILLS: Record<string, number> = {
-  'deepseek-v4-flash': 1,
-  'deepseek-v4-pro': 2,
+  'deepseek-v4-flash': 27,
+  'deepseek-v4-pro': 83,
 };
 
 /** Anything unrecognised is priced as the expensive model. Fail expensive, not cheap. */
-export const DEFAULT_CALL_MILLS = 2;
+export const DEFAULT_CALL_MILLS = 83;
 
 export function callCostMills(model: string): number {
   return CALL_MILLS[model] ?? DEFAULT_CALL_MILLS;

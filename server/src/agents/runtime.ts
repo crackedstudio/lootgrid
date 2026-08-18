@@ -253,7 +253,21 @@ async function runTurn(ctx: TurnContext): Promise<TurnOutcome> {
 
   // Bill what actually happened, including the retry. The budget authorised one
   // call; a retry that took a second is still the house's money.
+  // Billed on the ESTIMATE, deliberately. The budget was checked before the
+  // call against the same number, so billing on measured tokens afterwards
+  // could charge more than was authorised — which is the failure the
+  // check-before-call ordering exists to prevent.
+  //
+  // Measured usage is recorded separately, for reconciliation. If the two
+  // diverge, the estimate is what should be re-derived.
   const billedMills = result.calls * budget.callCostMills(model());
+  if (result.usage) {
+    metrics.inferenceTokens.inc({ direction: 'prompt', model: model() }, result.usage.promptTokens);
+    metrics.inferenceTokens.inc(
+      { direction: 'completion', model: model() },
+      result.usage.completionTokens,
+    );
+  }
   if (billedMills > 0) {
     budget.record(ctx.agentId, 'inference', billedMills, { huntId: ctx.huntId });
     metrics.agentInferenceMills.inc(billedMills);

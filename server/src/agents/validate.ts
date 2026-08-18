@@ -203,6 +203,18 @@ export interface TurnResult {
   source: 'model' | 'retry' | 'fallback';
   /** Calls actually made, so the caller can bill exactly what happened. */
   calls: number;
+  /**
+   * Tokens the provider says it charged for, summed across those calls.
+   *
+   * Undefined when the provider did not report any — never zero, because a zero
+   * reads as "this was free" and would quietly flatter the reconciliation in
+   * `metrics.inferenceTokens`.
+   *
+   * NOT used for the budget decision. That has to happen before the call, so it
+   * uses the estimate in `budget.CALL_MILLS`; this is what tells us whether the
+   * estimate is still true.
+   */
+  usage?: { promptTokens: number; completionTokens: number };
 }
 
 /** One retry. More would be a loop that bills; none would waste a transient blip. */
@@ -217,6 +229,9 @@ export const MAX_ATTEMPTS = 2;
  */
 export async function takeTurn(req: TurnRequest): Promise<TurnResult> {
   let calls = 0;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let sawUsage = false;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const response = await complete({
@@ -225,6 +240,11 @@ export async function takeTurn(req: TurnRequest): Promise<TurnResult> {
       maxTokens: req.maxTokens,
     });
     calls += 1;
+    if (response.ok && response.usage) {
+      sawUsage = true;
+      promptTokens += response.usage.promptTokens;
+      completionTokens += response.usage.completionTokens;
+    }
 
     if (!response.ok) {
       metrics.agentInferenceFailures.inc({ reason: response.reason });
@@ -236,7 +256,12 @@ export async function takeTurn(req: TurnRequest): Promise<TurnResult> {
     const parsed = parseMove(req.game, response.text);
     if (parsed.ok) {
       metrics.agentMoves.inc({ game: req.game, source: attempt === 0 ? 'model' : 'retry' });
-      return { move: parsed.move, source: attempt === 0 ? 'model' : 'retry', calls };
+      return {
+        move: parsed.move,
+        source: attempt === 0 ? 'model' : 'retry',
+        calls,
+        usage: sawUsage ? { promptTokens, completionTokens } : undefined,
+      };
     }
 
     // The number to watch. A model that starts failing the schema is a model
@@ -246,5 +271,10 @@ export async function takeTurn(req: TurnRequest): Promise<TurnResult> {
   }
 
   metrics.agentMoves.inc({ game: req.game, source: 'fallback' });
-  return { move: fallbackMove(req.game, req.spec, req.state), source: 'fallback', calls };
+  return {
+    move: fallbackMove(req.game, req.spec, req.state),
+    source: 'fallback',
+    calls,
+    usage: sawUsage ? { promptTokens, completionTokens } : undefined,
+  };
 }
