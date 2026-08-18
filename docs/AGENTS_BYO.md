@@ -17,10 +17,10 @@ plug their own in. The numbers below are from this repo, not estimates — see
 | | House-hosted | Bring your own |
 | --- | --- | --- |
 | Who pays to think | **The house.** Metered to the agent's ledger, charged to nobody | The player |
-| Cost per hunt-attempt | $0.0013 (flash) / $0.0026 (pro) | same, paid by them |
+| Cost per hunt-attempt | **$0.0035 (flash) / $0.0108 (pro)** — see §7.1, `budget.ts` under-bills this by ~27x | same, paid by them |
 | Polling cost | 1 on-chain `readVault()` **per agent per 5s tick** | none — they call us |
 | Ceiling at 20k agents | **~100 agents**, for throughput reasons | HTTP rate limits |
-| Inference vs prize at 20k entrants on one $5 hunt | **$26 spent to give away $5** | $0 to the house |
+| Inference vs prize at 20k entrants on one $5 hunt | **$69 spent to give away $5** (§7.1) | $0 to the house |
 
 The important thing this table says: **the LLM bill was never the binding
 constraint.** Two other things break first, and they break at a hundred agents
@@ -54,8 +54,12 @@ about **one** hunt. Nothing bounds how many agents think about the same hunt.
 | --- | --- |
 | 100 | $0.13 |
 | 1,000 | $1.30 |
-| 5,000 | **$6.50** — exceeds the prize |
-| 20,000 | **$26.00** |
+| 5,000 | **$17.30** — exceeds the prize |
+| 20,000 | **$69.20** |
+
+*(Corrected figures. The originals used `CALL_MILLS`, which under-bills by ~27x —
+see §7.1. The shape of the argument is unchanged; the crossover simply arrives
+sooner, at ~1,450 entrants rather than ~3,800.)*
 
 The *authorised* ceiling is worse: 20,000 × $0.50 each = **$10,000 of house
 money permitted against a single $5 prize.**
@@ -65,8 +69,8 @@ precisely. It asks *"is this hunt +EV for the agent"*, and an agent's expected
 share is `prize ÷ entrants` — so it divides. The house pays **per** entrant,
 with no divisor. The check protects exactly the wrong party.
 
-At 20,000 agents × 5 hunts/day the house pays **$3,900/month of inference**
-against a **$100–300/month** prize floor: inference at 13–39× the pool it is
+At 20,000 agents × 5 hunts/day the house pays **$10,380/month of inference**
+against a **$100–300/month** prize floor: inference at **35–104x** the pool it is
 competing for.
 
 ### 1.4 And there is nothing for them to play anyway
@@ -454,3 +458,177 @@ product. That is the §8 conclusion restated: the agent layer is the story.
 connected. The costs above are arithmetic from measured model pricing and the
 loop as written; the demand side is unknown, and the funnel added in phase 0
 does not measure agents.
+
+---
+
+## 7. If the house pays for inference
+
+Asked directly: *what if we handle the LLM cost, on our own DeepSeek tokens?*
+
+It is a coherent plan, for **hundreds** of agents. It is not a plan for twenty
+thousand, and the reason is not the one you would expect — it is that the
+throughput wall (§1.1) and the affordable spend both run out at roughly the same
+place, so paying the bill does not buy you past the ceiling.
+
+But first, something that has to be fixed before any of these numbers mean
+anything.
+
+### 7.1 There is a 100x unit error in the budget
+
+`server/src/agents/budget.ts` does its arithmetic correctly in dollars and then
+records the answer in the wrong unit.
+
+    the comment's own working:  1500 x $0.14/1M + 200 x $0.28/1M = $0.000266
+    the comment then concludes: "~0.27 mills per call on flash"
+
+`MILLS_PER_CENT = 1000`, so a mill is a thousandth of a **cent**, not a
+thousandth of a **dollar**. $0.000266 is 0.0266 cents, which is **26.6 mills** —
+not 0.27. The conversion treated dollars as cents.
+
+| | billed | actual | under-billed by |
+| --- | --- | --- | --- |
+| `deepseek-v4-flash` | 1 mill/call | 26.6 mills/call | **27x** |
+| `deepseek-v4-pro` | 2 mills/call | 82.7 mills/call | **41x** |
+
+Three consequences, in ascending order of importance.
+
+**The house under-charges itself.** Every figure the ledger reports — and every
+figure in §1 of this document before it was corrected — understates real spend by
+27x on flash. `agent/ledger` tells an owner their agent cost less than it did.
+
+**`budget.viableFor` is wrong in the agent's favour.** It puts inference on the
+cost side of `EV = prize/N − fee − inference`, which is the right place, but with
+a cost 27x too low. Agents therefore enter hunts that are genuinely -EV and
+believe they are ahead. The corrected break-even points are much tighter:
+
+    easy ($0.60)  flash: 173 entrants     pro: 55
+    med  ($1.20)  flash: 347 entrants     pro: 111
+    hard ($5.00)  flash: 1,445 entrants   pro: 465
+
+**The per-hunt cap still does not bind, which is the good news.**
+`prizeCeilingMills` allows 10% of the prize — 6,000 mills on the cheapest tier
+against a corrected 346 mills of actual use. So there is no runaway hiding here;
+the cap was simply never the thing doing the work.
+
+**Fixing it is not a one-line change, and that is worth saying.** Raising
+`CALL_MILLS` to the true figures immediately makes `viableFor` refuse hunts it
+used to accept, which on today's supply (§1.4) could empty the agent zone. The
+correct sequence is: fix the constants, *then* look at whether the prize band or
+the entrant expectations need to move — not fix the constants and discover the
+zone went quiet.
+
+### 7.2 What house-paid inference actually costs
+
+Corrected, per hunt-attempt, at thirteen calls:
+
+    flash   346 mills   $0.00346
+    pro    1075 mills   $0.01075
+
+Against a monthly inference budget, on flash:
+
+| Budget | Attempts/month | ~Agents at 5 hunts/day | ~Agents at 1 hunt/day |
+| --- | --- | --- | --- |
+| $25 | 7,229 | 48 | 240 |
+| $50 | 14,459 | 96 | 481 |
+| $100 | 28,918 | 192 | 963 |
+| $300 | 86,755 | 578 | 2,891 |
+
+### 7.3 Why this lands at hundreds
+
+Read the table above next to §1.1 and the coincidence is the whole answer.
+
+A $50–100/month inference budget supports roughly **100–200 active agents**. The
+serial driver loop supports roughly **100–250 agents**. Those are the same number
+by accident, and it means **paying the LLM bill does not raise the ceiling** — it
+just stops one of two things from being the reason you hit it.
+
+Which is why Stage 0 in §5.2 comes first regardless of who pays. If the house is
+funding inference, fixing the loop is what makes the money you are spending
+reach more than a hundred players.
+
+### 7.4 The shape this actually points to
+
+Not "house-hosted agents" and not "pure BYO", but the middle, and it is a better
+product than either:
+
+> **The player brings the agent's logic. The house provides the thinking, metered.**
+
+Their code runs wherever they like and calls us for a move. Concretely, alongside
+the endpoints in §5.1:
+
+    POST /agent/think    { attemptId }  ->  { move, billedMills, remainingMills }
+
+Four reasons this is the right middle, and one caveat.
+
+**It removes the single biggest adoption barrier.** A hobbyist does not need a
+DeepSeek account, a key, or a card. That is a much lower bar than "bring your own
+API key", and the review's whole audience thesis is about people for whom the
+*rails* are the obstacle rather than the willingness.
+
+**The abuse surface is already closed.** A house-run LLM endpoint is normally a
+free proxy people use for unrelated prompts. Not here: `runtime.buildPrompt()` is
+**server-side and pure**, built from the attempt's own state. The caller sends an
+attempt id, not text. There is no field in which to smuggle a different task —
+the same argument that keeps `protocol.ts` free of strings.
+
+**The cost controls already exist.** `canInfer` caps per hunt and per day, and —
+the part that makes a hard cap safe — running out is not fatal:
+`runtime.ts` falls back to `fallbackFor(ctx)`, a deterministic move, for free.
+An agent out of budget plays on, worse. So the house can cap aggressively without
+anyone forfeiting.
+
+**It keeps the throughput fix honest.** They call us; we do not poll them. The
+§1.1 wall does not apply to agents that initiate.
+
+**The caveat, stated plainly:** an agent that gets its move from our model is
+bringing a *configuration*, not an agent. The genuinely interesting BYO case —
+someone with their own model, their own approach, their own edge — needs the
+option to skip `/agent/think` entirely. So this is a **starter tier**, not the
+destination. Support both, and expect the good agents to leave it.
+
+### 7.5 Before turning house-paid inference on
+
+Four controls, none of which exist today.
+
+1. **A house-wide daily ceiling.** Every cap in `budget.ts` is per agent. Twenty
+   thousand agents each within their own budget is unbounded house exposure. This
+   is the one that must exist before the first external agent connects.
+2. **A per-hunt entrant cap on funded inference.** The crowd problem from §1.3 is
+   untouched by per-agent limits. Past N entrants, later arrivals get the
+   deterministic fallback rather than a funded call.
+3. **Bill measured usage, not an estimate.** `inference.ts` never reads `usage`
+   off the response — the 1,500/200 token figures are an *assumption* nobody has
+   checked. Record real `prompt_tokens` / `completion_tokens` and bill those. It
+   may well be cheaper than §7.2 says; the point is that we do not currently
+   know, and a fixed estimate cannot notice a prompt that grew.
+4. **Separate the two budgets.** `canInfer` charges inference against
+   `config.dailyBudgetCents`, the same pot as hint purchases — so a player who
+   raises their budget to buy hints silently authorises more *house* spending on
+   thinking. Player money and house money should not share a ceiling.
+
+### 7.6 DeepSeek-specific levers
+
+**Prompt caching is worth measuring, and may be smaller than it looks.** The
+repo's own pricing note says `$0.14/1M (cache miss)`, which implies a cheaper hit
+rate is available. Within a single hunt the prefix is stable —
+`Game: X. Rules and current position: <spec>.` does not change across a hunt's
+turns, only `Your progress so far` does — so calls 2–13 of the same hunt should
+be cache hits. Input is ~79% of per-call cost, so this is the largest single
+lever available.
+
+But `SYSTEM_PROMPT` is four sentences, about fifty tokens. Whatever is cacheable
+is in the *user* prompt, which means the ordering in `buildPrompt` (static spec
+first, mutable state after) is load-bearing for cache hits and should be
+commented as such before someone reorders it for readability.
+
+**Off-peak pricing, if it still exists, is a scheduling decision.** Agent zones
+already run on a 72-hour hunt TTL and a fifteen-minute settlement window — this
+is the one part of the game with no latency requirement at all, so shifting agent
+turns into a cheaper window costs nothing a player would notice. Worth checking
+current terms before building for it.
+
+**Flash versus pro is a 3.1x cost difference** ($0.00346 vs $0.01075 per hunt).
+`model()` already selects per deployment. Nothing measures whether pro plays
+*better* — there is no win-rate-by-model metric — so the more expensive model is
+currently a preference rather than a finding. That is cheap to instrument and
+should be, before paying 3x for it at scale.
