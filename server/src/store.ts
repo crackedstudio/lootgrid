@@ -1,4 +1,4 @@
-import { ASYNC, CASH_PER_ZONE, EPOCH, GRID, HUNTS_PER_ZONE } from './config';
+import { ASYNC, CASH_PER_ZONE, DISCOVERY, EPOCH, GRID, HUNTS_PER_ZONE } from './config';
 import { migrate } from './db/migrate';
 import { tx } from './db/index';
 import * as attemptRepo from './db/repos/attempts';
@@ -257,11 +257,54 @@ export function getHunt(id: string): Hunt | undefined {
 }
 
 export const huntAt = (z: Zone, r: number, c: number) => huntRepo.at(z.id, z.epoch, r, c);
+/**
+ * Every live treasure in a zone — the server's own view.
+ *
+ * Survey measures against treasures nobody has found, hints are generated for
+ * them and `replenish` counts them, so all of that has to see the whole truth.
+ * **This is never what a client gets.** Serving it was the bug migration 019
+ * closes; {@link visibleHuntsIn} is the one the API uses.
+ */
 export const liveHuntsIn = (z: Zone) => huntRepo.listLive(z.id, z.epoch);
+/** What one player may see: everything public, plus what they personally dug up. */
+export const visibleHuntsIn = (z: Zone, playerId: string, now = Date.now()) =>
+  huntRepo.listVisible(z.id, z.epoch, playerId, now);
 /** Hunts reserved for one player. Never part of the shared map — see types.Hunt. */
 export const ownedHuntsIn = (z: Zone, ownerId: string) =>
   huntRepo.listOwned(z.id, z.epoch, ownerId);
 export const expiredHunts = (now?: number) => huntRepo.expired(now);
+
+/**
+ * Record that this player just dug up a treasure.
+ *
+ * Returns true the first time this player finds it. The first finder anywhere
+ * also starts the head start — twenty minutes of knowing about it before the
+ * zone is told — and later finders join without extending it, because a head
+ * start that any new arrival could reset would never end.
+ *
+ * The window buys PREPARATION, not an exclusive attempt: entry stays open to
+ * everyone once the hunt is public, and the Crack is a fifteen-second window, so
+ * an exclusive head start of this length would resolve nearly every hunt before
+ * the field heard of it. See config.DISCOVERY.
+ */
+export function discoverHunt(hunt: Hunt, playerId: string, now = Date.now()): boolean {
+  const fresh = huntRepo.addDiscovery(hunt.id, playerId, now, now + DISCOVERY.headStartMs);
+  if (fresh) {
+    // Re-read rather than assuming: `bringPublicForward` only moves the moment
+    // earlier, so a second finder's write may legitimately have changed nothing.
+    huntCache.delete(hunt.id);
+    const updated = huntRepo.get(hunt.id);
+    if (updated) huntCache.set(hunt.id, updated);
+  }
+  return fresh;
+}
+
+export const hasDiscovered = (huntId: string, playerId: string) =>
+  huntRepo.hasDiscovered(huntId, playerId);
+
+/** True once a treasure's location has stopped being private to its finders. */
+export const isHuntPublic = (hunt: Hunt, now = Date.now()) =>
+  hunt.publicAt !== null && hunt.publicAt <= now;
 
 export function setHuntStatus(
   hunt: Hunt,
@@ -397,6 +440,10 @@ export function replenish(zoneId: string, now = Date.now()): number {
       status: 'live',
       winnerId: null,
       game: null,
+      // Hidden until somebody digs it, and not forever: a treasure nobody finds
+      // goes public at a quarter of its life so the zone never carries a funded
+      // hunt that cannot be played. See migration 019.
+      publicAt: now + DISCOVERY.publicAfterMs[zone.kind],
       expiresAt: expiryFor(now),
       createdAt: now,
     };

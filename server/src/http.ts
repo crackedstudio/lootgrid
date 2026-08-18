@@ -267,14 +267,16 @@ export function registerRoutes(app: App): void {
    * One player's view of a zone.
    *
    * Authenticated, where it used to be public — there is no longer any such
-   * thing as "the zone's map" to serve anonymously. The hunts are common
-   * knowledge (everyone is hunting the same treasure); the fog is not.
+   * thing as "the zone's map" to serve anonymously. Neither the fog nor the
+   * treasure locations are common knowledge: a hunt reaches this payload only
+   * once it has gone public, or once this player has dug it up themselves.
    */
   app.get('/zones/:id/grid', async req => {
     const player = await requirePlayer(req);
     const { id } = parse(zoneParams, req.params);
     const zone = store.getZone(id);
     if (!zone) throw notFound('no_such_zone');
+    const now = Date.now();
 
     return {
       cols: GRID.cols,
@@ -292,9 +294,19 @@ export function registerRoutes(app: App): void {
        * needs a second round trip is a tutorial that stutters on 3G.
        */
       tutorial: tutorial.stateFor(player, zone, (r, c) => !!store.getReveal(zone, player.id, r, c)),
-      // The shared map, plus anything reserved for this player. Owned hunts are
-      // invisible to everyone else — see migration 016.
-      hunts: [...store.liveHuntsIn(zone), ...store.ownedHuntsIn(zone, player.id)].map(h => ({
+      // What THIS PLAYER may see: treasures already public, ones they personally
+      // dug up, and anything reserved for them.
+      //
+      // This used to be `liveHuntsIn` — every live hunt, with coordinates, to
+      // everybody. That single line undid phases 1 through 3: Survey reported
+      // the distance to a treasure the client could already locate, hints
+      // narrowed toward a cell that was already on screen, and the overview drew
+      // all twenty-four of them on a map whose whole point was that you had to
+      // find them. See migration 019.
+      hunts: [
+        ...store.visibleHuntsIn(zone, player.id, now),
+        ...store.ownedHuntsIn(zone, player.id),
+      ].map(h => ({
         id: h.id,
         r: h.r,
         c: h.c,
@@ -314,6 +326,14 @@ export function registerRoutes(app: App): void {
         gameType: store.blockGame(store.getHunt(h.id) ?? h).type,
         /** Non-null means this one was placed for you and only you can enter it. */
         ownerId: h.ownerId,
+        /**
+         * When the rest of the zone finds out about this one.
+         *
+         * In the future means this player found it and is inside its head start;
+         * the client needs that to draw the countdown, and to know not to drop
+         * the hunt when a `zone:hunts` broadcast arrives without it.
+         */
+        publicAt: h.publicAt,
         status: h.status,
         chasers: store.chaserCount(h.id),
       })),
@@ -393,7 +413,45 @@ export function registerRoutes(app: App): void {
 
     const now = Date.now();
 
-    if (store.huntAt(zone, r, c)) throw conflict('is_hunt', 'open this one from the hunt sheet');
+    // ─────────────────────── digging up a treasure ───────────────────────
+    //
+    // This used to answer 409 `is_hunt` and tell the player to open it from the
+    // hunt sheet — which made sense only while the sheet listed every treasure
+    // on the map. It does not any more (migration 019), so digging the cell IS
+    // how a treasure is found, and refusing the dig would leave the game with no
+    // discovery mechanism at all.
+    //
+    // Energy is deliberately not charged. The tile is not revealed, nothing is
+    // written to the player's fog, and the reward for spending a dig on the
+    // right cell is the find itself.
+    const treasure = store.huntAt(zone, r, c);
+    if (treasure && treasure.ownerId === null) {
+      const found = store.discoverHunt(treasure, player.id, now);
+      if (found) metrics.huntsDiscovered.inc({ kind: treasure.kind });
+      const hunt = store.getHunt(treasure.id) ?? treasure;
+      return {
+        found: true,
+        alreadyFound: !found,
+        hunt: {
+          id: hunt.id,
+          r: hunt.r,
+          c: hunt.c,
+          kind: hunt.kind,
+          difficulty: hunt.difficulty,
+          prizeLabel: hunt.prizeLabel,
+          gameType: store.blockGame(hunt).type,
+          status: hunt.status,
+          // When everyone else finds out. The client shows it as a countdown:
+          // the head start is only worth something if you know it is running.
+          publicAt: hunt.publicAt,
+          headStartMs: Math.max(0, (hunt.publicAt ?? now) - now),
+        },
+        energy: energy.view(player, now),
+      };
+    }
+    // A hunt reserved for someone else is not on this player's map at all, so it
+    // behaves exactly as fog would rather than confirming something is there.
+    if (treasure) throw conflict('is_hunt', 'open this one from the hunt sheet');
 
     const existing = store.getReveal(zone, player.id, r, c);
     if (existing) return { cell: existing, energy: energy.view(player, now), alreadyOpen: true };

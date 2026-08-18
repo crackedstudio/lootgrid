@@ -81,6 +81,21 @@ export const tilesRevealed = new Counter({
   registers: [registry],
 });
 
+/**
+ * Treasures dug up, as opposed to treasures that went public on the clock.
+ *
+ * The ratio between this and hunts created is the honest read on whether the
+ * map is findable: if most hunts reach the zone by timing out rather than by
+ * someone digging them up, Survey and hints are not doing their job and the
+ * 3,600-cell grid is too big for the energy budget.
+ */
+export const huntsDiscovered = new Counter({
+  name: 'lootgrid_hunts_discovered_total',
+  help: 'Treasures located by a player digging their cell',
+  labelNames: ['kind'] as const,
+  registers: [registry],
+});
+
 // ---- escrow funding ----
 //
 // A dead row here is a hunt that will never carry a prize. Alert on it.

@@ -369,6 +369,54 @@ export const ASYNC = {
 } as const;
 
 /**
+ * When a treasure you found becomes a treasure everyone can see.
+ *
+ * ─────────────────────────── the two failure modes ──────────────────────────
+ *
+ * Hunt locations used to ship to every client, which made Survey, hints and the
+ * whole 3,600-cell map pointless — see migration 019. Making them private fixes
+ * that and immediately risks the opposite failure: a treasure visible only to
+ * its finder is a treasure nobody races for, and the multiplayer game
+ * disappears without anyone deciding to remove it.
+ *
+ * So visibility is time-bounded. The rule is already written down for hints in
+ * AGENTIC_ARCHITECTURE.md §5 — "exclusivity must be time-bounded, a head start
+ * and not a monopoly" — and it applies to discovery for exactly the same reason.
+ *
+ * ─────────────────────────── twenty minutes of WHAT ─────────────────────────
+ *
+ * Preparation, not an exclusive attempt. This distinction decides whether the
+ * game has multiplayer in it at all.
+ *
+ * The Crack resolves in fifteen seconds (CRACK.windowMs). An exclusive-attempt
+ * head start of twenty minutes would therefore mean the finder resolves almost
+ * every hunt alone, long before anyone else is told it exists — a hunt would
+ * reach the zone already dead. What the finder gets instead is twenty minutes of
+ * knowing: time to apply hints, buy a scout report and narrow the candidate set
+ * before the field arrives. Then the Crack opens for everyone at once and the
+ * finder simply plays it better informed.
+ *
+ * That is also what keeps the reward proportionate. Finding a treasure is worth
+ * a real edge, and it is not worth the prize.
+ */
+export const DISCOVERY = {
+  /** How long a finder holds a treasure privately before the zone is told. */
+  headStartMs: 20 * 60 * 1000,
+  /**
+   * How long a treasure nobody has found stays hidden.
+   *
+   * A quarter of the hunt's TTL, so three quarters of its life stays raceable
+   * even in the worst case. Without it a badly placed treasure would sit
+   * invisible until it expired — a hunt the treasury paid to fund that nobody
+   * could ever play.
+   */
+  publicAfterMs: {
+    human: ASYNC.huntTtlMs.human / 4,
+    agent: ASYNC.huntTtlMs.agent / 4,
+  },
+} as const;
+
+/**
  * The Crack — the one way to win money.
  *
  * ─────────────────────────── what it replaces ───────────────────────────

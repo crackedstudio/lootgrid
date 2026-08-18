@@ -579,12 +579,23 @@ function broadcastChasers(huntId: string): void {
   });
 }
 
-function broadcastZoneHunts(zoneId: string): void {
+/**
+ * Tell the zone about the treasures the zone is allowed to know about.
+ *
+ * A room broadcast has no player to scope to, so it carries only hunts that have
+ * already gone public. This used to send `liveHuntsIn` — every live treasure,
+ * with coordinates — which was the same leak as the grid payload on a second
+ * transport, and would have survived the fix to the first one.
+ *
+ * A player's private find reaches them in the dig response instead, and the
+ * client keeps hold of it until this broadcast starts carrying it.
+ */
+function broadcastZoneHunts(zoneId: string, now = Date.now()): void {
   const zone = store.getZone(zoneId);
   if (!zone) return;
   rooms.broadcast(rooms.zoneRoom(zoneId), {
     t: 'zone:hunts',
-    hunts: store.liveHuntsIn(zone).map(h => ({
+    hunts: store.liveHuntsIn(zone).filter(h => store.isHuntPublic(h, now)).map(h => ({
       id: h.id,
       r: h.r,
       c: h.c,

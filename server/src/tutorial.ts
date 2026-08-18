@@ -185,6 +185,11 @@ export function ensureHunt(player: Player, zone: Zone, now = Date.now()): Hunt |
     status: 'live',
     winnerId: null,
     game: null,
+    // An owned hunt is scoped by `ownerId`, never by the public clock — it is
+    // placed for one player and is already visible to them. Immediately public
+    // keeps it out of the discovery path entirely rather than giving the
+    // tutorial a head start over a field that does not exist.
+    publicAt: now,
     // Outlives the session comfortably, and dies with the epoch like everything
     // else — `replenish`'s clamp does not apply here because nothing restocks a
     // tutorial, so it is clamped explicitly.

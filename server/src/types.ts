@@ -144,6 +144,18 @@ export interface Hunt {
   status: 'live' | 'resolving' | 'resolved' | 'expired';
   winnerId: string | null;
   game: BlockGame | null;
+  /**
+   * When this treasure's location stops being private.
+   *
+   * Before it, the hunt is visible only to players who have personally dug its
+   * cell; after it, to the whole zone. Set at creation to
+   * `createdAt + DISCOVERY.publicAfterMs` and pulled forward to
+   * `discoveredAt + DISCOVERY.headStartMs` by the first player to find it.
+   *
+   * Null only for owned hunts, which are scoped by `ownerId` instead and never
+   * belong to the shared map. See migration 019.
+   */
+  publicAt: number | null;
   expiresAt: number | null;
   createdAt: number;
 }

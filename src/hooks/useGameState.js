@@ -226,7 +226,19 @@ export function useGameState() {
         }
 
         case 'zone:hunts':
-          return set(s => (s.grid ? { grid: { ...s.grid, hunts: msg.hunts } } : null));
+          // Merge, never replace. The broadcast is a room message so it can only
+          // carry treasures that have gone public — a hunt this player dug up
+          // during its head start, and the tutorial's reserved one, are theirs
+          // alone and are not in it. Assigning `msg.hunts` wholesale would wipe
+          // both off their map.
+          return set(s => {
+            if (!s.grid) return null;
+            const broadcast = new Set(msg.hunts.map(h => h.id));
+            const mine = s.grid.hunts.filter(
+              h => !broadcast.has(h.id) && (h.ownerId || (h.publicAt ?? 0) > Date.now()),
+            );
+            return { grid: { ...s.grid, hunts: [...msg.hunts, ...mine] } };
+          });
 
         case 'hunt:closed':
         case 'hunt:expired':
@@ -540,6 +552,32 @@ export function useGameState() {
 
       try {
         const res = await post(`/zones/${s.mapZone}/tiles/${cell.r}/${cell.c}/open`);
+
+        // ─────────────────────── you dug up a treasure ───────────────────────
+        //
+        // Treasure locations are no longer served with the map, so a hunt cell
+        // arrives here as ordinary fog and the dig is what finds it. The
+        // response is a hunt rather than a tile: nothing is revealed, no energy
+        // is spent, and the treasure joins this player's map alone until its
+        // head start runs out.
+        if (res.found) {
+          set(prev => {
+            if (!prev.grid) return { energy: res.energy };
+            const already = prev.grid.hunts.some(h => h.id === res.hunt.id);
+            return {
+              energy: res.energy,
+              grid: already
+                ? prev.grid
+                : { ...prev.grid, hunts: [...prev.grid.hunts, res.hunt] },
+            };
+          });
+          toast(res.alreadyFound ? 'ALREADY YOURS' : 'TREASURE FOUND — YOU FOUND IT FIRST');
+          // Straight into the preview: the head start is short and it is spent
+          // deciding, not navigating back to a tile you just uncovered.
+          set({ huntPreview: res.hunt });
+          return;
+        }
+
         set(prev => {
           if (!prev.grid) return { energy: res.energy };
           const reveals = { ...prev.grid.reveals, [cellKey(cell.r, cell.c)]: res.cell };
