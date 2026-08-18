@@ -4,9 +4,14 @@
 taking part. Their agent plays the challenges for them. The rest of the game
 stays free.
 
-**Verdict:** the cap is right and the number is right. The *payment* needs one
-structural change before it can ship, because as described it sells the one
-thing this game has spent five phases refusing to sell.
+**Decided:** the house holds the DeepSeek account and buys the tokens. Players
+pay for a seat, and that fee is what funds them.
+
+**The cap is right and the number is right.** One requirement travels with the
+decision, and §2 is about why it is not optional: the fee has to be structured
+and described as **buying compute**, with a free path for anyone who brings
+their own inference. Get that wrong and the same money flow becomes an entry fee
+for a prize contest.
 
 **Companion:** `AGENTS_BYO.md` — the cost analysis this builds on.
 
@@ -34,9 +39,12 @@ product nobody asked for.
 
 ---
 
-## 2. The problem: this sells an entry
+## 2. Why the fee must buy compute, not a place
 
-Stated plainly, because everything else in this document depends on it.
+The decision is sound and the money flow is honest: we buy tokens, players fund
+them. What matters is that the *structure* matches that description, because a
+fee for a seat at a table with cash on it is a different thing in law from a fee
+for the electricity.
 
 The review's §7b, rule 1:
 
@@ -48,11 +56,15 @@ And §7c, on why:
 > Selling energy that a player *needs* in order to compete for a cash prize is
 > **an entry fee with extra steps.** That's a gambling-adjacent problem.
 
-"Pay for a seat, then search for rewards" is, as written, money buying access to
-a prize contest. It is the clearest possible version of the thing the
-two-currency split was built to prevent — and the sentence handed to a lawyer
-("money buys information and exploration, never a chance at a prize") stops
-being true the day it ships.
+"Pay for a seat, then search for rewards" — taken literally — is money buying
+access to a prize contest. That is the thing the two-currency split was built to
+prevent, and the sentence handed to a lawyer ("money buys information and
+exploration, never a chance at a prize") stops being true the day it ships that
+way.
+
+The good news is that the decision as stated is already the safe version: **the
+house buys tokens and the fee funds them.** That is a compute purchase. §3 is
+about making the structure say so as clearly as the sentence does.
 
 ### 2.1 It is worse than it looks, because agent zones have no key cap
 
@@ -70,13 +82,17 @@ Whatever else is decided, this line needs revisiting. See §4.
 
 ---
 
-## 3. The fix: sell the compute, not the seat
+## 3. How the decision is implemented safely
 
-The proposal survives with one change, and it is a change of *what is being
-sold* rather than of the shape.
+No change to the money flow — only to what the fee is attached to.
 
-> **The fee buys inference and hosting. It does not buy entry.**
+> **The fee buys the tokens we spend on your behalf. It does not buy entry.**
 > Anyone may play the agent tier for free by bringing their own inference.
+
+The second sentence is the load-bearing one, and it costs almost nothing to
+honour — `AGENTS_BYO.md` §5.0 establishes that a third-party agent signing with
+its own key authenticates today with no new code. Without it, the first sentence
+is a description rather than a fact.
 
 That single distinction does all the work:
 
@@ -276,7 +292,87 @@ than §5's table, and a fixed estimate cannot notice a prompt that grew.
 
 ---
 
-## 9. Order of work
+## 9. Operating a house-held DeepSeek account
+
+The decision moves the provider relationship onto us, and that brings problems a
+BYO design would not have had. None is hard; all of them are easy to discover in
+production instead.
+
+### 9.1 One key, one account, one blast radius
+
+`env.DEEPSEEK_API_KEY` is a single credential, and `inference.ts` calls it "the
+only place the key appears" — correct, and worth keeping true. But it is now a
+**revenue-linked** secret: leaking it does not expose player data, it exposes a
+balance someone else can spend.
+
+It belongs wherever `AGENT_MASTER_KEY` and the escrow treasury live, not in a
+`.env` on the box, and it should be rotatable without a redeploy.
+
+### 9.2 One hundred seats share one rate limit
+
+Everything goes through one account, so the provider's per-account limits are
+shared. One agent bursting degrades the other ninety-nine.
+
+Two things already help and should be kept:
+
+- `runtime.MAX_IN_FLIGHT = 4` bounds concurrent provider calls globally.
+- Turns are queued **per tenant** (`queues` is a map of queues, not one queue),
+  so a busy agent waits behind itself rather than in front of everyone.
+
+What is missing is a per-seat *rate*, as distinct from a per-seat *budget*. A
+seat that has spent nothing all day can still monopolise the four in-flight
+slots.
+
+### 9.3 Running dry is safe, and that is a feature to protect
+
+If the account empties or the provider errors, `enabled()` goes false and every
+agent falls back to `fallbackFor(ctx)` — a deterministic move, billed zero. The
+tier degrades to free deterministic play rather than stopping.
+
+That is the most important operational property here: **an outage costs quality,
+not forfeits.** Nobody loses a hunt because a balance ran out. Any change to the
+fallback path should be read as a change to that guarantee.
+
+It does need an alarm. A prepaid balance that quietly empties looks, from
+outside, exactly like agents that got worse for no reason.
+
+### 9.4 The model is global, so there is no "pro seat" yet
+
+`model()` returns `env.DEEPSEEK_MODEL` for everybody. `CALL_MILLS` is keyed by
+model and `canInfer` takes one as a parameter, so the *billing* already
+anticipates per-seat models — the *selection* does not exist.
+
+If a premium seat is ever sold on "thinks with the better model", that is a
+config change plus a per-seat field. It should not be sold at all until §8's
+missing measurement exists: nothing currently shows pro wins more than flash for
+its 3.1x price.
+
+### 9.5 Bill what was spent, not what was assumed
+
+Repeated from `AGENTS_BYO.md` §7.5 because a house-held account makes it
+sharper: `inference.ts` never reads `usage` off the response. Every figure in §5
+rests on an assumed 1,500 input / 200 output tokens that nobody has checked.
+
+Under BYO that inaccuracy was the player's problem. With house-held tokens it is
+ours, and it is the difference between a seat that is profitable and one that is
+quietly subsidised. Record `prompt_tokens` and `completion_tokens`, bill those,
+and reconcile against the provider's invoice monthly.
+
+### 9.6 Refunds, lapses, and leftovers
+
+Small, but they arrive on day one.
+
+- A seat is three days. **Do not pro-rate against tokens already spent** — that
+  turns a support request into an accounting exercise. Refund whole cycles or
+  not at all, and say so at purchase.
+- A seat lapsing mid-hunt must not abandon the attempt. The agent falls back to
+  deterministic play and finishes, which is §9.3 and needs no special case.
+- Unused allowance does not carry over. Anything that banks turns creates a
+  stockpile that lands at once, and §9.2 is why that matters.
+
+---
+
+## 10. Order of work
 
 1. **Decide §6.1 first** — does the agent tier pay cash at all? Everything else
    is shaped by that answer, and the XP-only version is dramatically simpler.
@@ -287,3 +383,7 @@ than §5's table, and a fixed estimate cannot notice a prompt that grew.
 6. **Then sell seats**, named as compute (§3.1), with the BYO-inference free
    path live at the same time so the AMOE is real on day one rather than
    promised.
+7. **Before the first paid seat**, the operational floor from §9: the key out of
+   `.env`, a low-balance alarm, and billing on measured usage. Selling compute we
+   cannot meter accurately is how a tier ends up subsidised without anyone
+   noticing.
