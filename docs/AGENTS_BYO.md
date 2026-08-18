@@ -235,23 +235,200 @@ most likely to be the real blocker.
 
 ---
 
-## 5. The work, in order
+## 5. How to build it
 
-1. **Fix the driver loop first** — parallelise the sweep and cache the vault
-   read behind a short TTL. This is needed whether or not BYO happens: the
-   house-hosted demo currently caps at ~100 agents for no good reason.
-2. **Expose the mailbox** (§4.1). Without it BYO agents cannot do the
-   interesting thing.
-3. **Expose moves over HTTP** (§4.2), so an agent can be a cron job.
-4. **Add a per-hunt entrant cap on house-funded inference.** The existing 10%
-   cap bounds one agent, not a crowd. Even under BYO the house-run demo agents
-   should be bounded per hunt rather than per agent.
-5. **Write the integrator's guide** — the signing scheme (§3.2), the vault
-   contract (§3.1), the zone split and why touching a human zone gets you
-   rejected (§3.4), and the rate limits (§3.3).
-6. **Decide agent-zone supply** (§4.4).
+### 5.0 The thing that makes this cheap: authentication is already done
 
----
+Worth establishing before anything else, because it changes the size of the job.
+
+`auth/verify.ts` recovers the signer from the signature and compares it to
+`registry.sessionKeyOf(player)` — **the key bound on chain**. It does not know
+or care where that key came from. A third-party agent signing with its own
+keypair authenticates today, unchanged, with no new code.
+
+Only six call sites assume the agent key is derived from `AGENT_MASTER_KEY`, and
+all six are *setup* rather than *request handling*:
+
+    agents/identity.ts:113  addressFor()        the derivation itself
+    agents/identity.ts:125  isDistinct()        agent != player check
+    agents/identity.ts:168  bind digest helper
+    agents/identity.ts:215  createVaultCall()   vault constructor args
+    agents/index.ts:77      setup: which address to bind
+    agents/index.ts:141     setup: expected address check
+
+So BYO is not an authentication project. It is a *setup* change plus three
+missing doors.
+
+### 5.1 Design decisions, and why
+
+**A. The player binds an address the agent's author controls.**
+
+`PlayerRegistry.bind` is the player's own transaction, so they can already bind
+any address. Under BYO the agent generates its own keypair and the player binds
+it; the house never sees the private key.
+
+This is the reason BYO is **safer**, not merely cheaper. `identity.ts` calls
+`AGENT_MASTER_KEY` "the most dangerous secret on the box after the escrow
+treasury", and a leak is every hosted agent's spending rights at once. For BYO
+agents that secret does not exist. The blast radius of a compromised third-party
+agent is one vault, bounded by `perTxCap`, `perDayCap` and the owner's
+allowlist — which is exactly what the vault was designed to bound.
+
+Keep master-derivation for the house's demo agents. Support both; do not migrate.
+
+**B. One state call, not N.**
+
+    GET /agent/state
+
+returning, in a single response: vault state and remaining daily allowance, live
+attempts with their public specs and deadlines, the inbox, live hunts in
+permitted zones **with `viableFor` already evaluated**, hints held, and budget
+remaining.
+
+Three reasons this shape rather than a REST tour:
+
+- A cron-based agent does one read, thinks once, and writes once or twice. Six
+  round trips before it can decide anything is what makes a hobbyist give up.
+- It collapses rate-limit pressure into a predictable single call.
+- **It exports the EV discipline.** The server already computes
+  `budget.viableFor()`; putting the verdict in the payload means a naive agent
+  inherits "do not enter a hunt that cannot pay" for free instead of
+  reimplementing arithmetic it will get wrong. A third-party agent that ignores
+  the flag is choosing to, which is a different problem from not knowing.
+
+**C. The inbox read must stop being destructive.**
+
+`mailbox.take()` removes messages as it reads them. That is fine in-process,
+where the caller cannot crash between the read and acting on it. It is wrong
+over HTTP: a cron agent whose request times out after the server has already
+dequeued has silently lost a negotiation.
+
+    GET  /agent/messages        returns messages WITH ids, leaves them queued
+    POST /agent/messages/ack    { ids: [...] }
+    POST /agent/messages        send one
+
+`PER_SENDER_QUOTA = 4`, `MAX_INBOX = 32` and `TTL_MS = 5min` stay exactly as
+they are — the quota is what stops one stranger's agent flooding another's
+inbox, and it matters more once senders are strangers rather than our own code.
+
+**D. Idempotency on anything that spends.**
+
+A retrying cron agent will re-send. Some paths are already safe and should be
+documented as such rather than re-solved:
+
+    hunt entry     UNIQUE (hunt_id, player_id) — a retry is refused, not doubled
+    moves          submitInputs ignores seq <= lastSeq, and fails on a gap
+    shop           not protected
+    market buys    not protected
+
+The last two need a client-supplied `Idempotency-Key`, stored against the
+result, so a repeat returns the first outcome instead of buying twice.
+
+**E. Moves over HTTP, reusing the sequence number.**
+
+    POST /attempts/:id/inputs   { events: [{ seq, kind, t, value }] }
+
+A thin door onto the same `referee.submitInputs` the socket calls. It is already
+idempotent by `seq`, so no new semantics. This is what lets an agent be a cron
+job rather than a daemon — which is the point of the async clock
+(`ASYNC.settlementWindowMs.agent` is fifteen minutes precisely because turns
+arrive minutes apart).
+
+Keep the WebSocket. It is better for the house demo and for anyone who wants
+live progress.
+
+**F. Ship a reference client, not only prose.**
+
+The signing scheme is exact and fiddly: domain prefix, lowercased identity,
+method, path *including query string*, timestamp, single-use nonce, sha256 of
+the body, joined by newlines. A hobbyist will get one field wrong, see 401, and
+conclude the API is broken.
+
+About a hundred lines of TypeScript and the same in Python, doing nothing but
+sign-and-send. It is the highest-leverage adoption work in this document and the
+cheapest.
+
+**G. A place to fail safely.**
+
+An external developer needs a zone where being wrong costs nothing: no cash
+hunts, generous rate limits, and a stable seed so a run is reproducible. Without
+it their first experiment is against real money and real rivals, which is both
+unkind and a support burden.
+
+**H. Version the surface explicitly.**
+
+Once strangers integrate, this is a contract. `PROTOCOL_VERSION = 1` already
+exists for agent-to-agent messages; the HTTP surface needs the same discipline —
+a version in the path or a required header, and a written rule that adding a
+field is safe and changing one is not.
+
+**I. Re-tune rate limits for the new shape.**
+
+One state call replaces several reads, so the read budget can fall. But a
+polling agent needs a *floor*: a busy loop at 600/min per identity is a denial
+of service we invited. A minimum poll interval, and `429` with `Retry-After`
+rather than a bare refusal.
+
+### 5.2 Stages, smallest useful thing first
+
+Each stage ends at something demonstrable, so the project can stop between any
+two of them and still be coherent.
+
+**Stage 0 — fix the driver loop.** Parallelise the sweep; cache the vault read
+behind a short TTL. Needed whether or not BYO ships: the house demo caps at ~100
+agents today for no good reason. Nothing external depends on this, so it can go
+first and alone.
+
+**Stage 1 — an outside agent can authenticate and dig.** Accept a
+caller-supplied agent address at setup (§5.1-A); ship the reference client
+(§5.1-F); stand up the sandbox (§5.1-G). *Demonstrable:* a script outside this
+repo signs a request and opens a tile.
+
+**Stage 2 — an outside agent can play a hunt.** `GET /agent/state` (§5.1-B) and
+`POST /attempts/:id/inputs` (§5.1-E), plus idempotency keys (§5.1-D).
+*Demonstrable:* an external agent enters a deduction hunt and commits an answer
+without holding a socket.
+
+**Stage 3 — an outside agent can negotiate.** The mailbox endpoints (§5.1-C).
+*Demonstrable:* two agents from different codebases agree a hint price and
+settle it through the vault. This is the stage that makes the agent layer
+interesting rather than merely reachable.
+
+**Stage 4 — it is worth doing.** Agent-zone supply (§4.4). Until this, everything
+above is a working integration with nothing to play.
+
+### 5.3 What must not be lost on the way
+
+Three properties that currently hold and are easy to break while opening things
+up.
+
+**The vault read before acting.** `driveOne` reads the chain to confirm the agent
+is still the vault's spender, because a player who pressed `kill()` must stop
+being served even if our own row still says active. Under BYO the equivalent is
+that any *spending* endpoint re-checks it. Caching it (Stage 0) is fine; dropping
+it is not.
+
+**The zone split stays structural.** Reflex modules carry bot checks and agent
+zones never draw them, so the protection is unreachable by construction rather
+than switched off by a flag. An external agent that reaches a human puzzle hunt
+will be failed for having inhuman timing — correctly. Do not add an
+`isAgent` bypass; that turns an impossibility into a permission check.
+
+**No free-text field, ever.** `protocol.ts` has no string a rival can fill,
+because a message from another agent is attacker-controlled input arriving at a
+model that can spend money. Opening the mailbox to strangers makes this stricter,
+not looser: if a future intent seems to need prose, it needs an enum.
+
+### 5.4 How we will know it worked
+
+One acceptance test, and it is deliberately harsh: **an agent written by someone
+with no access to this repository, working only from the published guide, enters
+a hunt and wins it.** Anything less — an example we wrote, a script that imports
+our types — proves the API works for people who already know the answer.
+
+Phase 0's funnel does not measure agents. Add, at minimum: distinct agent
+identities seen, requests per agent, and hunts entered by external versus house
+agents. Otherwise "did anyone use it" is an anecdote.
 
 ## 6. What this costs us
 
