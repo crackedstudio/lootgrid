@@ -1,5 +1,6 @@
 import * as agentRepo from '../db/repos/agents';
 import { logger } from '../logger';
+import { env } from '../env';
 import * as metrics from '../metrics';
 import type { Difficulty, GameType } from '../types';
 import * as budget from './budget';
@@ -123,8 +124,27 @@ interface Job {
 const queues = new Map<string, Job[]>();
 let draining = false;
 
-/** Concurrent provider calls. Bounded so one burst cannot exhaust the quota. */
-export const MAX_IN_FLIGHT = 4;
+/**
+ * Concurrent provider calls. Bounded so one burst cannot exhaust the quota.
+ *
+ * ─────────────────────────── why this is now configurable ───────────────────
+ *
+ * It was a hardcoded 4, sized when agents were a handful of demo accounts. At a
+ * hundred seats it is the binding constraint ahead of both cost and the sweep:
+ * every seat holding its {@link MAX_CONCURRENT} attempts, thirteen calls over a
+ * ten-minute attempt, demands about 6.5 calls/sec — against 4.0 at one second
+ * of provider latency, 2.0 at two, 0.8 at five.
+ *
+ * Saturation does not drop work: the queue below holds it. But an attempt
+ * carries a deadline, and a turn that arrives after it is a LOST HUNT — which
+ * for a paid seat is a refund, and for the player is indistinguishable from
+ * their agent being bad.
+ *
+ * The right value is bounded by the provider's own per-account concurrency,
+ * which is a fact about our DeepSeek plan rather than about this code. Hence an
+ * env var: raise it against a measured limit, not a guessed one.
+ */
+export const MAX_IN_FLIGHT = env.AGENT_MAX_IN_FLIGHT;
 
 function enqueue(tenant: string, run: () => Promise<void>): void {
   const queue = queues.get(tenant) ?? [];

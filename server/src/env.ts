@@ -242,6 +242,15 @@ const schema = z
      * It must never reach a client bundle or an agent's config — see
      * agents/inference.ts.
      */
+    /**
+     * Concurrent provider calls across ALL agents.
+     *
+     * The binding constraint at a hundred seats — see runtime.ts. Set it below
+     * the provider's per-account concurrency limit, which is a fact about the
+     * plan rather than about this code, and alert on rejections rather than
+     * discovering the ceiling from a queue that stopped draining.
+     */
+    AGENT_MAX_IN_FLIGHT: z.coerce.number().int().min(1).max(256).default(4),
     DEEPSEEK_API_KEY: z.string().min(8).optional(),
     DEEPSEEK_BASE_URL: z.string().url().default('https://api.deepseek.com'),
     /** `deepseek-v4-flash` is ~3x cheaper than pro and ample for these games. */
