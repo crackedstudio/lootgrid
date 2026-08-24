@@ -627,7 +627,49 @@ let sweepTimer: NodeJS.Timeout | null = null;
 let progressTimer: NodeJS.Timeout | null = null;
 let expiryTimer: NodeJS.Timeout | null = null;
 
+/**
+ * Settle any hunt left mid-resolution by a restart.
+ *
+ * ─────────────────────────── the bug this closes ───────────────────────────
+ *
+ * The settlement window is a `setTimeout` in {@link resolveTimers}, which is
+ * memory. A process that stops during one loses the timer, and nothing else
+ * ever fires: the hunt sits in `resolving` until its own expiry, which on an
+ * agent zone is days away.
+ *
+ * That is not merely a stuck row. `hunts.countOpen` counts `resolving` as open
+ * — correctly, it is a race being settled — so the zone will not replenish
+ * either. An agent zone carrying ONE cash hunt therefore has no playable hunt
+ * at all until the stranded one expires, which stops the entire agent tier.
+ * Observed exactly that way on mainnet.
+ *
+ * Resolving immediately rather than re-arming the timer is deliberate. The
+ * window exists so late finishers can land and be scored on elapsed time; while
+ * the server was down nobody could finish anything, so there is no one left to
+ * wait for. Waiting again would only extend an outage.
+ */
+export function recoverResolving(now = Date.now()): number {
+  const stuck = store.listHuntsByStatus('resolving');
+  for (const hunt of stuck) {
+    try {
+      resolve(hunt.id, now);
+      logger.info({ huntId: hunt.id }, 'settled a hunt stranded by a restart');
+    } catch (err) {
+      logger.error({ err, huntId: hunt.id }, 'could not settle stranded hunt');
+    }
+  }
+  return stuck.length;
+}
+
 export function start(): void {
+  // Before any sweep, so a stranded hunt is settled and its zone restocked on
+  // the first tick rather than the second.
+  try {
+    recoverResolving();
+  } catch (err) {
+    logger.error({ err }, 'resolving-state recovery failed');
+  }
+
   sweepTimer = setInterval(() => {
     try {
       for (const id of wheel.drain(Date.now())) expire(id);

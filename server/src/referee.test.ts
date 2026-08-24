@@ -268,6 +268,48 @@ describe('referee', () => {
     });
   });
 
+  describe('surviving a restart mid-settlement', () => {
+    /**
+     * The settlement window is a `setTimeout`, which is memory. A process that
+     * stops during one loses the timer and NOTHING else ever fires: the hunt
+     * sits in `resolving` until its own expiry, days away on an agent zone.
+     *
+     * That also freezes the zone, because `countOpen` counts `resolving` as
+     * open — correctly, it is a race being settled. An agent zone carrying one
+     * cash hunt then has nothing playable at all. Observed on mainnet: the
+     * agent tier stopped entirely and looked idle rather than broken.
+     */
+    it('settles a hunt whose resolve timer died with the process', () => {
+      const hunt = huntOfType('tap');
+      const player = makePlayer('0xracer', '@racer');
+      const a = referee.openAttempt(player, hunt, T0);
+      if (!a.ok) throw new Error('setup');
+
+      const target = (a.spec as { target: number }).target;
+      referee.submitInputs(a.attempt.id, tapEvents(target, 1_500), T0 + 1_500);
+
+      // Mid-window: the race is being settled and the timer is pending.
+      expect(store.getHunt(hunt.id)!.status).toBe('resolving');
+
+      // The process dies. Timers go with it — nothing will fire this hunt.
+      referee.stop();
+      expect(store.getHunt(hunt.id)!.status).toBe('resolving');
+
+      // Boot. Recovery settles it rather than waiting out a window nobody is
+      // left to finish inside.
+      const recovered = referee.recoverResolving(T0 + 2_000);
+
+      expect(recovered).toBe(1);
+      const done = store.getHunt(hunt.id)!;
+      expect(done.status).toBe('resolved');
+      expect(done.winnerId).toBe(player.id);
+    });
+
+    it('does nothing when no hunt was mid-settlement', () => {
+      expect(referee.recoverResolving()).toBe(0);
+    });
+  });
+
   describe('deadlines', () => {
     it('fails an attempt that runs past its deadline', () => {
       const hunt = huntOfType('tap');

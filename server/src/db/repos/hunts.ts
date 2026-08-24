@@ -78,6 +78,14 @@ function build() {
       "SELECT * FROM hunts WHERE zone_id = ? AND epoch = ? AND owner_id IS NULL AND status NOT IN ('resolved', 'expired')",
     ),
     /**
+     * Every hunt in a given status, across all zones and epochs.
+     *
+     * Exists for restart recovery: the settlement window is a `setTimeout`, so a
+     * process that stops mid-window leaves `resolving` rows nothing will ever
+     * settle. See `referee.recoverResolving`.
+     */
+    listByStatus: db.prepare('SELECT * FROM hunts WHERE status = ?'),
+    /**
      * What ONE PLAYER may see of the shared map: everything already public, plus
      * anything they personally dug up during its head start.
      *
@@ -173,6 +181,10 @@ export function listIn(zoneId: string, epoch: number): Hunt[] {
 
 export function listLive(zoneId: string, epoch: number): Hunt[] {
   return (s().listLive.all(zoneId, epoch) as Row[]).map(toDomain);
+}
+
+export function listByStatus(status: string): Hunt[] {
+  return (s().listByStatus.all(status) as Row[]).map(toDomain);
 }
 
 export function listOwned(zoneId: string, epoch: number, ownerId: string): Hunt[] {
