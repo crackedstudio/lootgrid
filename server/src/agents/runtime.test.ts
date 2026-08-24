@@ -7,6 +7,8 @@ import { defaultConfig, type AgentConfig } from './config';
 import * as inference from './inference';
 import { messageSchema, PROTOCOL_VERSION } from './protocol';
 import * as runtime from './runtime';
+import * as seats from './seats';
+import { MOVE_SCHEMAS } from './validate';
 
 /**
  * The multi-tenant pool.
@@ -57,6 +59,11 @@ beforeEach(() => {
   mut.DEEPSEEK_MODEL = 'deepseek-v4-flash';
   agentRepo.create(ALICE, ALICE_PLAYER);
   agentRepo.create(BOB, BOB_PLAYER);
+  // Inference is house-funded, so a turn that reaches the provider needs a seat.
+  // These tests are about the pool and the budget, not about who paid — the
+  // seat gate has its own tests.
+  seats.grant(ALICE, ALICE_PLAYER, { mills: 1_000_000 });
+  seats.grant(BOB, BOB_PLAYER, { mills: 1_000_000 });
 });
 
 afterEach(() => {
@@ -266,5 +273,49 @@ describe('fair scheduling', () => {
 
     expect(outcomes).toHaveLength(12);
     expect(outcomes.every(o => o.move.kind === 'probe')).toBe(true);
+  });
+});
+
+describe('the prompt states the move format', () => {
+  /**
+   * The mainnet failure this guards.
+   *
+   * Without an explicit shape the model answers plausibly and differently —
+   * `{"keepBps":6000}`, or `action` where `kind` belongs — and MOVE_SCHEMAS
+   * rejects it whole. Observed live: two `not_a_move` violations per turn (the
+   * call and its retry) and a deterministic fallback every time, while both
+   * attempts were billed.
+   */
+  it('has a format for every game the agent can play', () => {
+    for (const game of Object.keys(MOVE_SCHEMAS)) {
+      const prompt = runtime.buildPrompt({
+        game, gameType: game, spec: {}, state: {},
+        config: defaultConfig() as AgentConfig, inbox: [],
+      } as never);
+      expect(prompt).toContain('"kind"');
+    }
+  });
+
+  it('shows negotiation the exact key the schema demands', () => {
+    const prompt = runtime.buildPrompt({
+      game: 'negotiation', gameType: 'negotiation', spec: {}, state: {},
+      config: defaultConfig() as AgentConfig, inbox: [],
+    } as never);
+    expect(prompt).toContain('keepBps');
+    expect(prompt).toContain('"kind":"offer"');
+  });
+
+  /** The examples must actually satisfy the schemas they describe. */
+  it('advertises only shapes MOVE_SCHEMAS accepts', () => {
+    expect(MOVE_SCHEMAS.negotiation.safeParse(
+      { kind: 'offer', value: { keepBps: 6000 } }).success).toBe(true);
+    expect(MOVE_SCHEMAS.search.safeParse(
+      { kind: 'probe', value: { r: 3, c: 4 } }).success).toBe(true);
+    expect(MOVE_SCHEMAS.deduction.safeParse(
+      { kind: 'commit', value: { r: 3, c: 4 } }).success).toBe(true);
+    expect(MOVE_SCHEMAS.deduction.safeParse(
+      { kind: 'probe', value: { kind: 'parity', parity: 'even' } }).success).toBe(true);
+    // The shape the model produced unprompted, which must stay invalid.
+    expect(MOVE_SCHEMAS.negotiation.safeParse({ keepBps: 6000 }).success).toBe(false);
   });
 });

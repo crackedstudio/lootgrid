@@ -105,9 +105,48 @@ describe('agent zones', () => {
     expect([...seen].sort()).toEqual([...AGENT_ONLY].sort());
   });
 
-  it('still share the puzzle module, which guards XP and never money', () => {
-    expect(gameTypeForBlock('s', 'h', 'puzzle', 'agent')).toBe('memory');
-    expect(gameTypeForBlock('s', 'h', 'puzzle', 'human')).toBe('memory');
+  /**
+   * This test used to assert the opposite, and was right about the reason while
+   * wrong about the conclusion.
+   *
+   * Puzzle hunts guard XP rather than money, so automation threatens nobody —
+   * true, and why a HUMAN zone happily draws reflex games for them. But that is
+   * an argument about cheating, not about playability, and on an agent zone the
+   * two come apart: the audience is machines, and a machine cannot play a tap
+   * race at all.
+   *
+   * With `CASH_PER_ZONE` cash hunts drawing agent games and the other
+   * twenty-three drawing reflex ones, an agent zone offered its entire audience
+   * ONE playable hunt. When that hunt was taken the tier stopped dead — the zone
+   * was full so it could not restock — and the driver swept 1,087 consecutive
+   * idle ticks while looking perfectly healthy.
+   */
+  it('draw agent games for PUZZLE hunts too, so the whole zone is playable', () => {
+    for (let i = 0; i < 200; i++) {
+      expect(AGENT_ONLY).toContain(gameTypeForBlock(`s${i}`, `h${i}`, 'puzzle', 'agent'));
+    }
+  });
+
+  it('leaves human puzzle hunts on the reflex pool', () => {
+    for (let i = 0; i < 200; i++) {
+      expect(AGENT_ONLY).not.toContain(gameTypeForBlock(`s${i}`, `h${i}`, 'puzzle', 'human'));
+    }
+  });
+
+  it('does not mirror the cash draw, so a zone is not all one game', () => {
+    // Same salt and id, different kind: a shared tag would make every puzzle
+    // hunt play whatever its cash counterpart drew.
+    const differs = Array.from({ length: 60 }, (_, i) =>
+      gameTypeForBlock(`s${i}`, `h${i}`, 'puzzle', 'agent') !==
+      gameTypeForBlock(`s${i}`, `h${i}`, 'cash', 'agent'),
+    ).filter(Boolean).length;
+    expect(differs).toBeGreaterThan(0);
+  });
+
+  it('spreads puzzle hunts across every agent module', () => {
+    const seen = new Set<GameType>();
+    for (let i = 0; i < 400; i++) seen.add(gameTypeForBlock(`s${i}`, `h${i}`, 'puzzle', 'agent'));
+    expect([...seen].sort()).toEqual([...AGENT_ONLY].sort());
   });
 });
 

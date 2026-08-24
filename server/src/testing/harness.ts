@@ -61,17 +61,35 @@ export function anyHunt() {
  * test for it. Reseeding until the type appears keeps the randomness (which is
  * the point — tests should not depend on one fixed salt) without the flake.
  */
-export function huntOfType(type: GameType) {
+/**
+ * A live hunt running a given module.
+ *
+ * Prefers a CASH hunt. Agent zones now draw agent games for their puzzle hunts
+ * too — so `deduction` and friends are no longer implicitly cash-only, and a
+ * caller that lands on a puzzle hunt gets one with no prize attached. That is
+ * invisible until a test prices something against the pot: the market values a
+ * hint from the prize it points at, so a prizeless hunt makes every hint worth
+ * about nothing and no trade is ever viable.
+ *
+ * Callers that genuinely want a puzzle hunt can pass `kind`.
+ */
+export function huntOfType(type: GameType, kind: 'cash' | 'puzzle' | 'any' = 'cash') {
   for (let attempt = 0; attempt < 25; attempt++) {
+    const found: Array<ReturnType<typeof store.getHunt>> = [];
     for (const zone of store.listZones()) {
       for (const h of store.liveHuntsIn(zone)) {
         const full = store.getHunt(h.id)!;
-        if (store.blockGame(full).type === type) return full;
+        if (store.blockGame(full).type === type) found.push(full);
       }
     }
+    const match = kind === 'any' ? found[0] : found.find(h => h!.kind === kind);
+    if (match) return match;
+    // Fall back to any match rather than reseeding forever: some modules only
+    // ever appear on one kind, and an over-strict helper would flake.
+    if (attempt === 24 && found[0]) return found[0];
     freshWorld();
   }
-  throw new Error(`no seeded hunt is running "${type}" after 25 worlds`);
+  throw new Error(`no seeded ${kind} hunt is running "${type}" after 25 worlds`);
 }
 
 export function makePlayer(id: string, handle = `@${id}`) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CASH_PER_ZONE } from './config';
+import { AGENT_CASH_PER_ZONE, CASH_PER_ZONE, cashPerZone } from './config';
 import {
   AGENT_DIFFICULTY_WEIGHTS,
   DIFFICULTY_WEIGHTS,
@@ -191,5 +191,41 @@ describe('drawing a difficulty', () => {
 
   it('weights sum to 100, so the table reads as percentages', () => {
     expect(DIFFICULTY_WEIGHTS.reduce((sum, [, w]) => sum + w, 0)).toBe(100);
+  });
+});
+
+describe('how many hunts carry a prize', () => {
+  /**
+   * The ratio that silently disabled the agent tier.
+   *
+   * Only CASH hunts draw agent-playable games — `gameTypeForBlock` sends every
+   * puzzle hunt to the reflex pool regardless of zone kind, deliberately, since
+   * puzzle hunts guard XP rather than money. So a 24-hunt agent zone holding a
+   * single cash hunt offers agents exactly one thing to play, and nothing at all
+   * between its resolution and the next restock.
+   *
+   * The same ratio is fine on a human zone, where the other 23 hunts are
+   * playable. That is why it went unnoticed.
+   */
+  it('gives agent zones more prize hunts than human ones', () => {
+    expect(cashPerZone('agent')).toBeGreaterThan(cashPerZone('human'));
+  });
+
+  it('leaves an agent zone something to play while one resolves', () => {
+    // One is the broken case: the tier stops the moment that hunt is taken.
+    expect(cashPerZone('agent')).toBeGreaterThan(1);
+  });
+
+  it('does not raise human zones, whose budget the world cost is sized on', () => {
+    expect(cashPerZone('human')).toBe(CASH_PER_ZONE);
+  });
+
+  /**
+   * A budget guard, not a style rule. Cash hunts are funded prizes: the config
+   * comment prices the whole world at ~$161/month with this value, and the band
+   * it must stay inside is $100–300. A large bump here spends real money.
+   */
+  it('keeps the agent-zone count inside what the prize budget was sized for', () => {
+    expect(AGENT_CASH_PER_ZONE).toBeLessThanOrEqual(6);
   });
 });

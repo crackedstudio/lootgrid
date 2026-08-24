@@ -5,6 +5,7 @@ import { env } from '../env';
 import { logger } from '../logger';
 import * as market from '../market';
 import * as metrics from '../metrics';
+import * as rooms from '../rooms';
 import * as referee from '../referee';
 import * as store from '../store';
 import type { Attempt, Hunt, Player } from '../types';
@@ -67,6 +68,22 @@ let ticking = false;
  * died on a bad configuration would leave every other player's agent frozen
  * with money committed.
  */
+/**
+ * When the sweep last ran, and what it found.
+ *
+ * Exposed so a player can tell "idle" from "broken", which from the outside look
+ * identical: 1,087 consecutive idle ticks and a crashed driver both render as a
+ * screen that never changes. An agent that is working and has nothing to do
+ * should say so.
+ */
+export interface Heartbeat {
+  lastTickAt: number | null;
+  /** Agents swept on that pass. Zero means none had a vault. */
+  swept: number;
+}
+let heartbeat: Heartbeat = { lastTickAt: null, swept: 0 };
+export const lastTick = (): Heartbeat => heartbeat;
+
 export async function tick(now = Date.now()): Promise<void> {
   if (ticking) {
     // Counted, not silent. An overrun does not queue — it skips, and the only
@@ -94,6 +111,7 @@ export async function tick(now = Date.now()): Promise<void> {
     // against the RPC. The model calls underneath have their own gate
     // (`runtime.MAX_IN_FLIGHT`), so this bounds chain reads and database work,
     // not inference.
+    heartbeat = { lastTickAt: now, swept: agents.length };
     await inParallel(agents, SWEEP_CONCURRENCY, async agent => {
       metrics.agentTicksTotal.inc();
       try {
@@ -414,6 +432,29 @@ async function fund(
  * wakes for nothing or sleeps through a hunt it wanted, and the second is the
  * expensive direction.
  */
+/**
+ * Whether this agent could actually take a turn in this hunt.
+ *
+ * `takeTurn` refuses anything `isAgentGame` rejects, and entry used to not check
+ * — so the agent entered hunts it could never play, sat through them at zero
+ * moves, and lost every one to the deadline. Observed on mainnet: thirteen
+ * attempts, all `fail_reason='timeout'`, all `last_seq=0`, on tap/math/memory.
+ * Each cost an entry and an energy slice to learn nothing.
+ *
+ * Only CASH hunts qualify, and that is a fact about the pools rather than a
+ * shortcut: `gameTypeForBlock` returns from PUZZLE_GAMES for every puzzle hunt
+ * regardless of zone kind — deliberately, since puzzle hunts guard XP and not
+ * money — while `cashGamesFor('agent')` is exactly ['deduction','negotiation',
+ * 'search'], which is exactly what `isAgentGame` admits.
+ *
+ * Deliberately NOT `isAgentGame(store.blockGame(hunt).type)`: `blockGame` picks,
+ * persists and commits the block's game on first call, so asking it "could I
+ * play this?" would materialise a game for every hunt merely by looking.
+ */
+function playable(hunt: { kind: string }): boolean {
+  return hunt.kind === 'cash';
+}
+
 function hasSomethingToEnter(
   player: Player,
   config: ReturnType<typeof agentRepo.getConfig>,
@@ -424,6 +465,7 @@ function hasSomethingToEnter(
 
     for (const hunt of store.liveHuntsIn(zone)) {
       if (store.attemptOf(hunt.id, player.id)) continue;
+      if (!playable(hunt)) continue;
       const entrants = Math.max(1, store.chaserCount(hunt.id));
       if (budget.viableFor(hunt.difficulty, entrants, model())) return true;
     }
@@ -486,6 +528,18 @@ async function takeTurn(
   );
 
   metrics.agentTurns.inc({ source: outcome.source });
+
+  // Every move, as it happens. `source` is the honest part: 'model' means a seat
+  // paid for the decision, 'fallback' means the deterministic line played it.
+  rooms.toPlayer(player.id, {
+    t: 'agent:move',
+    huntId: hunt.id,
+    game: game.type,
+    move: outcome.move.kind,
+    source: outcome.source,
+    seq: attempt.lastSeq + 1,
+    at: now,
+  });
 }
 
 function moduleSpec(hunt: Hunt): unknown {
@@ -514,6 +568,7 @@ async function enterSomething(
 
     for (const hunt of store.liveHuntsIn(zone)) {
       if (store.attemptOf(hunt.id, player.id)) continue;
+      if (!playable(hunt)) continue;
 
       // Architecture §1, with inference on the cost side where it belongs. A
       // rational agent refuses a negative-EV hunt, so the house should not have
@@ -529,6 +584,15 @@ async function enterSomething(
 
       logger.info({ agentId: agent.id, huntId: hunt.id }, 'agent entered a hunt');
       metrics.agentEntries.inc();
+      // Tell the owner. An agent that plays invisibly is indistinguishable from
+      // one that is broken — which is how a working one read for an hour of
+      // testing, because the only evidence was a log line on the server.
+      rooms.toPlayer(player.id, {
+        t: 'agent:entered',
+        huntId: hunt.id,
+        zoneId: zone.id,
+        at: now,
+      });
       await considerHints(agent, player, hunt.id, zone.id, config, vault, now);
       return; // One at a time: a tick that entered four hunts would be a tick
       // that spent four entry costs before learning anything about the first.

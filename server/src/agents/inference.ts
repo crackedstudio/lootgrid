@@ -110,6 +110,25 @@ const deepseek: CompleteFn = async req => {
         // violations to retry.
         temperature: 0.2,
         response_format: { type: 'json_object' },
+        // ─────────────────── this line is load-bearing ───────────────────
+        //
+        // deepseek-v4 models reason by default, and reasoning tokens are drawn
+        // from `max_tokens` BEFORE any answer is emitted. On a real board state
+        // the model does not converge: measured against mainnet prompts it spent
+        // 200, 800, 4000 and even 16,000 tokens entirely on reasoning and
+        // returned `content: ""` every time — 167 seconds at the top end, far
+        // past TIMEOUT_MS.
+        //
+        // The failure is silent and expensive in the worst combination: empty
+        // content is indistinguishable from a dumb model, so `validate.ts` falls
+        // back to a deterministic move and play looks fine, while every call is
+        // billed in full for thinking nobody ever reads.
+        //
+        // 'none' turns it off: 0 reasoning tokens, ~1s, valid JSON. 'minimal' was
+        // tried and is NOT safe — it still overran the budget and returned empty.
+        // If a future model needs deliberation, raise max_tokens FIRST and
+        // measure, because the interaction is the whole problem.
+        reasoning_effort: 'none',
       }),
     });
 
