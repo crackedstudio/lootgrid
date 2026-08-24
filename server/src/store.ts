@@ -1,4 +1,4 @@
-import { ASYNC, CASH_PER_ZONE, DISCOVERY, EPOCH, GRID, HUNTS_PER_ZONE } from './config';
+import { ASYNC, cashPerZone, DISCOVERY, EPOCH, GRID, HUNTS_PER_ZONE } from './config';
 import { migrate } from './db/migrate';
 import { tx } from './db/index';
 import * as attemptRepo from './db/repos/attempts';
@@ -283,6 +283,9 @@ export const huntAt = (z: Zone, r: number, c: number) => huntRepo.at(z.id, z.epo
  * closes; {@link visibleHuntsIn} is the one the API uses.
  */
 export const liveHuntsIn = (z: Zone) => huntRepo.listLive(z.id, z.epoch);
+
+/** Every hunt in a status, across zones. For restart recovery — see referee.ts. */
+export const listHuntsByStatus = (status: string) => huntRepo.listByStatus(status);
 /** What one player may see: everything public, plus what they personally dug up. */
 export const visibleHuntsIn = (z: Zone, playerId: string, now = Date.now()) =>
   huntRepo.listVisible(z.id, z.epoch, playerId, now);
@@ -441,11 +444,13 @@ export function replenish(zoneId: string, now = Date.now()): number {
     // Cash first, then fill the rest of the zone with XP hunts.
     //
     // The count, not the coin flip, is what bounds the burn: a zone holds
-    // exactly CASH_PER_ZONE funded hunts no matter how many treasures are on
+    // exactly cashPerZone(kind) funded hunts no matter how many treasures are on
     // it. `kind` has been on `Hunt` since phase 0 with the energy cost, the
     // module pool and the entry path all handling 'puzzle' — and `replenish`
     // hardcoded 'cash', so a puzzle hunt had never once existed.
-    const kind: HuntKind = openCash < CASH_PER_ZONE ? 'cash' : 'puzzle';
+    // Per zone KIND: only cash hunts draw agent-playable games, so an agent zone
+    // needs several to stay continuously playable while a human zone does not.
+    const kind: HuntKind = openCash < cashPerZone(zone.kind) ? 'cash' : 'puzzle';
 
     const hunt: Hunt = {
       id,

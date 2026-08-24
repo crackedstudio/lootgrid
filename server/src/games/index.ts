@@ -98,19 +98,40 @@ export function gameTypeForBlock(
   zoneKind: ZoneKind = 'human',
 ): GameType {
   // Puzzle hunts guard XP, never money, so the automation argument does not
-  // apply and both zone kinds share the pool. Drawn from the salt like
-  // everything else about a block, rather than hardcoded to `memory` — three of
-  // the four modules had never once been served since the cash pool stopped
-  // drawing them.
-  if (huntKind === 'puzzle') {
+  // apply and a HUMAN zone happily shares the reflex pool. Drawn from the salt
+  // like everything else about a block, rather than hardcoded to `memory` —
+  // three of the four modules had never once been served since the cash pool
+  // stopped drawing them.
+  //
+  // ─────────────────────── but not on an agent zone ───────────────────────
+  //
+  // That reasoning is about CHEATING, and it is right: a script that aces a tap
+  // race costs nobody money. It says nothing about PLAYABILITY, and on an agent
+  // zone the two come apart completely — the audience is machines, and a
+  // machine cannot play a reflex game at all.
+  //
+  // The consequence was severe and silent. `CASH_PER_ZONE` hunts drew agent
+  // games and the other twenty-three drew tap/math/memory, so an agent zone
+  // offered its entire audience ONE playable hunt. Once that hunt was taken the
+  // tier stopped, the zone could not restock (it was full), and the driver swept
+  // 1,087 consecutive idle ticks looking perfectly healthy.
+  //
+  // An agent zone draws agent games throughout. The prize still separates the
+  // two kinds — cash hunts pay money, puzzle hunts pay XP — which is the
+  // distinction that actually mattered.
+  if (huntKind === 'puzzle' && zoneKind !== 'agent') {
     return PUZZLE_GAMES[hashInt(salt, huntId, 'puzzlegame') % PUZZLE_GAMES.length]!;
   }
 
   const pool = cashGamesFor(zoneKind);
   if (pool.length === 0) {
     throw new Error(
-      `no cash game modules registered for ${zoneKind} zones — cannot create hunt "${huntId}"`,
+      `no game modules registered for ${zoneKind} zones — cannot create hunt "${huntId}"`,
     );
   }
-  return pool[hashInt(salt, huntId, 'gametype') % pool.length]!;
+
+  // Separate salt tags so a zone's puzzle hunts do not mirror its cash ones
+  // game-for-game.
+  const tag = huntKind === 'puzzle' ? 'agentpuzzle' : 'gametype';
+  return pool[hashInt(salt, huntId, tag) % pool.length]!;
 }

@@ -5,6 +5,7 @@ import { env } from '../env';
 import { logger } from '../logger';
 import * as market from '../market';
 import * as metrics from '../metrics';
+import * as rooms from '../rooms';
 import * as referee from '../referee';
 import * as store from '../store';
 import type { Attempt, Hunt, Player } from '../types';
@@ -67,21 +68,91 @@ let ticking = false;
  * died on a bad configuration would leave every other player's agent frozen
  * with money committed.
  */
+/**
+ * When the sweep last ran, and what it found.
+ *
+ * Exposed so a player can tell "idle" from "broken", which from the outside look
+ * identical: 1,087 consecutive idle ticks and a crashed driver both render as a
+ * screen that never changes. An agent that is working and has nothing to do
+ * should say so.
+ */
+export interface Heartbeat {
+  lastTickAt: number | null;
+  /** Agents swept on that pass. Zero means none had a vault. */
+  swept: number;
+}
+let heartbeat: Heartbeat = { lastTickAt: null, swept: 0 };
+export const lastTick = (): Heartbeat => heartbeat;
+
 export async function tick(now = Date.now()): Promise<void> {
-  if (ticking) return;
+  if (ticking) {
+    // Counted, not silent. An overrun does not queue — it skips, and the only
+    // symptom is agents being served less often. That is exactly the shape of
+    // degradation nobody notices until someone complains their agent is slow.
+    metrics.agentSweepSkipped.inc();
+    return;
+  }
   ticking = true;
 
+  const startedAt = Date.now();
   try {
-    for (const agent of activeAgents()) {
+    const agents = activeAgents();
+
+    // ─────────────────────────── concurrent, but bounded ───────────────────
+    //
+    // This loop was `for (…) await driveOne(…)`, which serialised every agent
+    // behind every other agent's network calls. One pass over N agents took
+    // N x (chain read + whatever else), so at fifty milliseconds of RPC latency
+    // a hundred agents needed five seconds — the entire tick budget — and
+    // twenty thousand needed a thousand.
+    //
+    // Bounded rather than unbounded `Promise.all`: an unbounded fan-out would
+    // open one socket per agent and trade a slow sweep for a thundering herd
+    // against the RPC. The model calls underneath have their own gate
+    // (`runtime.MAX_IN_FLIGHT`), so this bounds chain reads and database work,
+    // not inference.
+    heartbeat = { lastTickAt: now, swept: agents.length };
+    await inParallel(agents, SWEEP_CONCURRENCY, async agent => {
+      metrics.agentTicksTotal.inc();
       try {
         await driveOne(agent, now);
       } catch (err) {
+        // One agent's failure must not stop the others — a driver that died on
+        // a bad configuration would freeze every other player's agent with
+        // money committed.
         logger.warn({ err, agentId: agent.id }, 'agent tick failed');
       }
-    }
+    });
   } finally {
     ticking = false;
+    metrics.agentSweepSeconds.observe((Date.now() - startedAt) / 1000);
   }
+}
+
+/**
+ * How many agents are driven at once.
+ *
+ * Sized against the RPC rather than the model: each slot is mostly waiting on
+ * `readVault`, and only the agents that turned out to have work reach the
+ * inference queue — which does its own bounding.
+ */
+export const SWEEP_CONCURRENCY = 16;
+
+/** Run `work` over `items`, at most `limit` at a time. Never rejects. */
+async function inParallel<T>(
+  items: T[],
+  limit: number,
+  work: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      await work(items[index]!);
+    }
+  });
+  await Promise.all(runners);
 }
 
 /** Agents with a vault. One without has nothing to spend and nothing to protect. */
@@ -92,6 +163,36 @@ async function driveOne(agent: agentRepo.Agent, now: number): Promise<void> {
   if (!player || !agent.vault) return;
 
   const config = agentRepo.getConfig(agent.id);
+
+  // ─────────────────────────── decide before reading the chain ───────────────
+  //
+  // This is the whole scaling change, and it is an ordering one.
+  //
+  // The vault read used to happen first, unconditionally — one RPC call per
+  // agent per five-second tick, whether or not that agent had anything to do.
+  // At a hundred seats that is 1.7 million reads a day, overwhelmingly to
+  // answer "nothing changed" about an agent that was idle anyway. At twenty
+  // thousand it was four thousand reads a second, and it was the reason the
+  // sweep could not finish.
+  //
+  // Most ticks, most agents are idle: no attempt in flight, no message waiting,
+  // and nothing on the board worth entering. Working that out is local — a few
+  // indexed reads and some arithmetic — so it happens first, and an idle agent
+  // now costs no network at all.
+  //
+  // Revocation latency is unaffected, which is why this is better than caching
+  // the read. The chain is still consulted immediately before anything that
+  // spends; the only agents we stop checking are the ones not about to act, and
+  // an agent that does nothing can do no harm. A killed agent is still caught
+  // the moment it tries to do something.
+  const live = liveAttempts(player);
+  const hasMail = mailbox.pending(agent.id, now) > 0;
+  const wantsEntry = live.length < MAX_CONCURRENT && hasSomethingToEnter(player, config);
+
+  if (live.length === 0 && !hasMail && !wantsEntry) {
+    metrics.agentTicksIdle.inc();
+    return;
+  }
 
   // The chain is the authority on whether this agent may still spend. A player
   // who pressed kill has a vault whose spender is zero, and the server must
@@ -111,7 +212,6 @@ async function driveOne(agent: agentRepo.Agent, now: number): Promise<void> {
 
   // Turns first: an attempt already in flight is money already committed, and
   // finishing it beats starting another.
-  const live = liveAttempts(player);
   for (const attempt of live) await takeTurn(agent, player, attempt, config, inbox, now);
 
   if (live.length >= MAX_CONCURRENT) return;
@@ -321,6 +421,58 @@ async function fund(
  * `elapsedMs` is set the moment a module says `complete`, so it is the honest
  * test for "has this already finished playing".
  */
+/**
+ * Is there any hunt this agent would actually enter?
+ *
+ * Deliberately the same predicate `enterSomething` applies, minus the side
+ * effects — zone permitted, not already attempted, and viable at the current
+ * entrant count. Cheap: indexed reads and arithmetic, no chain and no model.
+ *
+ * Kept beside `enterSomething` on purpose. If the two drift, an agent either
+ * wakes for nothing or sleeps through a hunt it wanted, and the second is the
+ * expensive direction.
+ */
+/**
+ * Whether this agent could actually take a turn in this hunt.
+ *
+ * `takeTurn` refuses anything `isAgentGame` rejects, and entry used to not check
+ * — so the agent entered hunts it could never play, sat through them at zero
+ * moves, and lost every one to the deadline. Observed on mainnet: thirteen
+ * attempts, all `fail_reason='timeout'`, all `last_seq=0`, on tap/math/memory.
+ * Each cost an entry and an energy slice to learn nothing.
+ *
+ * Only CASH hunts qualify, and that is a fact about the pools rather than a
+ * shortcut: `gameTypeForBlock` returns from PUZZLE_GAMES for every puzzle hunt
+ * regardless of zone kind — deliberately, since puzzle hunts guard XP and not
+ * money — while `cashGamesFor('agent')` is exactly ['deduction','negotiation',
+ * 'search'], which is exactly what `isAgentGame` admits.
+ *
+ * Deliberately NOT `isAgentGame(store.blockGame(hunt).type)`: `blockGame` picks,
+ * persists and commits the block's game on first call, so asking it "could I
+ * play this?" would materialise a game for every hunt merely by looking.
+ */
+function playable(hunt: { kind: string }): boolean {
+  return hunt.kind === 'cash';
+}
+
+function hasSomethingToEnter(
+  player: Player,
+  config: ReturnType<typeof agentRepo.getConfig>,
+): boolean {
+  for (const zone of store.listZones()) {
+    if (zone.kind !== 'agent') continue;
+    if (!config.zones.includes(zone.id)) continue;
+
+    for (const hunt of store.liveHuntsIn(zone)) {
+      if (store.attemptOf(hunt.id, player.id)) continue;
+      if (!playable(hunt)) continue;
+      const entrants = Math.max(1, store.chaserCount(hunt.id));
+      if (budget.viableFor(hunt.difficulty, entrants, model())) return true;
+    }
+  }
+  return false;
+}
+
 function liveAttempts(player: Player): Attempt[] {
   return store
     .listZones()
@@ -376,6 +528,18 @@ async function takeTurn(
   );
 
   metrics.agentTurns.inc({ source: outcome.source });
+
+  // Every move, as it happens. `source` is the honest part: 'model' means a seat
+  // paid for the decision, 'fallback' means the deterministic line played it.
+  rooms.toPlayer(player.id, {
+    t: 'agent:move',
+    huntId: hunt.id,
+    game: game.type,
+    move: outcome.move.kind,
+    source: outcome.source,
+    seq: attempt.lastSeq + 1,
+    at: now,
+  });
 }
 
 function moduleSpec(hunt: Hunt): unknown {
@@ -404,6 +568,7 @@ async function enterSomething(
 
     for (const hunt of store.liveHuntsIn(zone)) {
       if (store.attemptOf(hunt.id, player.id)) continue;
+      if (!playable(hunt)) continue;
 
       // Architecture §1, with inference on the cost side where it belongs. A
       // rational agent refuses a negative-EV hunt, so the house should not have
@@ -419,6 +584,15 @@ async function enterSomething(
 
       logger.info({ agentId: agent.id, huntId: hunt.id }, 'agent entered a hunt');
       metrics.agentEntries.inc();
+      // Tell the owner. An agent that plays invisibly is indistinguishable from
+      // one that is broken — which is how a working one read for an hour of
+      // testing, because the only evidence was a log line on the server.
+      rooms.toPlayer(player.id, {
+        t: 'agent:entered',
+        huntId: hunt.id,
+        zoneId: zone.id,
+        at: now,
+      });
       await considerHints(agent, player, hunt.id, zone.id, config, vault, now);
       return; // One at a time: a tick that entered four hunts would be a tick
       // that spent four entry costs before learning anything about the first.

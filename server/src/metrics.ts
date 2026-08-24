@@ -451,6 +451,12 @@ export const agentInferenceFailures = new Counter({
 });
 
 /** Mills billed to agents. Cost of goods sold against the same deposits. */
+export const agentSeatsSold = new Counter({
+  name: 'lootgrid_agent_seats_sold_total',
+  help: 'Funded agent seats sold',
+  registers: [registry],
+});
+
 export const agentInferenceMills = new Counter({
   name: 'lootgrid_agent_inference_mills_total',
   help: 'Inference spend metered to agents, in mills',
@@ -512,6 +518,67 @@ export const reputationReadFailures = new Counter({
 });
 
 /** Queue depth in the shared runtime. One busy tenant must not starve a hunt. */
+/**
+ * Tokens the provider actually charged for.
+ *
+ * The reconciliation against `budget.CALL_MILLS`, which is a fixed estimate
+ * because the budget must be checked BEFORE a call. Under house-funded tokens
+ * this is the difference between a seat that is profitable and one that is
+ * quietly subsidised — and a fixed estimate cannot notice a prompt that grew.
+ *
+ * Compare `sum(rate(lootgrid_inference_tokens_total)) * price` against the
+ * provider's invoice. A gap means the estimate needs re-deriving, not that the
+ * cap needs raising.
+ */
+export const inferenceTokens = new Counter({
+  name: 'lootgrid_inference_tokens_total',
+  help: 'Tokens billed by the provider, by direction',
+  labelNames: ['direction', 'model'],
+  registers: [registry],
+});
+
+/**
+ * Ticks where an agent had nothing to do and so cost no network.
+ *
+ * The scaling metric. Against `agent_ticks_total` it says what fraction of the
+ * sweep is free — and because an idle tick skips the chain read, this is
+ * directly the RPC calls NOT made. If it falls toward zero the sweep is doing
+ * real work every pass and the tick interval, not the concurrency, is what
+ * needs revisiting.
+ */
+export const agentTicksIdle = new Counter({
+  name: 'lootgrid_agent_ticks_idle_total',
+  help: 'Agent ticks that returned before reading the chain',
+  registers: [registry],
+});
+
+export const agentTicksTotal = new Counter({
+  name: 'lootgrid_agent_ticks_total',
+  help: 'Agent ticks attempted',
+  registers: [registry],
+});
+
+/** Wall time for one full sweep. If this approaches TICK_MS, passes get skipped. */
+export const agentSweepSeconds = new Histogram({
+  name: 'lootgrid_agent_sweep_seconds',
+  help: 'Wall time of one full agent sweep',
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30],
+  registers: [registry],
+});
+
+/**
+ * Sweeps skipped because the previous one was still running.
+ *
+ * `tick()` opens with `if (ticking) return`, so an overrun does not queue — it
+ * SKIPS, and the only symptom is agents being served less often. A silent
+ * `return` is the worst shape a degradation can have, so it is counted.
+ */
+export const agentSweepSkipped = new Counter({
+  name: 'lootgrid_agent_sweep_skipped_total',
+  help: 'Sweeps skipped because the previous one had not finished',
+  registers: [registry],
+});
+
 export const agentQueueDepth = new Gauge({
   name: 'lootgrid_agent_queue_depth',
   help: 'Turns waiting in the multi-tenant inference pool',

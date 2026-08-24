@@ -160,19 +160,30 @@ let confirmFn: ConfirmFn;
 let wallet: WalletClient | null = null;
 let publicClient: PublicClient | null = null;
 let relayerAddress: Address | null = null;
+let signer: ReturnType<typeof privateKeyToAccount> | null = null;
 
-function clients(): { wallet: WalletClient; pub: PublicClient; from: Address } {
-  if (!wallet || !publicClient || !relayerAddress) {
+function clients(): {
+  wallet: WalletClient;
+  pub: PublicClient;
+  from: Address;
+  account: ReturnType<typeof privateKeyToAccount>;
+} {
+  if (!wallet || !publicClient || !relayerAddress || !signer) {
     if (!env.RPC_URL || !env.RELAY_PRIVATE_KEY) {
       throw new Error('relayer misconfigured — env validation should have caught this');
     }
-    const account = privateKeyToAccount(env.RELAY_PRIVATE_KEY as Hex);
+    signer = privateKeyToAccount(env.RELAY_PRIVATE_KEY as Hex);
     const transport = http(env.RPC_URL);
     publicClient = createPublicClient({ transport });
-    wallet = createWalletClient({ account, transport });
-    relayerAddress = account.address;
+    wallet = createWalletClient({ account: signer, transport });
+    relayerAddress = signer.address;
   }
-  return { wallet, pub: publicClient, from: relayerAddress };
+  // `account` is the signer OBJECT; `from` is only its address, kept because the
+  // nonce lookup and the log lines want a plain address. Passing the address to
+  // writeContract makes viem treat the sender as a JSON-RPC account and call
+  // `eth_sendTransaction` — which a public node cannot serve, because it holds
+  // no keys. The object is what selects local signing.
+  return { wallet, pub: publicClient, from: relayerAddress, account: signer };
 }
 
 /**
@@ -273,11 +284,11 @@ function markFailed(rows: Row[], err: unknown): void {
  * and collapsing them to single rows would be a larger change than it looks.
  */
 const chainSend: SendFn = async (kind, payloads) => {
-  const { wallet: w, from } = clients();
+  const { wallet: w, account } = clients();
   const n = nonce!;
 
   const common = {
-    account: from,
+    account,
     address: env.LOOTGRID_ACTIONS_ADDRESS as Address,
     abi: ACTIONS_ABI,
     chain: null,
@@ -467,6 +478,7 @@ export function reset(): void {
   wallet = null;
   publicClient = null;
   relayerAddress = null;
+  signer = null;
   nonce = null;
   draining = false;
   stopped = false;

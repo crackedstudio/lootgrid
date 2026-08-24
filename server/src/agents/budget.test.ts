@@ -37,11 +37,20 @@ afterEach(() => teardownWorld());
 
 describe('the measured cost of thinking', () => {
   it('prices a call in mills, not cents', () => {
-    // ~0.27 mills per call at DeepSeek v4-flash rates for a 1.5k/200 token turn.
-    // Rounded up, because the budget is checked before the call and guessing
-    // low is the dangerous direction.
-    expect(budget.callCostMills(FLASH)).toBe(1);
-    expect(budget.callCostMills(PRO)).toBe(2);
+    // ~26.6 mills per call at DeepSeek v4-flash rates for a 1.5k/200 token turn.
+    // Rounded up, because the budget is checked before the call and guessing low
+    // is the dangerous direction.
+    //
+    // These were 1 and 2, from a comment that converted DOLLARS as if they were
+    // cents — a mill is a thousandth of a cent, so $0.000266 is 26.6 mills and
+    // not 0.27. The house was under-billing itself 27x. The assertion is written
+    // against the arithmetic rather than the constant so the same slip cannot
+    // pass twice.
+    const millsPerCall = (inputPerM: number, outputPerM: number) =>
+      Math.ceil((1500 * inputPerM + 200 * outputPerM) * 100 * 1000);
+
+    expect(budget.callCostMills(FLASH)).toBe(millsPerCall(0.14 / 1e6, 0.28 / 1e6));
+    expect(budget.callCostMills(PRO)).toBe(millsPerCall(0.435 / 1e6, 0.87 / 1e6));
   });
 
   it('prices an unknown model as the expensive one', () => {
@@ -73,8 +82,11 @@ describe('inference is bounded by what the hunt is worth', () => {
     const generous = { ...config, inferenceMillsPerHunt: 1_000_000 };
     const hunt = { id: 'h1', difficulty: 'easy' as const };
 
-    // easy = 1c prize, so the ceiling is 100 mills however generous the player is.
-    for (let i = 0; i < budget.prizeCeilingMills('easy'); i++) {
+    // The ceiling is a share of the prize however generous the player is.
+    // Counted in CALLS rather than mills — a call is 27 mills now, and a loop
+    // that assumed 1 exhausted the cap on its second iteration.
+    const callsAllowed = Math.floor(budget.prizeCeilingMills('easy') / budget.callCostMills(FLASH));
+    for (let i = 0; i < callsAllowed; i++) {
       const decision = budget.canInfer(AGENT, generous, hunt, FLASH);
       expect(decision.ok).toBe(true);
       budget.record(AGENT, 'inference', budget.callCostMills(FLASH), { huntId: hunt.id });
@@ -93,23 +105,25 @@ describe('inference is bounded by what the hunt is worth', () => {
    */
   it('refuses the next call, not the last one', () => {
     const hunt = { id: 'h1', difficulty: 'med' as const };
-    const tight = { ...config, inferenceMillsPerHunt: 2 };
+    // Exactly two calls' worth, expressed in calls so it survives a price change.
+    const call = budget.callCostMills(FLASH);
+    const tight = { ...config, inferenceMillsPerHunt: 2 * call };
 
     expect(budget.canInfer(AGENT, tight, hunt, FLASH).ok).toBe(true);
-    budget.record(AGENT, 'inference', 1, { huntId: hunt.id });
+    budget.record(AGENT, 'inference', call, { huntId: hunt.id });
     expect(budget.canInfer(AGENT, tight, hunt, FLASH).ok).toBe(true);
-    budget.record(AGENT, 'inference', 1, { huntId: hunt.id });
+    budget.record(AGENT, 'inference', call, { huntId: hunt.id });
 
     // Cap reached. The third call is refused BEFORE it is made.
     const decision = budget.canInfer(AGENT, tight, hunt, FLASH);
     expect(decision.ok).toBe(false);
     expect(decision.reason).toBe('inference_budget');
-    expect(agentRepo.spentOnHunt(AGENT, hunt.id, 'inference')).toBe(2);
+    expect(agentRepo.spentOnHunt(AGENT, hunt.id, 'inference')).toBe(2 * call);
   });
 
   it('meters each hunt separately', () => {
-    const tight = { ...config, inferenceMillsPerHunt: 1 };
-    budget.record(AGENT, 'inference', 1, { huntId: 'h1' });
+    const tight = { ...config, inferenceMillsPerHunt: budget.callCostMills(FLASH) };
+    budget.record(AGENT, 'inference', budget.callCostMills(FLASH), { huntId: 'h1' });
 
     expect(budget.canInfer(AGENT, tight, { id: 'h1', difficulty: 'med' }, FLASH).ok).toBe(false);
     // A different hunt has its own allowance — the cap is per hunt by design.
@@ -193,19 +207,33 @@ describe('whether a hunt is worth entering at all', () => {
    * arithmetic necessity, and the two should not be confused again.
    */
   it('makes the cheap tier viable now that the prize floor has risen', () => {
-    for (const entrants of [1, 8, 40, 100]) {
+    // Realistic contention. The agent tier is capped at 100 seats and only a
+    // fraction of them chase any one hunt, so these are the counts that matter.
+    for (const entrants of [1, 8, 40]) {
       expect(budget.viableFor('easy', entrants, FLASH), `flash/${entrants}`).toBe(true);
       expect(budget.viableFor('easy', entrants, PRO), `pro/${entrants}`).toBe(true);
     }
+    // The expensive model on the cheapest tier is the first thing to become
+    // unviable, and it does so at 72 — which is why it is the combination worth
+    // watching if seats ever outgrow the cap.
+    expect(budget.viableFor('easy', 100, FLASH)).toBe(true);
+    expect(budget.viableFor('easy', 100, PRO)).toBe(false);
   });
 
   it('still refuses a hunt once contention makes thinking cost more than the share', () => {
-    // The mechanism is intact, just an order of magnitude further out. This is
-    // the property that actually matters — an agent that enters anything is an
-    // agent that loses money — and the expensive model still gives up first.
+    // The property that actually matters: an agent that enters anything is an
+    // agent that loses money. The crossovers moved in by ~27x when the unit
+    // error in CALL_MILLS was corrected — they were 4,000 and 10,000 while a
+    // call was priced at 1 mill instead of 27.
+    //
+    // The expensive model still gives up first, which is the shape that should
+    // survive any future re-pricing.
     expect(budget.viableFor('easy', 4_000, PRO)).toBe(false);
-    expect(budget.viableFor('easy', 4_000, FLASH)).toBe(true);
-    expect(budget.viableFor('easy', 10_000, FLASH)).toBe(false);
+    expect(budget.viableFor('easy', 4_000, FLASH)).toBe(false);
+    // The expensive model gives up first at every tier: on `hard` it stops at
+    // ~600 entrants where flash runs to ~1,850.
+    expect(budget.viableFor('hard', 700, FLASH)).toBe(true);
+    expect(budget.viableFor('hard', 700, PRO)).toBe(false);
   });
 
   it('leaves the paying tiers comfortably viable', () => {

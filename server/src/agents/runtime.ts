@@ -1,6 +1,8 @@
 import * as agentRepo from '../db/repos/agents';
 import { logger } from '../logger';
+import { env } from '../env';
 import * as metrics from '../metrics';
+import * as seats from './seats';
 import type { Difficulty, GameType } from '../types';
 import * as budget from './budget';
 import { promptView, type AgentConfig } from './config';
@@ -95,6 +97,47 @@ export const MAX_TOKENS = 200;
  * anything at all about another agent. A model that knows its own ceiling plans
  * around the ceiling; a model that knows someone else's should not exist.
  */
+/**
+ * The exact shape a move must take, per game.
+ *
+ * ─────────────────────────── why this has to be spelled out ─────────────────
+ *
+ * The prompt used to send the spec, the state and the style, and trust the
+ * system prompt's "a single JSON object describing ONE legal move" to convey the
+ * format. It does not. A model given a negotiation position and no schema
+ * answers with something reasonable and differently-shaped — `{"keepBps":6000}`,
+ * or an `action` key instead of `kind` — which `MOVE_SCHEMAS` rejects whole,
+ * because a partially-honoured move is worse than none.
+ *
+ * Measured on mainnet before this existed: every turn produced two
+ * `not_a_move` violations (the call and its one retry) and then a fallback. The
+ * agent played the deterministic line every single time while paying for
+ * inference on both attempts — the exact failure the schema-violation gauge was
+ * put there to surface.
+ *
+ * These strings MUST track `MOVE_SCHEMAS` in validate.ts. `runtime.test.ts`
+ * asserts every game has one and that the examples parse, so drift fails a test
+ * rather than quietly costing money.
+ */
+const MOVE_FORMATS: Record<string, string> = {
+  deduction:
+    'Reply with EXACTLY one of:\n' +
+    '  {"kind":"probe","value":{"kind":"region","quadrant":"NW|NE|SW|SE"}}\n' +
+    '  {"kind":"probe","value":{"kind":"exclusion","quadrant":"NW|NE|SW|SE"}}\n' +
+    '  {"kind":"probe","value":{"kind":"rowBand","from":<int>,"to":<int>}}\n' +
+    '  {"kind":"probe","value":{"kind":"colBand","from":<int>,"to":<int>}}\n' +
+    '  {"kind":"probe","value":{"kind":"parity","parity":"even|odd"}}\n' +
+    '  {"kind":"probe","value":{"kind":"distance","r":<int>,"c":<int>,"within":<int>}}\n' +
+    '  {"kind":"commit","value":{"r":<int>,"c":<int>}}\n' +
+    'No other keys. Probe to narrow the candidates; commit only when sure or out of budget.',
+  search:
+    'Reply with EXACTLY: {"kind":"probe","value":{"r":<int>,"c":<int>}}\n' +
+    'No other keys.',
+  negotiation:
+    'Reply with EXACTLY: {"kind":"offer","value":{"keepBps":<int 0-10000>}}\n' +
+    'No other keys. keepBps is the share you keep, in basis points — 6000 means you keep 60%.',
+};
+
 export function buildPrompt(ctx: TurnContext): string {
   const parts = [
     `Game: ${ctx.gameType}.`,
@@ -102,6 +145,11 @@ export function buildPrompt(ctx: TurnContext): string {
     `Your progress so far: ${JSON.stringify(ctx.state)}.`,
     `Your style: ${JSON.stringify(promptView(ctx.config))}.`,
   ];
+
+  // Last, and unconditional: the reply format is the one instruction that must
+  // not be crowded out by however long the position happens to be.
+  const format = MOVE_FORMATS[ctx.gameType];
+  if (format) parts.push(format);
 
   if (ctx.inbox.length > 0) {
     // Rendered through the protocol's fixed templates, never as raw objects.
@@ -123,8 +171,27 @@ interface Job {
 const queues = new Map<string, Job[]>();
 let draining = false;
 
-/** Concurrent provider calls. Bounded so one burst cannot exhaust the quota. */
-export const MAX_IN_FLIGHT = 4;
+/**
+ * Concurrent provider calls. Bounded so one burst cannot exhaust the quota.
+ *
+ * ─────────────────────────── why this is now configurable ───────────────────
+ *
+ * It was a hardcoded 4, sized when agents were a handful of demo accounts. At a
+ * hundred seats it is the binding constraint ahead of both cost and the sweep:
+ * every seat holding its {@link MAX_CONCURRENT} attempts, thirteen calls over a
+ * ten-minute attempt, demands about 6.5 calls/sec — against 4.0 at one second
+ * of provider latency, 2.0 at two, 0.8 at five.
+ *
+ * Saturation does not drop work: the queue below holds it. But an attempt
+ * carries a deadline, and a turn that arrives after it is a LOST HUNT — which
+ * for a paid seat is a refund, and for the player is indistinguishable from
+ * their agent being bad.
+ *
+ * The right value is bounded by the provider's own per-account concurrency,
+ * which is a fact about our DeepSeek plan rather than about this code. Hence an
+ * env var: raise it against a measured limit, not a guessed one.
+ */
+export const MAX_IN_FLIGHT = env.AGENT_MAX_IN_FLIGHT;
 
 function enqueue(tenant: string, run: () => Promise<void>): void {
   const queue = queues.get(tenant) ?? [];
@@ -242,6 +309,25 @@ async function runTurn(ctx: TurnContext): Promise<TurnOutcome> {
     };
   }
 
+  // A funded seat is what makes the HOUSE willing to pay a provider for this
+  // turn. It gates nothing else — not the hunt, not the entry, not the prize.
+  //
+  // An unseated agent lands here and plays `fallbackMove`, which is a competent
+  // line rather than a placeholder, against the same opponents for the same
+  // money. That is the free path AGENT_TIER.md §3 requires, and it is the whole
+  // reason a seat can be sold at all: a fee for something a player NEEDS in
+  // order to compete for a cash prize is an entry fee with extra steps.
+  const perCall = budget.callCostMills(model());
+  if (!seats.hasCredit(ctx.agentId, perCall)) {
+    metrics.agentBudgetRefusals.inc({ reason: 'no_seat' });
+    return {
+      move: fallbackFor(ctx),
+      source: 'fallback',
+      billedMills: 0,
+      refused: 'no_seat',
+    };
+  }
+
   const result = await takeTurn({
     game: ctx.gameType,
     spec: ctx.spec,
@@ -253,10 +339,35 @@ async function runTurn(ctx: TurnContext): Promise<TurnOutcome> {
 
   // Bill what actually happened, including the retry. The budget authorised one
   // call; a retry that took a second is still the house's money.
+  // Billed on the ESTIMATE, deliberately. The budget was checked before the
+  // call against the same number, so billing on measured tokens afterwards
+  // could charge more than was authorised — which is the failure the
+  // check-before-call ordering exists to prevent.
+  //
+  // Measured usage is recorded separately, for reconciliation. If the two
+  // diverge, the estimate is what should be re-derived.
   const billedMills = result.calls * budget.callCostMills(model());
+  if (result.usage) {
+    metrics.inferenceTokens.inc({ direction: 'prompt', model: model() }, result.usage.promptTokens);
+    metrics.inferenceTokens.inc(
+      { direction: 'completion', model: model() },
+      result.usage.completionTokens,
+    );
+  }
   if (billedMills > 0) {
     budget.record(ctx.agentId, 'inference', billedMills, { huntId: ctx.huntId });
     metrics.agentInferenceMills.inc(billedMills);
+    // Draw down the seat for what the house actually spent, including a retry.
+    // Not conditional on success: a retried call cost real money whether or not
+    // it produced a usable move, and charging only for good answers would mean
+    // the house eats every schema violation.
+    //
+    // The check above authorised `perCall`; a retry can exceed it by one call,
+    // so this may fail on the last turn of a nearly-empty seat. That is fine —
+    // it is recorded, and the next turn falls back rather than overdrawing.
+    if (!seats.consume(ctx.agentId, billedMills)) {
+      logger.warn({ agentId: ctx.agentId, billedMills }, 'seat credit exhausted mid-turn');
+    }
   }
 
   return { move: result.move, source: result.source, billedMills };

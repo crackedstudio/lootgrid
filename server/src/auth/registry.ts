@@ -139,17 +139,57 @@ export function watchRevocations(): void {
     }
   };
 
-  for (const eventName of ['SessionKeyBound', 'SessionKeyCleared'] as const) {
-    unwatch.push(
-      getClient().watchContractEvent({
-        address,
-        abi: ABI,
-        eventName,
-        onLogs: onLogs as never,
-        onError: err => logger.error({ err, eventName }, 'registry event subscription error'),
-      }),
-    );
-  }
+  // ─────────────────────── why not watchContractEvent ───────────────────────
+  //
+  // viem's watcher polls `eth_getFilterChanges` against a filter made by
+  // `eth_newFilter` — and that filter is state held by ONE node. A public
+  // endpoint like forno.celo.org is a load balancer, so the filter is created
+  // on one node and polled on another, which answers `filter not found`
+  // forever. `poll: true` does not help: it selects the filter path, and only
+  // falls back to getLogs when filter *creation* fails, which here it does not.
+  //
+  // The failure is quiet in the worst way — the process keeps running while the
+  // watcher never fires, so a revoked key authenticates until the TTL expires.
+  // That is exactly what this subscription exists to prevent.
+  //
+  // getLogs over an explicit block range is stateless, so any node can answer
+  // it. We track our own cursor, which also means a restart or a dropped poll
+  // resumes from the last block seen rather than losing the gap silently.
+  let cursor: bigint | null = null;
+
+  const poll = async (): Promise<void> => {
+    try {
+      const latest = await getClient().getBlockNumber();
+      if (cursor === null) cursor = latest; // first tick: start from now, not genesis
+      if (latest <= cursor) return;
+
+      // Bounded so a long stall cannot ask a public node for a huge range.
+      const from = cursor + 1n;
+      const to = latest - from > 500n ? from + 500n : latest;
+
+      for (const eventName of ['SessionKeyBound', 'SessionKeyCleared'] as const) {
+        const logs = await getClient().getContractEvents({
+          address,
+          abi: ABI,
+          eventName,
+          fromBlock: from,
+          toBlock: to,
+        });
+        if (logs.length > 0) onLogs(logs as never);
+      }
+      cursor = to;
+    } catch (err) {
+      // Transient RPC trouble is ordinary. The cursor is not advanced, so the
+      // next tick re-reads the same range rather than skipping it.
+      logger.warn({ err }, 'registry event poll failed — will retry');
+    }
+  };
+
+  const timer = setInterval(() => void poll(), 4_000);
+  timer.unref?.();
+  unwatch.push(() => clearInterval(timer));
+  void poll();
+
   logger.info({ address }, 'watching registry for key rotations');
 }
 

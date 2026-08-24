@@ -180,6 +180,43 @@ export function disabledReason(): string | null {
   return null;
 }
 
+/**
+ * Whether SEATS may be sold. Deliberately independent of {@link enabled}.
+ *
+ * Entry fees and seat fees are different things in law and must be switchable
+ * independently. `ENTRY_FEES_ENABLED` is off and, per the header, must stay off
+ * — a seat is a compute purchase, not admission, so tying it to that flag would
+ * force the dangerous feature on in order to ship the safe one.
+ */
+export function seatsEnabled(): boolean {
+  return Boolean(env.AGENT_SEAT_PAY_TO && env.CHAIN === SUPPORTED_CHAIN);
+}
+
+export function seatsDisabledReason(): string | null {
+  if (!env.AGENT_SEAT_PAY_TO) return 'AGENT_SEAT_PAY_TO is unset';
+  if (env.CHAIN !== SUPPORTED_CHAIN) return `@x402/evm has no chain id for ${env.CHAIN}`;
+  return null;
+}
+
+/**
+ * Terms for a seat.
+ *
+ * The `resource` is the seat, NOT a hunt. That is not cosmetic: the resource
+ * string is what the payer signs over and what the facilitator records, so it is
+ * the durable statement of what the money bought. A payment whose resource says
+ * `/hunts/.../attempts` is evidence of an entry fee no matter what the marketing
+ * page says.
+ */
+export function termsForSeat(agentId: string, priceCents: number): PaymentTerms {
+  return {
+    resource: `/agent/seat/${agentId}`,
+    priceCents,
+    payTo: env.AGENT_SEAT_PAY_TO ?? '',
+    chainId: CHAIN_IDS[env.CHAIN],
+    description: 'Inference credit — the model calls the house pays for on your behalf. Not entry.',
+  };
+}
+
 export function termsFor(huntId: string, priceCents: number): PaymentTerms {
   return {
     resource: `/hunts/${huntId}/attempts`,

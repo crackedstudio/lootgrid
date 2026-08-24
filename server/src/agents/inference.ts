@@ -39,8 +39,24 @@ export interface CompletionRequest {
   maxTokens: number;
 }
 
+/**
+ * What the provider actually charged for, when it says.
+ *
+ * Read off the response rather than assumed. The budget still has to be checked
+ * BEFORE a call — you cannot know a cost before making it — so this does not
+ * replace the estimate in `budget.CALL_MILLS`; it reconciles against it.
+ *
+ * That distinction matters most now that the house holds the DeepSeek account:
+ * the estimate is what bounds a looping agent, and this is what tells us whether
+ * the estimate is right. A fixed guess cannot notice a prompt that grew.
+ */
+export interface Usage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
 export type CompletionResult =
-  | { ok: true; text: string }
+  | { ok: true; text: string; usage?: Usage }
   | { ok: false; reason: 'disabled' | 'timeout' | 'http_error' | 'empty' | 'network' };
 
 export type CompleteFn = (req: CompletionRequest) => Promise<CompletionResult>;
@@ -94,6 +110,25 @@ const deepseek: CompleteFn = async req => {
         // violations to retry.
         temperature: 0.2,
         response_format: { type: 'json_object' },
+        // ─────────────────── this line is load-bearing ───────────────────
+        //
+        // deepseek-v4 models reason by default, and reasoning tokens are drawn
+        // from `max_tokens` BEFORE any answer is emitted. On a real board state
+        // the model does not converge: measured against mainnet prompts it spent
+        // 200, 800, 4000 and even 16,000 tokens entirely on reasoning and
+        // returned `content: ""` every time — 167 seconds at the top end, far
+        // past TIMEOUT_MS.
+        //
+        // The failure is silent and expensive in the worst combination: empty
+        // content is indistinguishable from a dumb model, so `validate.ts` falls
+        // back to a deterministic move and play looks fine, while every call is
+        // billed in full for thinking nobody ever reads.
+        //
+        // 'none' turns it off: 0 reasoning tokens, ~1s, valid JSON. 'minimal' was
+        // tried and is NOT safe — it still overran the budget and returned empty.
+        // If a future model needs deliberation, raise max_tokens FIRST and
+        // measure, because the interaction is the whole problem.
+        reasoning_effort: 'none',
       }),
     });
 
@@ -106,9 +141,21 @@ const deepseek: CompleteFn = async req => {
 
     const body = (await response.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
     const text = body.choices?.[0]?.message?.content;
-    return text ? { ok: true, text } : { ok: false, reason: 'empty' };
+    if (!text) return { ok: false, reason: 'empty' };
+
+    // Absent on providers that do not report it, which is why `usage` is
+    // optional everywhere downstream rather than defaulted to zero — a zero
+    // would read as "this call was free" and quietly flatter the reconciliation.
+    const u = body.usage;
+    const usage =
+      typeof u?.prompt_tokens === 'number' && typeof u?.completion_tokens === 'number'
+        ? { promptTokens: u.prompt_tokens, completionTokens: u.completion_tokens }
+        : undefined;
+
+    return { ok: true, text, usage };
   } catch (err) {
     const aborted = err instanceof Error && err.name === 'AbortError';
     if (!aborted) logger.warn({ err }, 'inference call failed');

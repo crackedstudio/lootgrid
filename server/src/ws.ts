@@ -1,6 +1,7 @@
 import type { Server } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { z } from 'zod';
+import * as registry from './auth/registry';
 import { verifyWs } from './auth/verify';
 import { env } from './env';
 import { isAppError } from './errors';
@@ -90,22 +91,51 @@ export function attachWs(server: Server): WebSocketServer {
     ws.on('error', cleanup);
   });
 
-  // Half-open TCP connections do not fire 'close'. Without this, rooms slowly
-  // fill with sockets that will never receive anything.
-  const heartbeat = setInterval(() => {
-    for (const client of rooms.allClients()) {
+  /**
+   * Reaps half-open sockets AND re-checks each socket's session key.
+   *
+   * Authentication used to happen exactly once, at `hello` — after which the
+   * socket was authorised for its entire lifetime by an in-memory lookup. That
+   * meant `clear()` could not terminate an established connection at all: a
+   * stolen key survived its own revocation indefinitely, with this very
+   * heartbeat keeping it alive. The socket's authority now has to be renewed.
+   */
+  async function sweepSockets(): Promise<void> {
+    for (const client of [...rooms.allClients()]) {
       const state = sockets.get(client.ws);
       if (state && !state.alive) {
         client.ws.terminate();
         continue;
       }
       if (state) state.alive = false;
+
+      if (env.AUTH_MODE === 'chain' && client.sessionKey) {
+        try {
+          const bound = await registry.sessionKeyOf(client.playerId as `0x${string}`);
+          if (!bound || bound.toLowerCase() !== client.sessionKey.toLowerCase()) {
+            metrics.wsMessages.inc({ type: 'revalidate', result: 'revoked' });
+            logger.info({ player: client.playerId }, 'closing socket — session key revoked');
+            client.ws.close(4401, 'session revoked');
+            continue;
+          }
+        } catch (err) {
+          // Fail open for this tick rather than mass-disconnecting on an RPC
+          // blip. Event-driven invalidation is the primary path; this is the
+          // backstop, and it retries in WS_HEARTBEAT_MS.
+          logger.warn({ err }, 'socket revalidation failed — retrying next tick');
+        }
+      }
+
       try {
         client.ws.ping();
       } catch {
         /* socket already gone */
       }
     }
+  }
+
+  const heartbeat = setInterval(() => {
+    void sweepSockets().catch(err => logger.error({ err }, 'socket sweep threw'));
   }, env.WS_HEARTBEAT_MS);
   heartbeat.unref?.();
 
@@ -158,7 +188,27 @@ async function handleMessage(
         return ws.close(4429, 'too many connections');
       }
 
-      rooms.register(ws, player.id, player.handle);
+      // Remember the key so the heartbeat can notice if it is later rotated.
+      let boundKey: string | null = null;
+      if (env.AUTH_MODE === 'chain') {
+        try {
+          boundKey = await registry.sessionKeyOf(player.id as `0x${string}`);
+        } catch {
+          // Fail closed. Registering with a null key would make the socket
+          // permanently exempt from revalidation, because the heartbeat skips
+          // clients without a recorded key — an RPC blip would mint a session
+          // that outlives every future revocation.
+          metrics.wsMessages.inc({ type: 'hello', result: 'registry_unavailable' });
+          rooms.send(ws, { t: 'error', error: 'registry_unavailable' });
+          return ws.close(4503, 'registry unavailable');
+        }
+        if (!boundKey) {
+          rooms.send(ws, { t: 'error', error: 'no_session_key_bound' });
+          return ws.close(4401, 'unauthorized');
+        }
+      }
+
+      rooms.register(ws, player.id, player.handle, boundKey);
       state.authed = true;
       metrics.wsMessages.inc({ type: 'hello', result: 'ok' });
       return rooms.send(ws, { t: 'ready', playerId: player.id, handle: player.handle });

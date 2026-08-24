@@ -4,12 +4,15 @@ import * as agentRepo from '../db/repos/agents';
 import { env } from '../env';
 import * as store from '../store';
 import { GRID } from '../config';
-import { freshWorld, makePlayer, teardownWorld } from '../testing/harness';
+import { freshWorld, makeAgedPlayer, teardownWorld } from '../testing/harness';
 import { candidates, type DeductionState } from '../games/deduction';
 import * as driver from './driver';
+import * as agents from './index';
+import * as referee from '../referee';
 import * as identity from './identity';
 import * as inference from './inference';
 import * as runtime from './runtime';
+import { isAgentGame } from './validate';
 
 /**
  * The loop that makes an agent an agent.
@@ -44,6 +47,8 @@ let agentId: string;
 
 /** The agent zone seeded in phase 6. */
 const lattice = () => store.listZones().find(z => z.kind === 'agent')!;
+/** The real player row, not a stub — `openAttempt` spends energy against it. */
+let owner: ReturnType<typeof makeAgedPlayer>;
 
 function setVaultOnChain(over: Partial<vaultChain.VaultState> = {}) {
   vaultChain.setTransportForTests(
@@ -72,7 +77,7 @@ beforeEach(() => {
   mut.RPC_URL = 'http://localhost:0';
   mut.CHAIN = 'celoSepolia';
 
-  makePlayer(PLAYER, '@owner');
+  owner = makeAgedPlayer(PLAYER, '@owner');
   agentId = identity.addressFor(PLAYER);
   agentRepo.create(agentId, PLAYER);
   agentRepo.setVault(agentId, VAULT);
@@ -228,11 +233,49 @@ describe('the chain is the authority on whether it may act', () => {
 
   it('does not wake an agent without a vault', async () => {
     const other = '0x00000000000000000000000000000000000000b0';
-    makePlayer(other, '@novault');
+    makeAgedPlayer(other, '@novault');
     agentRepo.create(identity.addressFor(other), other);
 
     // Nothing to spend and nothing to protect.
     expect(agentRepo.allActive().map(a => a.playerId)).not.toContain(other);
+  });
+});
+
+describe('it only enters hunts it can actually play', () => {
+  /**
+   * The mainnet bug.
+   *
+   * Entry checked the zone, the config and the budget; `takeTurn` additionally
+   * checks `isAgentGame` and returns early when it fails. Nothing reconciled
+   * the two, so the agent entered puzzle hunts — which draw reflex games in
+   * EVERY zone, agent zones included, because puzzle hunts guard XP and not
+   * money — then sat at zero moves until the deadline killed them.
+   *
+   * Observed live: 13 attempts, every one `fail_reason='timeout'` with
+   * `last_seq=0`, on tap/math/memory. Each burned an entry and an energy slice
+   * to learn nothing, and the loop re-entered forever because a timed-out
+   * attempt is not a live one.
+   */
+  it('never enters a puzzle hunt, which always draws a reflex game', async () => {
+    for (let i = 0; i < 6; i++) await driver.tick();
+
+    const entered = attemptsOf();
+    expect(entered.length).toBeGreaterThan(0);
+    for (const a of entered) {
+      const hunt = store.getHunt(a.huntId)!;
+      expect(hunt.kind).toBe('cash');
+    }
+  });
+
+  it('every hunt it enters yields a game it can move in', async () => {
+    for (let i = 0; i < 6; i++) await driver.tick();
+
+    for (const a of attemptsOf()) {
+      const hunt = store.getHunt(a.huntId)!;
+      // The property that actually matters: whatever it entered, `takeTurn`
+      // must not bounce it. This is the assertion the old code failed.
+      expect(isAgentGame(store.blockGame(hunt).type)).toBe(true);
+    }
   });
 });
 
@@ -279,5 +322,42 @@ describe('it refuses more than it accepts', () => {
   it('is off unless it is switched on', () => {
     mut.AGENTS_ENABLED = false;
     expect(driver.enabled()).toBe(false);
+  });
+});
+
+describe('what the owner is shown', () => {
+  /**
+   * An agent plays AS its owner, so attempts carry the owner's `player_id` and
+   * nothing in the row says who chose the move.
+   *
+   * The activity feed therefore has to discriminate some other way, and zone
+   * kind is the honest one: the driver only ever enters agent zones. Before this
+   * filter existed, the card headed "what it is doing" listed the player's own
+   * abandoned tutorial CRACK attempts — in human zones, in a game agents cannot
+   * play at all — as though the agent had made them.
+   */
+  it('shows only hunts the agent could have entered', async () => {
+    // The human plays a tutorial hunt by hand, in a human zone.
+    const humanZone = store.listZones().find(z => z.kind === 'human')!;
+    // A PUZZLE hunt: cash hunts on human zones need Prospector rank, which a
+    // fresh player does not have. Agent zones exempt rank; human ones do not.
+    const humanHunt = store.liveHuntsIn(humanZone).find(h => h.kind === 'puzzle')!;
+    const opened = referee.openAttempt(owner, humanHunt);
+    // Guard the setup: a silently refused entry would make this test pass for
+    // the wrong reason, which is exactly how it first passed without the filter.
+    expect(opened.ok, JSON.stringify(opened)).toBe(true);
+
+    // The agent plays its own.
+    await driver.tick();
+
+    const { attempts } = agents.activity(owner);
+
+    expect(attempts.length).toBeGreaterThan(0);
+    for (const a of attempts) {
+      const hunt = store.getHunt(a.huntId)!;
+      expect(store.getZone(hunt.zoneId)!.kind).toBe('agent');
+    }
+    // The hand-played hunt must not be attributed to the agent.
+    expect(attempts.some(a => a.huntId === humanHunt.id)).toBe(false);
   });
 });

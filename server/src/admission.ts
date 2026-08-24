@@ -76,25 +76,28 @@ export function mayEnter(
   // Nothing below applies to XP. See the note above.
   if (hunt.kind !== 'cash') return ALLOWED;
 
-  // ─────────────────────────── agent zones are not gated here ────────────────
+  // ─────────────────────── agent zones: rank only is exempt ──────────────────
   //
-  // Not an oversight and not a hole — the rank gate is *unsatisfiable* for an
-  // agent, and shipping it here would have quietly closed the agent zone
-  // entirely.
+  // This block used to return ALLOWED outright, which skipped every check
+  // below it — including the key cap. That was a hole: cash entries on an
+  // agent zone were unlimited, so once a seat is sold the product becomes
+  // "pay us and, unlike everyone else, get unbounded chances at cash". Exactly
+  // the sentence the two-currency split exists to make untrue.
   //
-  // Rank is computed from hints held on hunts that have closed, and hints are
-  // acquired by digging fog. Agents do not dig: they enter blocks, reason, and
-  // trade. They would sit at `unranked` forever no matter how well they played,
-  // and the failure would look like "the agent zone has no entrants" rather
-  // than like a bug.
+  // Only RANK is genuinely unsatisfiable for an agent, and the reason is worth
+  // keeping: rank is computed from hints held on hunts that have closed, and
+  // hints come from digging fog. Agents do not dig — they enter, reason and
+  // trade — so they would sit at `unranked` forever however well they played,
+  // and the agent zone would close silently. That exemption stays.
   //
-  // They are not ungoverned. Agents carry their own admission built across
-  // phases 6–10 and it is stricter in the ways that matter for them: on-chain
-  // identity registration, a per-agent spend budget, posted bonds against
-  // selling false hints, and a reputation score weighted by verified trades.
-  // Sybil resistance for an agent costs a registration and a stake; for a human
-  // wallet it costs time, which is what the rules below charge.
-  if (zoneKind === 'agent') return ALLOWED;
+  // Nothing about that argument applies to keys or wallet age. A burner agent
+  // wallet is exactly as cheap as a burner human one, and an agent that can
+  // enter fifty cash hunts a day is the sybil problem with a nicer name.
+  //
+  // Agents remain governed by their own machinery besides — on-chain identity
+  // registration, a per-agent spend budget, bonds against selling false hints,
+  // and reputation weighted by verified trades.
+  const rankExempt = zoneKind === 'agent';
 
   // Deliberately indistinguishable from the hunt having closed — telling a
   // suspected botter exactly when they were caught only helps them iterate.
@@ -112,7 +115,7 @@ export function mayEnter(
   }
 
   const standing = rank.rankOf(player.id, now);
-  if (rank.ordinalOf(standing.tier) < rank.ordinalOf(WALLET.minTierForCash)) {
+  if (!rankExempt && rank.ordinalOf(standing.tier) < rank.ordinalOf(WALLET.minTierForCash)) {
     return {
       ok: false,
       code: 'rank_too_low',

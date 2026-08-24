@@ -1,4 +1,5 @@
 import { post } from './http';
+import { activeProvider, publicClient } from './session';
 
 /**
  * Publishes the player's own hunt entries and wins to LootGridActions, paid for
@@ -31,11 +32,19 @@ import { post } from './http';
  * guessing wrong is worse than leaving it to the wallet.
  */
 
-/** Optional override, e.g. VITE_FEE_CURRENCY=0x765DE816845861e75A25fCA122bb6898B8B1282a (cUSD). */
+/**
+ * Optional override, e.g. VITE_FEE_CURRENCY=0x765DE816845861e75A25fCA122bb6898B8B1282a (cUSD).
+ * Applied only inside MiniPay — see {@link sendCall}.
+ */
 const FEE_CURRENCY = import.meta.env.VITE_FEE_CURRENCY || null;
 
 function provider() {
-  return typeof window !== 'undefined' ? window.ethereum : undefined;
+  // The wallet the player chose, not whichever extension won `window.ethereum`.
+  try {
+    return activeProvider();
+  } catch {
+    return undefined;
+  }
 }
 
 /** Whether a wallet capable of sending the transaction is present. */
@@ -49,16 +58,30 @@ export function isMiniPay() {
 }
 
 /**
- * The address that will pay. Uses `eth_accounts`, which returns already-granted
- * accounts without prompting — MiniPay connects on load, and a silent no-op is
- * better than a permission dialog interrupting a hunt.
+ * The address that will pay.
+ *
+ * `eth_accounts` is the SILENT variant: it lists already-granted accounts and
+ * never prompts. That is right for background work — MiniPay connects on load,
+ * and a permission dialog interrupting a hunt to publish a game record would be
+ * worse than the missing record.
+ *
+ * It is wrong for anything the player just clicked. MetaMask answers `[]` until
+ * it has granted accounts to this page, so a silent `payer()` returned null,
+ * `sendCall` returned null WITHOUT SENDING, and the caller carried on as though
+ * a transaction had been made. That is what produced a "create vault" that
+ * created nothing and a run of `no_vault_on_chain`.
+ *
+ * So: prompt when a human is waiting, stay silent when nobody is.
  */
-async function payer() {
+async function payer(prompt = false) {
   const eth = provider();
   if (!eth) return null;
   try {
     const accounts = await eth.request({ method: 'eth_accounts' });
-    return accounts?.[0] ?? null;
+    if (accounts?.[0]) return accounts[0];
+    if (!prompt) return null;
+    const granted = await eth.request({ method: 'eth_requestAccounts' });
+    return granted?.[0] ?? null;
   } catch {
     return null;
   }
@@ -74,20 +97,45 @@ async function payer() {
  * trade must not — a payment that silently fails to send is a player staring at
  * a hint they think they bought. Callers there surface the error.
  */
-export async function sendCall(call) {
+export async function sendCall(call, { wait = true, prompt = false } = {}) {
   const eth = provider();
-  const from = await payer();
-  if (!eth || !from) return null;
+  const from = await payer(prompt);
+  // Callers that prompted have a human waiting on a result, so "no wallet" is an
+  // error rather than a shrug. Returning null to them is how a skipped
+  // transaction gets mistaken for a completed one.
+  if (!eth || !from) {
+    if (prompt) throw new Error('No wallet account available — connect your wallet and retry.');
+    return null;
+  }
 
   const tx = {
     from,
     to: call.to,
     data: call.data,
     gas: call.gas,
-    ...(FEE_CURRENCY ? { feeCurrency: FEE_CURRENCY } : {}),
+    // `feeCurrency` is a Celo extension for paying gas in a stablecoin. ONLY
+    // MiniPay understands it — MetaMask and every generic wallet either reject
+    // the unknown field or drop it, and a dropped one means the player is
+    // charged in CELO while believing they are not. Sent only where it works.
+    ...(FEE_CURRENCY && isMiniPay() ? { feeCurrency: FEE_CURRENCY } : {}),
   };
 
-  return eth.request({ method: 'eth_sendTransaction', params: [tx] });
+  const hash = await eth.request({ method: 'eth_sendTransaction', params: [tx] });
+  if (!wait || !hash) return hash;
+
+  // `eth_sendTransaction` resolves the moment the wallet BROADCASTS. Callers
+  // that then read the chain — `attachVault` most of all — were racing a
+  // transaction that had not been mined, which is what produced a run of
+  // `no_vault_on_chain` 409s and a vault the server never learned about.
+  //
+  // A revert is surfaced here rather than left to look like a missing vault.
+  const receipt = await publicClient().waitForTransactionReceipt({ hash });
+  if (receipt.status !== 'success') {
+    const err = new Error('The transaction failed on chain.');
+    err.hash = hash;
+    throw err;
+  }
+  return hash;
 }
 
 const send = sendCall;
@@ -125,7 +173,10 @@ async function publish(path, label) {
   try {
     const attestation = await post(path);
     if (!attestation?.call) return null;
-    return await send(attestation.call);
+    // No receipt wait and no prompt: this is fire-and-forget. Blocking a race on
+    // a block confirmation to publish a cosmetic record would trade the thing
+    // that matters for the thing that does not.
+    return await send(attestation.call, { wait: false });
   } catch (err) {
     // Deliberately swallowed. A missing public record is a cosmetic loss; a
     // thrown error here would surface in the middle of a race.

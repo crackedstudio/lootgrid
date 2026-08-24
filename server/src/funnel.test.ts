@@ -257,7 +257,7 @@ describe('activity is recorded once a day, not once a request', () => {
 
 describe('the report reads as one thing', () => {
   it('serves all five together', async () => {
-    const res = await app.inject({ method: 'GET', url: '/audit/funnel' });
+    const res = await app.inject({ method: 'GET', url: '/debug/funnel' });
     const body = res.json();
 
     expect(res.statusCode).toBe(200);

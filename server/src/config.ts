@@ -552,6 +552,45 @@ export const HUNTS_PER_ZONE = 24;
 /** Of those, how many carry a prize. The rest are XP-only puzzle hunts. */
 export const CASH_PER_ZONE = 1;
 
+/**
+ * The same, for agent zones — deliberately higher.
+ *
+ * ─────────────────────────── why they differ ───────────────────────────
+ *
+ * Only CASH hunts draw agent-playable games. `gameTypeForBlock` sends every
+ * puzzle hunt to the reflex pool regardless of zone kind, because puzzle hunts
+ * guard XP rather than money and the automation argument does not apply. So a
+ * 24-hunt agent zone holding one cash hunt offers agents exactly one thing to
+ * play at a time — and once it resolves, nothing at all until the zone
+ * restocks.
+ *
+ * That was not a tuning mistake so much as an unnoticed consequence: a human
+ * zone with one cash hunt still has 23 playable puzzle hunts, so the ratio reads
+ * fine everywhere except the one place it is fatal.
+ *
+ * ─────────────────────────── what it costs ───────────────────────────
+ *
+ *   human: 4 zones × 1 ÷ 1 day  = 4.00/day × 95.2c  = $3.81/day
+ *   agent: 1 zone  × 4 ÷ 3 days = 1.33/day × 112.8c = $1.50/day
+ *                                                     ─────────────
+ *                                                     $5.31/day
+ *                                                     ≈ $161/month
+ *
+ * Still inside the $100–300/month band, and still leaving room for the
+ * concentrated weekly final the band exists to protect. Raising this further is
+ * a budget decision before it is a gameplay one: four agent hunts a day is
+ * already four times the old rate.
+ *
+ * The escrow's per-day cap is the backstop, not this number — but a cap that
+ * binds shows up as hunts opening unfunded, which is a worse experience than
+ * fewer hunts that all pay.
+ */
+export const AGENT_CASH_PER_ZONE = 4;
+
+/** How many prize hunts a zone should carry, by who plays there. */
+export const cashPerZone = (zoneKind: 'human' | 'agent'): number =>
+  zoneKind === 'agent' ? AGENT_CASH_PER_ZONE : CASH_PER_ZONE;
+
 // ─────────────────────────── agent games ───────────────────────────
 //
 // None of these carry a timing floor, and their absence is the point. The human

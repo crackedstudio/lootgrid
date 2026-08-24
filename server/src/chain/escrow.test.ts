@@ -4,6 +4,8 @@ import { getDb } from '../db';
 import { env } from '../env';
 import { freshWorld, teardownWorld } from '../testing/harness';
 import * as escrow from './escrow';
+import * as attestor from './attestor';
+import { toBytes32Id } from './relayer';
 
 /**
  * The escrow outbox.
@@ -28,13 +30,21 @@ const mut = env as {
 const original = { ...mut };
 const HASH = '0xabc' as Hex;
 const HUNT = 'ridge-1-3x4-aaa';
+/** What the chain must actually receive: bytes32, never the readable id. */
+const HUNT32 = toBytes32Id(HUNT);
 
 function rows() {
   return getDb()
-    .prepare('SELECT id, hunt_id, amount, status, attempts, tx_hash FROM escrow_queue ORDER BY id')
+    .prepare(
+      // `kind` included deliberately: without it every `r.kind === ...` filter
+      // in this file silently matches nothing, and a test that asserts an empty
+      // result passes for the wrong reason.
+      'SELECT id, hunt_id, kind, amount, status, attempts, tx_hash FROM escrow_queue ORDER BY id',
+    )
     .all() as Array<{
     id: number;
     hunt_id: string;
+    kind: string;
     amount: string;
     status: string;
     attempts: number;
@@ -109,7 +119,7 @@ describe('draining', () => {
 
     expect(send).toHaveBeenCalledOnce();
     expect(send.mock.calls[0]![0]).toMatchObject({
-      huntId: HUNT,
+      huntId: HUNT32,
       amount: 5n,
       expiresAt: 1_800_000_000,
     });
@@ -288,5 +298,79 @@ describe('hunt creation queues a pot', () => {
       expect(onChain).toBeGreaterThan(BigInt(Math.floor(Date.now() / 1000)));
       expect(onChain).toBeLessThan(4_102_444_800n); // 2100-01-01
     }
+  });
+});
+
+
+describe('hunt id encoding', () => {
+  /**
+   * This is the bug that made every fundHunt fail on mainnet.
+   *
+   * The queue stores the readable id ("ridge-1-3x4-aaa"), which is right — it is
+   * what joins against the hunts table. The chain wants bytes32. The worker used
+   * to pass the string through with `as Hex`: a cast the compiler accepts and
+   * the ABI encoder rejects, so nothing was ever funded and no test noticed,
+   * because the test asserted the raw string too.
+   */
+  it('sends bytes32 to the chain, not the readable id', async () => {
+    const send = vi.fn<escrow.SendFn>(async () => HASH);
+    escrow.setTransportForTests(send, async () => true);
+
+    escrow.enqueue(HUNT, 5n, 1_800_000_000);
+    await escrow.drain();
+
+    const sentId = send.mock.calls[0]![0].huntId;
+    expect(sentId).toMatch(/^0x[0-9a-fA-F]{64}$/);
+    expect(sentId).not.toBe(HUNT);
+  });
+
+  /**
+   * The pot is keyed by whatever `fundHunt` was given, and the winner claims
+   * with what the attestation signed. If these two encodings ever diverge the
+   * money is escrowed against an id nobody can name — funded, and unclaimable.
+   */
+  it('agrees with the encoding the claim path signs', () => {
+    expect(toBytes32Id(HUNT)).toBe(attestor.toBytes32Id(HUNT));
+    // Long ids hash rather than pad; both sides must agree there too.
+    const long = 'z'.repeat(64);
+    expect(toBytes32Id(long)).toBe(attestor.toBytes32Id(long));
+  });
+});
+
+describe('refunding only what was actually escrowed', () => {
+  /**
+   * Measured on mainnet: fourteen hunts queued refunds, none of them had ever
+   * been funded (the treasury was empty), and every attempt reverted `NotFunded`
+   * while logging `pot stranded` at ERROR — about money that did not exist.
+   *
+   * The gas is the smaller cost. An alarm that fires on the ordinary case makes
+   * the real one unfindable.
+   */
+  it('does not queue a refund for a pot that never landed', () => {
+    escrow.enqueueRefund(HUNT, 1_800_000_000);
+    expect(rows().filter(r => r.kind === 'refund')).toHaveLength(0);
+  });
+
+  it('does not queue one when funding was attempted but died', () => {
+    // A dead funding row is one that never landed — an empty treasury, most
+    // often. Exactly the mainnet case: the pot was intended, never escrowed.
+    escrow.enqueue(HUNT, 5n, 1_800_000_000);
+    getDb().prepare("UPDATE escrow_queue SET status = 'dead' WHERE kind = 'fund'").run();
+
+    escrow.enqueueRefund(HUNT, 1_800_000_000);
+    expect(rows().filter(r => r.kind === 'refund')).toHaveLength(0);
+  });
+
+  it('DOES queue one once funding confirmed — money is really there', async () => {
+    const send = vi.fn<escrow.SendFn>(async () => HASH);
+    escrow.setTransportForTests(send, async () => true);
+
+    escrow.enqueue(HUNT, 5n, 1_800_000_000);
+    await escrow.drain();
+    await escrow.settle();
+    expect(rows().find(r => r.kind === 'fund')!.status).toBe('confirmed');
+
+    escrow.enqueueRefund(HUNT, 1_800_000_000);
+    expect(rows().filter(r => r.kind === 'refund')).toHaveLength(1);
   });
 });

@@ -4,6 +4,11 @@ import { getDb } from '../db';
 import { env } from '../env';
 import { logger } from '../logger';
 import * as metrics from '../metrics';
+// The one encoding of a hunt id as bytes32. It MUST be the same function the
+// claim path uses (`http.ts` → `attestor.toBytes32Id`), because the pot is keyed
+// by whatever `fundHunt` was given: fund under one encoding and claim under
+// another and the money is escrowed against an id no winner can ever name.
+import { toBytes32Id } from './relayer';
 
 /**
  * Funds hunt prizes into LootGridEscrow, one pot per hunt.
@@ -126,10 +131,49 @@ export function enqueue(huntId: string, amount: bigint, expiresAt: number): void
  * `block.timestamp` passes it.
  */
 export function enqueueRefund(huntId: string, refundableAt: number): void {
+  // Nothing was ever escrowed, so there is nothing to return.
+  //
+  // The original reasoning — "being wrong costs one reverted transaction, while
+  // NOT calling it strands real money" — is right about the asymmetry and wrong
+  // about the price. It is one revert per RETRY per hunt until the row
+  // dead-letters, and each one raises `pot stranded` at error level. Measured on
+  // mainnet: fourteen hunts, none of them funded, every one reporting stranded
+  // money that did not exist. An alarm that cries wolf on the ordinary case is
+  // worse than no alarm, because the real one is then indistinguishable.
+  //
+  // This skips ONLY when the ledger proves nothing landed — no confirmed
+  // funding row. Anything uncertain still gets its refund attempt, so the
+  // asymmetry that motivated the original comment is preserved intact.
+  if (!wasFunded(huntId)) return;
+
   // A second past the on-chain expiry, not on it: `refund` requires strictly
   // greater than, and the two clocks are only loosely aligned. Sending early
   // wastes a transaction and burns an attempt off the retry budget.
   queue('refund', huntId, 0n, refundableAt, refundableAt + 1_000);
+}
+
+/**
+ * Whether this hunt's pot actually reached the contract.
+ *
+ * `confirmed` specifically: a `dead` funding row is one that never landed —
+ * usually an empty treasury — and a `pending` one has not landed yet. Only a
+ * confirmed one means money is sitting in escrow with a claim on it.
+ */
+function wasFunded(huntId: string): boolean {
+  try {
+    const row = getDb()
+      .prepare(
+        `SELECT 1 FROM escrow_queue
+          WHERE hunt_id = ? AND kind = 'fund' AND status = 'confirmed' LIMIT 1`,
+      )
+      .get(huntId);
+    return Boolean(row);
+  } catch (err) {
+    // Unreadable ledger is exactly when to fall back to trying: a missed refund
+    // strands money, a needless one costs gas.
+    logger.warn({ err, huntId }, 'could not check funding before refund — refunding anyway');
+    return true;
+  }
 }
 
 function queue(
@@ -171,6 +215,7 @@ let confirmFn: ConfirmFn;
 let wallet: ReturnType<typeof createWalletClient> | null = null;
 let publicClient: ReturnType<typeof createPublicClient> | null = null;
 let treasury: Address | null = null;
+let signer: ReturnType<typeof privateKeyToAccount> | null = null;
 
 /**
  * Reading takes no key.
@@ -191,21 +236,26 @@ function readClient() {
 }
 
 function clients() {
-  if (!wallet || !treasury) {
+  if (!wallet || !treasury || !signer) {
     if (!env.RPC_URL || !env.ESCROW_TREASURY_PRIVATE_KEY) {
       throw new Error('escrow funding misconfigured — env validation should have caught this');
     }
-    const account = privateKeyToAccount(env.ESCROW_TREASURY_PRIVATE_KEY as Hex);
-    wallet = createWalletClient({ account, transport: http(env.RPC_URL) });
-    treasury = account.address;
+    signer = privateKeyToAccount(env.ESCROW_TREASURY_PRIVATE_KEY as Hex);
+    wallet = createWalletClient({ account: signer, transport: http(env.RPC_URL) });
+    treasury = signer.address;
   }
-  return { wallet, pub: readClient(), from: treasury };
+  // `account` is the local signer OBJECT and `from` is merely its address.
+  // Handing viem the address alone makes it treat the sender as a JSON-RPC
+  // account and call `eth_sendTransaction`, which a public node does not
+  // implement because it holds no keys. The object is what selects local
+  // signing and `eth_sendRawTransaction`.
+  return { wallet, pub: readClient(), from: treasury, account: signer };
 }
 
 const chainSend: SendFn = async job => {
-  const { wallet: w, from } = clients();
+  const { wallet: w, account } = clients();
   const contract = {
-    account: from,
+    account,
     address: env.LOOTGRID_ESCROW_ADDRESS as Address,
     abi: ESCROW_ABI,
     chain: null,
@@ -402,7 +452,11 @@ export async function drain(): Promise<number> {
       try {
         const hash = await sendFn({
           kind: row.kind === 'refund' ? 'refund' : 'fund',
-          huntId: row.hunt_id as Hex,
+          // `row.hunt_id` is the human-readable id ("ridge-1-9x39-366eb7"), which
+          // is what belongs in the queue table. The chain wants bytes32. This was
+          // previously `row.hunt_id as Hex` — a cast that satisfied the compiler
+          // and then failed on every single send, so no hunt was ever funded.
+          huntId: toBytes32Id(row.hunt_id),
           amount: BigInt(row.amount),
           expiresAt: row.expires_at,
         });
@@ -464,6 +518,7 @@ export function reset(): void {
   wallet = null;
   publicClient = null;
   treasury = null;
+  signer = null;
   inFlight.clear();
 }
 

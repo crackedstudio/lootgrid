@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import AgentZoneBar from './AgentZoneBar';
 import { candidates, describe, reliabilityPct, tierLabel } from '../api/hints';
 import Coach from './Coach';
 import MapLife from './MapLife';
@@ -455,6 +456,14 @@ export default function GridScreen({ state, onBackZones, onTile, onToggleSurvey,
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--surface)', overflow: 'hidden', position: 'relative' }}>
+      {/*
+        Above the header on purpose. Walking into a lattice IS the moment a
+        player decides whether their agent should work it; routing that decision
+        through the AGENT tab and back is three screens for one choice. Renders
+        nothing outside an agent zone.
+      */}
+      <AgentZoneBar zone={zone} />
+
       {/*
         header — two rows, not one.
 

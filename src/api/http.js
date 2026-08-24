@@ -1,5 +1,5 @@
 import { API_URL, REQUEST_TIMEOUT_MS } from './config';
-import { getPlayerId } from './session';
+import { signRequest } from './sign';
 
 export class ApiError extends Error {
   constructor(code, status, body) {
@@ -36,18 +36,30 @@ export async function api(path, { method = 'GET', body, payment } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
+  // Signed before the timer matters: the body must be serialised exactly once
+  // and the SAME string both hashed and sent, or the hash will not match.
+  const payload = body ? JSON.stringify(body) : undefined;
+  let auth;
+  try {
+    auth = await signRequest(method, path, payload);
+  } catch {
+    clearTimeout(timer);
+    throw new ApiError('unauthenticated', 401, null);
+  }
+
   let res;
   try {
     res = await fetch(API_URL + path, {
       method,
       signal: controller.signal,
       headers: {
-        'x-player': getPlayerId(),
+        ...auth,
         ...(body ? { 'content-type': 'application/json' } : {}),
-        // The x402 retry: same URL, same method, one extra header.
+        // The x402 retry: same URL, same method, one extra header. Not signed —
+        // the server treats it as a bearer credential in its own right.
         ...(payment ? { 'x-payment': payment } : {}),
       },
-      body: body ? JSON.stringify(body) : undefined,
+      body: payload,
     });
   } catch (err) {
     clearTimeout(timer);

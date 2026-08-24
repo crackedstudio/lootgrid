@@ -32,7 +32,7 @@ export async function claimPrize(huntId) {
   if (!walletAvailable()) throw new Error('no_wallet');
   const attestation = await post(`/hunts/${encodeURIComponent(huntId)}/attestations/payout`);
   if (!attestation?.call) throw new Error('payouts_disabled');
-  return sendCall(attestation.call);
+  return sendCall(attestation.call, { prompt: true });
 }
 
 /**
@@ -55,7 +55,7 @@ export async function fetchPrizeBalance() {
 export async function withdrawPrize(balance) {
   if (!walletAvailable()) throw new Error('no_wallet');
   if (!balance?.call) throw new Error('nothing_owed');
-  return sendCall(balance.call);
+  return sendCall(balance.call, { prompt: true });
 }
 
 /** Seconds until a credited prize becomes collectable. Zero once it is. */

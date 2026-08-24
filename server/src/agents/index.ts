@@ -7,9 +7,11 @@ import { toTokenUnits } from '../prizes';
 import type { Player } from '../types';
 import * as budget from './budget';
 import { parseUpdate, type AgentConfig } from './config';
+import * as driver from './driver';
 import * as identity from './identity';
 import * as inference from './inference';
 import * as vaultChain from '../chain/agentVault';
+import * as store from '../store';
 
 /**
  * The agent service: what the HTTP layer talks to.
@@ -185,6 +187,29 @@ export function killOffer(player: Player) {
   };
 }
 
+/**
+ * Pause hunting, without touching the chain.
+ *
+ * Distinct from {@link killOffer}, and the difference matters. Kill is an
+ * incident action: it revokes on-chain spending rights, and only the player can
+ * grant them again. Pause is "not right now" — the agent keeps its vault, its
+ * caps and its allowance, and starts again on one tap.
+ *
+ * Offering only kill meant a player who wanted a break had to revoke and then
+ * re-authorise on chain, paying gas twice to change their mind.
+ */
+export function pause(player: Player): AgentView {
+  requireEnabled();
+  const agent = agentRepo.ofPlayer(player.id);
+  if (!agent) throw notFound('no_agent');
+  if (agent.status === 'killed') throw conflict('agent_killed');
+
+  // `allActive` is what the driver sweeps, and it selects on this column — so
+  // the pause takes effect on the next tick with nothing else to coordinate.
+  agentRepo.setStatus(agent.id, 'paused');
+  return view(agent.id, player.id);
+}
+
 /** Re-enable an agent the player stopped. Requires a vault that still names it. */
 export function resume(player: Player): AgentView {
   requireEnabled();
@@ -227,6 +252,109 @@ export function vaultCallFor(
 }
 
 /** Recent spending, for the screen that answers "what has this cost me?". */
+/**
+ * What the agent has actually been doing — move by move.
+ *
+ * The ledger next door answers "what did it spend"; this answers "what did it
+ * play", which is the question a player watching their agent actually has. Until
+ * this existed the only honest answer was "look in the database", and an agent
+ * you cannot watch is indistinguishable from one that is broken — which is
+ * exactly how a genuinely working agent read for the first hour of testing.
+ *
+ * Inference spend is joined per hunt so a turn can be told apart from a thought:
+ * mills against a hunt means a model decided it, zero means the deterministic
+ * fallback did. That distinction is the whole visible difference a seat buys.
+ */
+export function activity(player: Player, limit = 10) {
+  requireEnabled();
+  const agent = agentRepo.ofPlayer(player.id);
+  if (!agent) throw notFound('no_agent');
+
+  const spendByHunt = new Map<string, number>();
+  for (const row of agentRepo.recentSpend(agent.id, 200)) {
+    if (row.kind !== 'inference' || !row.huntId) continue;
+    spendByHunt.set(row.huntId, (spendByHunt.get(row.huntId) ?? 0) + row.amountMills);
+  }
+
+  // An agent plays AS its owner, so `player_id` cannot tell their attempts
+  // apart — a tutorial CRACK hunt the human played by hand carries the same id.
+  //
+  // The driver only ever enters AGENT zones (`enterSomething` skips every other
+  // kind), so zone kind is the exact discriminator. Without this, the card
+  // headed "what it is doing" showed players their own abandoned attempts and
+  // attributed them to their agent.
+  const isAgentHunt = (huntId: string): boolean => {
+    const hunt = store.getHunt(huntId);
+    if (!hunt) return false;
+    return store.getZone(hunt.zoneId)?.kind === 'agent';
+  };
+
+  // Over-fetch before filtering, or a run of human attempts hides every agent
+  // one behind them.
+  const attempts = store
+    .attemptHistory(player.id, limit * 5)
+    .filter(a => isAgentHunt(a.huntId))
+    .slice(0, limit)
+    .map(a => ({
+    attemptId: a.id,
+    huntId: a.huntId,
+    game: a.gameType,
+    status: a.status,
+    /** Turns taken. Zero on a live attempt means it has not moved yet. */
+    moves: a.lastSeq,
+    startedAt: a.startedAt,
+    deadlineAt: a.deadlineAt,
+    failReason: a.failReason,
+    /** How far the module thinks it got, 0–100. */
+    progress: a.progress,
+    elapsedMs: a.elapsedMs,
+    /** The module's own state — rounds, offers, candidates narrowed. */
+    state: a.state ?? null,
+    /** Mills of thinking bought for this hunt. Zero = played its own strategy. */
+    thoughtMills: spendByHunt.get(a.huntId) ?? 0,
+  }));
+
+  return {
+    agentId: agent.id,
+    status: agent.status,
+    attempts,
+    /**
+     * Proof of life. Without it, an agent with nothing to play is
+     * indistinguishable from one that has stopped — and the honest state of a
+     * quiet agent zone is "watching", not "broken".
+     */
+    heartbeat: driver.lastTick(),
+    /**
+     * Why it is not playing right now, when it is not. Null while it has a live
+     * attempt. This is the sentence the UI could not say before.
+     */
+    idleReason: idleReasonFor(agent, agentRepo.getConfig(agent.id)),
+  };
+}
+
+/**
+ * The specific reason an idle agent is idle.
+ *
+ * Ordered from most to least actionable, because a player reading this wants
+ * the thing THEY can change first. "No hunt to play" is last on purpose: it is
+ * the only one that is not their fault and not their fix.
+ */
+function idleReasonFor(agent: agentRepo.Agent, config: AgentConfig): string | null {
+  if (agent.status === 'paused') return 'Paused — press START HUNTING.';
+  if (agent.status === 'killed') return 'Stopped. Its on-chain rights were revoked.';
+  if (!agent.vault) return 'No vault yet — create one so it has something to spend.';
+  if (config.zones.length === 0) return 'No zone chosen — pick one under WHERE IT PLAYS.';
+
+  for (const zone of store.listZones()) {
+    if (zone.kind !== 'agent' || !config.zones.includes(zone.id)) continue;
+    for (const hunt of store.liveHuntsIn(zone)) {
+      if (hunt.kind !== 'cash') continue;
+      if (!store.attemptOf(hunt.id, agent.playerId)) return null; // something to enter
+    }
+  }
+  return 'Watching. Every hunt it can play is already taken — waiting for a new one.';
+}
+
 export function ledger(player: Player) {
   requireEnabled();
   const agent = agentRepo.ofPlayer(player.id);
