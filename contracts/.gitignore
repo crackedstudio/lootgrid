@@ -1,7 +1,12 @@
 out/
 cache/
 broadcast/
+
+# Every env file EXCEPT the template. `.env` alone was not enough once there is
+# a .env.sepolia and a .env.mainnet: a rename must not silently un-ignore keys.
 .env
+.env.*
+!.env.example
 
 # fizz runtime state — corpora, coverage reports and regenerable metadata.
 # The suite itself (test/fizz/) and PROPERTIES.md ARE tracked.
