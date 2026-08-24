@@ -90,14 +90,14 @@ export const syncTrade = tradeId =>
  */
 export async function fundQuote(quote) {
   if (!walletAvailable()) throw new Error('no_wallet');
-  await sendCall(quote.approval);
-  return sendCall(quote.call);
+  await sendCall(quote.approval, { prompt: true });
+  return sendCall(quote.call, { prompt: true });
 }
 
 /** Submit the referee's release. Either party may — whoever wants it finished. */
 export function submitRelease(trade) {
   if (!trade?.release?.call) return Promise.resolve(null);
-  return sendCall(trade.release.call);
+  return sendCall(trade.release.call, { prompt: true });
 }
 
 // ─────────────────────────── presentation ───────────────────────────

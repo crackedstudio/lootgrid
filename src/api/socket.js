@@ -1,5 +1,5 @@
 import { WS_URL } from './config';
-import { getPlayerId } from './session';
+import { signHello } from './sign';
 
 const FLUSH_MS = 200;
 
@@ -43,8 +43,17 @@ class Socket {
     const ws = new WebSocket(WS_URL);
     this.ws = ws;
 
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ t: 'hello', player: getPlayerId() }));
+    ws.onopen = async () => {
+      try {
+        // Signing is async, so the socket is briefly open and silent. The server
+        // waits for a hello rather than assuming one, so that gap is fine.
+        ws.send(JSON.stringify(await signHello()));
+      } catch {
+        // Not authenticated yet. Close rather than sit in a half-open socket
+        // the server will drop anyway.
+        this.intentionalClose = true;
+        ws.close();
+      }
     };
 
     ws.onmessage = e => {

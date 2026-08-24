@@ -22,3 +22,12 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# env
+.env
+.env.*
+!.env.example
+
+# solidity-auditor build state: source bundles rebuilt on every run, ~1.7MB.
+# Transient, not an artifact.
+.audit-*/
