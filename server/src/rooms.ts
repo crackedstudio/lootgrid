@@ -4,6 +4,11 @@ export interface Client {
   ws: WebSocket;
   playerId: string;
   handle: string;
+  /**
+   * The session key this socket authenticated with, so the heartbeat can detect
+   * that it has since been rotated or cleared. Null in dev mode.
+   */
+  sessionKey: string | null;
   rooms: Set<string>;
 }
 
@@ -14,8 +19,13 @@ export const zoneRoom = (zoneId: string) => `zone:${zoneId}`;
 export const huntRoom = (huntId: string) => `hunt:${huntId}`;
 export const playerRoom = (playerId: string) => `player:${playerId}`;
 
-export function register(ws: WebSocket, playerId: string, handle: string): Client {
-  const client: Client = { ws, playerId, handle, rooms: new Set() };
+export function register(
+  ws: WebSocket,
+  playerId: string,
+  handle: string,
+  sessionKey: string | null = null,
+): Client {
+  const client: Client = { ws, playerId, handle, sessionKey, rooms: new Set() };
   clients.set(ws, client);
   join(ws, playerRoom(playerId));
   return client;
