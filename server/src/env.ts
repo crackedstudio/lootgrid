@@ -251,6 +251,28 @@ const schema = z
      * discovering the ceiling from a queue that stopped draining.
      */
     AGENT_MAX_IN_FLIGHT: z.coerce.number().int().min(1).max(256).default(4),
+
+    /**
+     * Funded seats — how many agents the house will pay inference for.
+     *
+     * NOT a cap on how many may play. AGENT_TIER.md §2: anything a player must
+     * buy in order to compete for a cash prize is an entry fee with extra
+     * steps, so an unseated agent enters the same hunts and wins the same
+     * prizes, playing its deterministic line instead of a model's.
+     */
+    /**
+     * Where seat money goes. Seats are sold only when this is set, and the check
+     * is deliberately independent of ENTRY_FEES_ENABLED — see x402.seatsEnabled.
+     */
+    AGENT_SEAT_PAY_TO: hexAddress.optional(),
+    AGENT_SEAT_CAP: z.coerce.number().int().min(0).max(10_000).default(100),
+    /** Price of a seat, in cents. */
+    AGENT_SEAT_PRICE_CENTS: z.coerce.number().int().min(1).max(100_000).default(100),
+    /**
+     * Inference mills a seat buys. Priced against a cap rather than usage so the
+     * house's exposure is knowable before anyone is charged — §5.1.
+     */
+    AGENT_SEAT_MILLS: z.coerce.number().int().min(1).max(10_000_000).default(50_000),
     DEEPSEEK_API_KEY: z.string().min(8).optional(),
     DEEPSEEK_BASE_URL: z.string().url().default('https://api.deepseek.com'),
     /** `deepseek-v4-flash` is ~3x cheaper than pro and ample for these games. */

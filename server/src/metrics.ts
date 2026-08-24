@@ -451,6 +451,12 @@ export const agentInferenceFailures = new Counter({
 });
 
 /** Mills billed to agents. Cost of goods sold against the same deposits. */
+export const agentSeatsSold = new Counter({
+  name: 'lootgrid_agent_seats_sold_total',
+  help: 'Funded agent seats sold',
+  registers: [registry],
+});
+
 export const agentInferenceMills = new Counter({
   name: 'lootgrid_agent_inference_mills_total',
   help: 'Inference spend metered to agents, in mills',

@@ -23,6 +23,7 @@ import * as hintStats from './hints/stats';
 import * as market from './market';
 import { quoteEntry } from './payments/fees';
 import * as x402 from './payments/x402';
+import * as seats from './agents/seats';
 import { badRequest, conflict, forbidden, isAppError, notFound, toWireError, tooManyRequests, unauthorized } from './errors';
 import { env, isProd } from './env';
 import { logger } from './logger';
@@ -1083,9 +1084,74 @@ export function registerRoutes(app: App): void {
    * switch — the returned call is, and until the player sends it the agent still
    * holds on-chain spending rights the server cannot revoke.
    */
+  /**
+   * Buy a seat: inference the house pays for on this player's behalf.
+   *
+   * ─────────────────────────── what this route must never become ─────────────
+   *
+   * It sells COMPUTE. It does not sell entry, and there is deliberately no
+   * seat check anywhere on the hunt-entry path — an unseated agent enters the
+   * same hunts, races the same opponents and wins the same prizes, playing its
+   * deterministic line instead of a model's.
+   *
+   * AGENT_TIER.md §2 explains why that separation is load-bearing rather than
+   * fussy: charging for something a player NEEDS in order to compete for a cash
+   * prize is an entry fee with extra steps, which is the gambling definition in
+   * many jurisdictions. `payments/x402.ts` carries the same warning.
+   *
+   * GET returns the offer and costs nothing. POST answers 402 with terms the
+   * client signs, exactly as the entry path does, and credits the seat on
+   * settlement.
+   */
+  app.get('/agent/seat', async req => {
+    const player = await requirePlayer(req);
+    const agent = agents.ensure(player);
+    return {
+      seat: seats.offer(agent.id),
+      purchasable: x402.seatsEnabled(),
+      why: x402.seatsDisabledReason(),
+    };
+  });
+
+  app.post('/agent/seat', async (req, reply) => {
+    const player = await requirePlayer(req);
+    limit(`agent:${player.id}`, env.RATE_MARKET_PER_MIN, 60_000, 'agent');
+    const agent = agents.ensure(player);
+
+    if (!x402.seatsEnabled()) throw conflict('seats_unavailable');
+
+    // The cap is a budget, not a queue: selling past it would promise inference
+    // the house has not budgeted for. Refusing the SALE is safe; refusing the
+    // play would not be, which is why nothing here touches whether they play.
+    if (seats.seatsLeft() <= 0 && !seats.get(agent.id)) {
+      throw conflict('no_seats_left', undefined, 'All funded seats are taken. You can still play for free.');
+    }
+
+    const terms = x402.termsForSeat(agent.id, seats.SEAT_PRICE_CENTS);
+    const settled = await x402.settleEntry(terms, headerOrNull(req, 'x-payment'));
+    if (!settled.ok) {
+      const challenge = x402.challengeFor(terms, player.id as `0x${string}`);
+      return reply.code(402).send(x402.paymentRequiredBody(terms, challenge));
+    }
+
+    const seat = seats.grant(agent.id, player.id, {
+      // `txRef` is UNIQUE, so a replayed envelope raises rather than crediting
+      // twice. The client hands back what we gave it, so it is untrusted input.
+      txRef: settled.reference,
+    });
+    metrics.agentSeatsSold.inc();
+    return { seat: seats.offer(agent.id), credit: seat.millsGranted - seat.millsSpent };
+  });
+
   app.post('/agent/kill', async req => {
     const player = await requirePlayer(req);
     return agents.killOffer(player);
+  });
+
+  /** Stop hunting for now. Keeps the vault and the on-chain rights. */
+  app.post('/agent/pause', async req => {
+    const player = await requirePlayer(req);
+    return { agent: agents.pause(player) };
   });
 
   app.post('/agent/resume', async req => {
@@ -1117,6 +1183,12 @@ export function registerRoutes(app: App): void {
         target: args?.target as `0x${string}` | undefined,
       }),
     };
+  });
+
+  /** Move-by-move: what the agent played, and whether a model chose it. */
+  app.get('/agent/activity', async req => {
+    const player = await requirePlayer(req);
+    return agents.activity(player);
   });
 
   app.get('/agent/ledger', async req => {
