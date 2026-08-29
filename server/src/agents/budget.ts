@@ -1,4 +1,5 @@
 import * as agentRepo from '../db/repos/agents';
+import { env } from '../env';
 import { MILLS_PER_CENT } from '../market/fees';
 import { prizeCentsFor } from '../prizes';
 import type { AgentConfig } from './config';
@@ -103,6 +104,7 @@ export interface Decision {
   /** Machine-readable, for metrics and for the client. Never prose. */
   reason?:
     | 'daily_budget'
+    | 'house_daily_budget'
     | 'hint_price'
     | 'inference_budget'
     | 'inference_unaffordable'
@@ -141,7 +143,10 @@ export function canBuyHint(
   // to "everywhere" would be an agent trading somewhere its owner never chose.
   if (!config.zones.includes(hint.zoneId)) return no('zone_not_allowed');
 
-  const spentToday = agentRepo.spentSince(agentId, now - DAY_MS);
+  // Hints only. The owner's budget is the owner's money, and since the house
+  // began funding inference (`seats.ts`) the two are no longer one deposit —
+  // counting thinking against this ceiling would charge a player for our costs.
+  const spentToday = agentRepo.spentSince(agentId, now - DAY_MS, 'hint');
   const limit = config.dailyBudgetCents * MILLS_PER_CENT;
   const cost = hint.priceCents * MILLS_PER_CENT;
 
@@ -175,10 +180,20 @@ export function canInfer(
     return no('inference_budget', Math.max(0, perHuntCap - spentOnHunt));
   }
 
-  const spentToday = agentRepo.spentSince(agentId, now - DAY_MS);
-  const dailyLimit = config.dailyBudgetCents * MILLS_PER_CENT;
-  if (spentToday + cost > dailyLimit) {
-    return no('daily_budget', Math.max(0, dailyLimit - spentToday));
+  // ─────────────────────────── the house's ceiling, not the player's ────────
+  //
+  // This used to read `config.dailyBudgetCents`, which meant a player raising
+  // their hint budget silently authorised more of OUR spending on thinking
+  // (AGENTS_BYO §7.5(4)). Inference is house money now, so it is bounded by a
+  // house number and counted against house spend alone.
+  //
+  // Still not the exposure bound: the seat is the prepaid total and
+  // `runtime.ts` draws it down per call. This is the rate limit that stops one
+  // looping agent finishing a seat in an afternoon.
+  const houseToday = agentRepo.spentSince(agentId, now - DAY_MS, 'inference');
+  const houseLimit = env.AGENT_HOUSE_DAILY_MILLS;
+  if (houseToday + cost > houseLimit) {
+    return no('house_daily_budget', Math.max(0, houseLimit - houseToday));
   }
 
   return ok(perHuntCap - spentOnHunt - cost);
@@ -223,8 +238,21 @@ export function record(
   agentRepo.addSpend(agentId, kind, amountMills, opts, now);
 }
 
-/** What an agent has left today, in mills. For the UI and the kill-switch screen. */
+/**
+ * What an agent has left of its OWNER's budget today, in mills.
+ *
+ * Hints only, because this is the number on the owner's kill-switch screen and
+ * it should answer "how much of my money is left", not "how much of my money
+ * plus some of the house's compute". The combined figure is still available
+ * from `agentRepo.spentSince` without a kind, and the ledger still shows both.
+ */
 export function remainingToday(agentId: string, config: AgentConfig, now = Date.now()): number {
-  const spent = agentRepo.spentSince(agentId, now - DAY_MS);
+  const spent = agentRepo.spentSince(agentId, now - DAY_MS, 'hint');
   return Math.max(0, config.dailyBudgetCents * MILLS_PER_CENT - spent);
+}
+
+/** What the house will still fund for this agent today, in mills. */
+export function houseRemainingToday(agentId: string, now = Date.now()): number {
+  const spent = agentRepo.spentSince(agentId, now - DAY_MS, 'inference');
+  return Math.max(0, env.AGENT_HOUSE_DAILY_MILLS - spent);
 }

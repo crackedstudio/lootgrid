@@ -546,6 +546,50 @@ export const inferenceTokens = new Counter({
  * real work every pass and the tick interval, not the concurrency, is what
  * needs revisiting.
  */
+/**
+ * Ticks an agent sat out for temperament rather than for lack of work.
+ *
+ * Distinct from `agentTicksIdle` on purpose: idle means nothing to do, held
+ * means something to do and a persona not ready to start it yet. They look
+ * identical from outside the process and mean opposite things — one is a quiet
+ * board, the other is the pacing working.
+ */
+/**
+ * How long a turn sat in the queue before a provider slot opened.
+ *
+ * THE metric for sizing `runtime.MAX_IN_FLIGHT`, and the one whose absence made
+ * the ceiling something you discovered from a queue that had stopped draining.
+ * Buckets run past ten seconds on purpose: the interesting readings are the ones
+ * approaching a turn deadline, and a histogram that topped out at two seconds
+ * would report every disaster as "at least two".
+ */
+export const agentQueueWaitSeconds = new Histogram({
+  name: 'lootgrid_agent_queue_wait_seconds',
+  help: 'Time a turn waited for an inference slot — alert on the upper percentiles',
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60],
+  registers: [registry],
+});
+
+/**
+ * Ticks where an agent looked at viable hunts and took none.
+ *
+ * The opportunism signal. Zero forever means `initiative.APPETITE` is doing
+ * nothing and agents are still taking whatever is in front of them; near-100%
+ * means the bar is too high and the zone looks abandoned. Both are bugs, and
+ * neither is visible from the entry counter alone.
+ */
+export const agentEntriesDeclined = new Counter({
+  name: 'lootgrid_agent_entries_declined_total',
+  help: 'Ticks where viable hunts existed but none cleared the agent’s appetite',
+  registers: [registry],
+});
+
+export const agentTicksHeld = new Counter({
+  name: 'lootgrid_agent_ticks_held_total',
+  help: 'Ticks where an agent had work but its persona was pacing itself',
+  registers: [registry],
+});
+
 export const agentTicksIdle = new Counter({
   name: 'lootgrid_agent_ticks_idle_total',
   help: 'Agent ticks that returned before reading the chain',
@@ -654,6 +698,27 @@ export const directiveIssued = new Counter({
 export const directiveDropped = new Counter({
   name: 'lootgrid_directives_dropped_total',
   help: 'Director answers discarded before being issued',
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
+// ---- the living world ----
+//
+// The same question as the Director, asked per zone instead of per round: is the
+// model contributing weather, or is every epoch the deterministic fallback? The
+// `kind` label is here because a world model that only ever says `calm` is
+// working and useless, and that is invisible in a bare issued/fallback ratio.
+
+export const worldConditionIssued = new Counter({
+  name: 'lootgrid_world_conditions_issued_total',
+  help: 'Zone conditions issued, by source and kind',
+  labelNames: ['source', 'kind'] as const,
+  registers: [registry],
+});
+
+export const worldConditionDropped = new Counter({
+  name: 'lootgrid_world_conditions_dropped_total',
+  help: 'World answers discarded before being issued',
   labelNames: ['reason'] as const,
   registers: [registry],
 });

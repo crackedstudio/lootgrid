@@ -588,7 +588,35 @@ destination. Support both, and expect the good agents to leave it.
 
 ### 7.5 Before turning house-paid inference on
 
-Four controls, none of which exist today.
+Four controls. **Three now exist** — this section is kept rather than deleted
+because the reasoning still holds and the status is the part that moved.
+
+| # | Control | Status |
+|---|---------|--------|
+| 1 | House-wide ceiling | ✅ **Solved by seats**, differently than imagined below |
+| 2 | Per-hunt entrant cap on funded inference | ❌ Still missing |
+| 3 | Bill measured usage | ◐ Usage recorded and reconciled; billing stays on the estimate, deliberately |
+| 4 | Separate the two budgets | ✅ Split |
+
+**On (1)** — the ceiling is not a global counter, it is a prepaid credit.
+`runtime.ts` gates every funded call on `seats.hasCredit()` and draws it down
+with `seats.consume()`, so house exposure is `AGENT_SEAT_CAP × AGENT_SEAT_MILLS`
+— 100 × 50,000 mills, about **$50 outstanding**, sold at $1 for 50¢ of compute.
+An unseated agent plays `validate.fallbackMove` and costs the house nothing. The
+paragraph below describing exposure as unbounded predates that mechanism.
+
+**On (3)** — `inference.ts` now reads `usage` off the response and `runtime.ts`
+records it as `lootgrid_inference_tokens_total`. Billing still uses the fixed
+estimate on purpose: the budget is checked *before* the call, so billing measured
+tokens afterwards could charge past what was authorised. Measurement is there to
+re-derive the estimate when the two diverge, not to replace it.
+
+**On (4)** — `canInfer` now checks house spend against `AGENT_HOUSE_DAILY_MILLS`
+and `canBuyHint` checks hint spend against the owner's `dailyBudgetCents`.
+`spentSince` takes an optional `kind` so the two never share a total again. The
+combined figure is still one ledger; only the ceilings are separate.
+
+The original four, as written:
 
 1. **A house-wide daily ceiling.** Every cap in `budget.ts` is per agent. Twenty
    thousand agents each within their own budget is unbounded house exposure. This

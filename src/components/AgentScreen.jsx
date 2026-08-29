@@ -10,6 +10,7 @@ import {
   fetchSeat,
   fetchActivity,
   describeState,
+  describePersona,
   pauseAgent,
   buySeat,
   fundVault,
@@ -430,6 +431,52 @@ export default function AgentScreen() {
               {heartbeatFresh
                 ? `Checking every 5s — last look ${tickAgo}s ago`
                 : `No sweep for ${tickAgo}s — the driver may be down`}
+            </div>
+          )}
+
+          {/*
+            Who this agent is.
+
+            Its callsign and traits are derived from its address on the server,
+            so this is not a setting the owner can edit — which is the point. An
+            owner watching a bot make choices they did not configure is owed an
+            explanation, and "it is a cautious one" is the honest one.
+          */}
+          {activity?.persona && (
+            <div style={{
+              border: '2px solid #0C0C10', padding: '6px 8px', marginBottom: 8,
+              background: '#F4F1E8',
+            }}>
+              <div style={{
+                fontFamily: MONO, fontSize: 12, fontWeight: 700, color: '#0C0C10',
+                letterSpacing: .5,
+              }}>
+                {activity.persona.callsign}
+              </div>
+              <div style={{
+                fontFamily: MONO, fontSize: 10, color: '#0C0C10', opacity: .65,
+                marginTop: 3, lineHeight: 1.6,
+              }}>
+                {describePersona(activity.persona)}
+              </div>
+            </div>
+          )}
+
+          {/*
+            What it has said. Rendered by the server from the enums it actually
+            sent — a model never wrote any of these words, which is what lets an
+            agent have a voice without a rival's text reaching anyone's prompt.
+          */}
+          {activity?.said?.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              {activity.said.map((u, i) => (
+                <div key={i} style={{
+                  fontFamily: MONO, fontSize: 10, color: '#0C0C10',
+                  opacity: Math.max(.4, 1 - i * 0.12), lineHeight: 1.7,
+                }}>
+                  <span style={{ fontWeight: 700 }}>{u.callsign}</span>{' '}&ldquo;{u.text}&rdquo;
+                </div>
+              ))}
             </div>
           )}
 
