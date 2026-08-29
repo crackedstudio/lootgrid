@@ -249,8 +249,22 @@ const schema = z
      * the provider's per-account concurrency limit, which is a fact about the
      * plan rather than about this code, and alert on rejections rather than
      * discovering the ceiling from a queue that stopped draining.
+     *
+     * ─────────────────────────── 4 → 8, and still provisional ───────────────
+     *
+     * The old default of 4 was sized for a handful of demo accounts and sat
+     * BELOW the ~6.5 calls/sec that a hundred seats need (see runtime.ts). It
+     * was the binding constraint on everything agents do, which is why raising
+     * it came before making agents livelier — spontaneity behind a 4-wide gate
+     * is just a longer queue.
+     *
+     * 8 is a starting point, not an answer. The answer is a fact about our
+     * DeepSeek plan, and `lootgrid_agent_queue_wait_seconds` is how to find it:
+     * raise this until the upper percentiles sit clear of a turn deadline, and
+     * alert there rather than on the depth gauge, which stays flat right up
+     * until it does not.
      */
-    AGENT_MAX_IN_FLIGHT: z.coerce.number().int().min(1).max(256).default(4),
+    AGENT_MAX_IN_FLIGHT: z.coerce.number().int().min(1).max(256).default(8),
 
     /**
      * Funded seats — how many agents the house will pay inference for.
@@ -273,6 +287,32 @@ const schema = z
      * house's exposure is knowable before anyone is charged — §5.1.
      */
     AGENT_SEAT_MILLS: z.coerce.number().int().min(1).max(10_000_000).default(50_000),
+    /**
+     * House-funded thinking one agent may draw in a day, in mills.
+     *
+     * ─────────────────────────── whose money is whose ───────────────────────
+     *
+     * `config.dailyBudgetCents` is the PLAYER's ceiling and governs hints, which
+     * move the player's funds. This is the HOUSE's ceiling and governs
+     * inference, which the house pays for and meters back (AGENT_TIER.md §5.1).
+     *
+     * They were one number until seats landed, and the comment justifying that
+     * — "inference is cost of goods sold against the same deposit that buys
+     * hints" — stopped being true the moment the house started paying. Sharing a
+     * ceiling meant a player who raised their budget to buy more hints silently
+     * authorised more of our spending on thinking, which is AGENTS_BYO §7.5(4).
+     *
+     * This is a RATE limit, not the exposure bound. The seat is the prepaid
+     * total and remains what caps what the house can lose; this stops one
+     * looping agent drinking a whole seat in an afternoon.
+     *
+     * 20,000 mills is roughly 57 hunts a day at the measured ~350 mills a hunt
+     * costs on flash — generous for one agent, and about two and a half days of
+     * a 50,000-mill seat. Deliberately set ABOVE the easy tier's per-hunt prize
+     * ceiling (6,000 mills): a daily cap tighter than the per-hunt cap would
+     * make the per-hunt one unreachable and silently dead.
+     */
+    AGENT_HOUSE_DAILY_MILLS: z.coerce.number().int().min(1).max(1_000_000).default(20_000),
     DEEPSEEK_API_KEY: z.string().min(8).optional(),
     DEEPSEEK_BASE_URL: z.string().url().default('https://api.deepseek.com'),
     /** `deepseek-v4-flash` is ~3x cheaper than pro and ample for these games. */

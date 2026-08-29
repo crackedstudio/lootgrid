@@ -14,6 +14,9 @@ import * as identity from './identity';
 import { model } from './inference';
 import * as mailbox from './mailbox';
 import * as negotiate from './negotiate';
+import { conditionFor, moodFor, type Condition } from '../director/world';
+import * as initiative from './initiative';
+import { effective, personaFor, readyAt, type Persona } from './persona';
 import type { Message } from './protocol';
 import * as reputation from './reputation';
 import * as runtime from './runtime';
@@ -93,6 +96,7 @@ export async function tick(now = Date.now()): Promise<void> {
     return;
   }
   ticking = true;
+  tickIndex++;
 
   const startedAt = Date.now();
   try {
@@ -158,11 +162,118 @@ async function inParallel<T>(
 /** Agents with a vault. One without has nothing to spend and nothing to protect. */
 const activeAgents = () => agentRepo.allActive();
 
+/**
+ * How many sweeps have run. Drives each persona's cadence.
+ *
+ * A counter rather than a clock: `readyAt` needs to know which tick this is, and
+ * deriving that from wall time would make an agent's rhythm depend on how long
+ * the previous sweep took. Agents should be irregular relative to each other,
+ * not relative to the load on the box.
+ */
+let tickIndex = 0;
+
+/**
+ * Whether personas pace themselves.
+ *
+ * A seam for the same reason `inference.setProviderForTests` is one: cadence is
+ * deliberate irregularity, and a test asserting that an agent enters a hunt
+ * should not also be asserting which tick that agent's address happens to like.
+ * Tests about entering switch it off; the tests about cadence switch it on and
+ * are the only place its timing is pinned down.
+ */
+let cadenceEnabled = true;
+
+/** Test-only. `null` restores the real behaviour. */
+export function setCadenceForTests(on: boolean | null): void {
+  cadenceEnabled = on ?? true;
+}
+
+/** Test-only: puts the sweep counter back to a known tick. */
+export function resetCadenceForTests(): void {
+  tickIndex = 0;
+}
+
+/**
+ * The zone's weather, as one agent experiences it.
+ *
+ * Read for the agent's FIRST configured zone rather than all of them. An agent
+ * in two zones is standing in two weathers and there is no honest way to average
+ * them — and the alternative, threading a condition down to every per-hunt
+ * decision, would put a world lookup inside the entry loop for a mood that
+ * changes every ninety seconds. First zone, one lookup, documented.
+ *
+ * Returns null when the agent has no zones, which is a real state: `config.zones`
+ * empty means no zones, never all zones.
+ */
+function weatherFor(config: ReturnType<typeof agentRepo.getConfig>, now: number): Condition | null {
+  const zoneId = config.zones[0];
+  if (!zoneId) return null;
+
+  const zone = store.getZone(zoneId);
+  if (!zone) return null;
+
+  const hunts = store.liveHuntsIn(zone);
+  return conditionFor(
+    zoneId,
+    {
+      population: rooms.roomSize(rooms.zoneRoom(zoneId)),
+      openHunts: hunts.length,
+      activeChasers: hunts.reduce((n, h) => n + store.chaserCount(h.id), 0),
+    },
+    now,
+  );
+}
+
+/**
+ * The owner's configuration, as this agent in this weather will play it.
+ *
+ * Two narrowings, applied in order, and neither may widen anything:
+ *
+ *   1. The persona spends somewhere inside the owner's ceiling (`persona.ts`).
+ *   2. The weather bends the persona — keener in a goldrush, quieter in a hush.
+ *
+ * The mood is applied to the TRAITS and then re-clamped through `effective`,
+ * rather than to the resulting cents. That ordering is what keeps the guarantee
+ * intact: `effective` is the only thing that ever writes a spending number, and
+ * it cannot emit one above the owner's own. A mood multiplier applied afterwards
+ * would be a second writer, and the first weather above 1.0 would quietly lift
+ * an owner's budget.
+ */
+function temperedConfig(
+  base: ReturnType<typeof agentRepo.getConfig>,
+  persona: Persona,
+  condition: Condition | null,
+): ReturnType<typeof agentRepo.getConfig> {
+  if (!condition) return effective(base, persona);
+
+  const mood = moodFor(condition);
+  return effective(base, {
+    ...persona,
+    boldness: clamp100(persona.boldness * mood.boldness),
+    chattiness: clamp100(persona.chattiness * mood.chattiness),
+  });
+}
+
+const clamp100 = (v: number): number => Math.max(0, Math.min(100, Math.round(v)));
+
 async function driveOne(agent: agentRepo.Agent, now: number): Promise<void> {
   const player = store.getPlayer(agent.playerId);
   if (!player || !agent.vault) return;
 
-  const config = agentRepo.getConfig(agent.id);
+  // ─────────────────────────── who this agent is ───────────────────────────
+  //
+  // Derived, not stored: same address, same character, every process, forever.
+  // The owner's config is still the ceiling — `temperedConfig` may only narrow
+  // it, never widen it — so personality changes how an agent plays and cannot
+  // change what it is permitted to spend.
+  const persona = personaFor(agent.id);
+  const base = agentRepo.getConfig(agent.id);
+  // Read once and carried down: the weather is a per-zone lookup, and fetching
+  // it again inside the entry loop would turn one call per zone per epoch into
+  // one per agent per tick — which is the cost model this whole approach exists
+  // to avoid.
+  const weather = weatherFor(base, now);
+  const config = temperedConfig(base, persona, weather);
 
   // ─────────────────────────── decide before reading the chain ───────────────
   //
@@ -215,7 +326,25 @@ async function driveOne(agent: agentRepo.Agent, now: number): Promise<void> {
   for (const attempt of live) await takeTurn(agent, player, attempt, config, inbox, now);
 
   if (live.length >= MAX_CONCURRENT) return;
-  await enterSomething(agent, player, config, vault, now);
+
+  // ─────────────────────────── cadence, and where it may not go ──────────────
+  //
+  // Temperament gates STARTING something new, and nothing else. It sits here,
+  // below the vault read, rather than up with the idle check where it would
+  // save an RPC — because an agent pausing for character still has work, and an
+  // agent with work must still be checked against the chain. Gating earlier
+  // made a revoked agent look idle and left it `active` for up to five ticks,
+  // which is a revocation the owner asked for and did not get.
+  //
+  // The saving was never the point. An attempt in flight and a rival waiting on
+  // a reply are both handled above this line: a persona may set the pace at
+  // which an agent begins things, never the pace at which it honours them.
+  if (cadenceEnabled && !readyAt(agent.id, persona, tickIndex)) {
+    metrics.agentTicksHeld.inc();
+    return;
+  }
+
+  await enterSomething(agent, player, config, vault, persona, weather, now);
 }
 
 // ─────────────────────────── talking to rivals ───────────────────────────
@@ -559,8 +688,23 @@ async function enterSomething(
   player: Player,
   config: ReturnType<typeof agentRepo.getConfig>,
   vault: vaultChain.VaultState,
+  persona: Persona,
+  weather: Condition | null,
   now: number,
 ): Promise<void> {
+  // ─────────────────────────── choose, rather than take the first ───────────
+  //
+  // This loop used to enter the first viable hunt in whatever order the zone
+  // listed them. Every agent shares that order, so every agent made the same
+  // choice at the same moment for the same reason — the most mechanical thing a
+  // watching player could notice.
+  //
+  // Now every viable hunt is gathered and `initiative.choose` picks the one this
+  // particular agent wants most, or none. It costs no inference: persona and EV
+  // are free, and the model's only influence is the zone's weather, which was
+  // already fetched once for the whole zone.
+  const candidates: Array<initiative.Candidate & { zoneId: string }> = [];
+
   for (const zone of store.listZones()) {
     if (zone.kind !== 'agent') continue;
     // An empty zone list means no zones, never all zones.
@@ -579,10 +723,31 @@ async function enterSomething(
         continue;
       }
 
-      const opened = referee.openAttempt(player, store.getHunt(hunt.id)!, now);
-      if (!opened.ok) continue;
+      candidates.push({ huntId: hunt.id, difficulty: hunt.difficulty, entrants, zoneId: zone.id });
+    }
+  }
 
-      logger.info({ agentId: agent.id, huntId: hunt.id }, 'agent entered a hunt');
+  const picked = initiative.choose(candidates, persona, weather, model(), agent.id);
+  if (!picked) {
+    // A real answer, not a failure: nothing on this board was worth taking, so
+    // the agent waits for a better one. An agent that entered everything would
+    // be a subscription to losing money slowly.
+    if (candidates.length > 0) metrics.agentEntriesDeclined.inc();
+    return;
+  }
+
+  {
+      const choice = candidates.find(c => c.huntId === picked.candidate.huntId)!;
+      const hunt = store.getHunt(choice.huntId)!;
+      const zone = { id: choice.zoneId };
+
+      const opened = referee.openAttempt(player, hunt, now);
+      if (!opened.ok) return;
+
+      logger.info(
+        { agentId: agent.id, huntId: hunt.id, score: picked.score },
+        'agent entered a hunt',
+      );
       metrics.agentEntries.inc();
       // Tell the owner. An agent that plays invisibly is indistinguishable from
       // one that is broken — which is how a working one read for an hour of
@@ -594,9 +759,8 @@ async function enterSomething(
         at: now,
       });
       await considerHints(agent, player, hunt.id, zone.id, config, vault, now);
-      return; // One at a time: a tick that entered four hunts would be a tick
-      // that spent four entry costs before learning anything about the first.
-    }
+      // One at a time: a tick that entered four hunts would be a tick that
+      // spent four entry costs before learning anything about the first.
   }
 }
 

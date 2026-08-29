@@ -10,6 +10,9 @@ import { parseUpdate, type AgentConfig } from './config';
 import * as driver from './driver';
 import * as identity from './identity';
 import * as inference from './inference';
+import * as negotiate from './negotiate';
+import { personaFor } from './persona';
+import * as voice from './voice';
 import * as vaultChain from '../chain/agentVault';
 import * as store from '../store';
 
@@ -314,9 +317,34 @@ export function activity(player: Player, limit = 10) {
     thoughtMills: spendByHunt.get(a.huntId) ?? 0,
   }));
 
+  // ─────────────────────────── who the owner is watching ───────────────────
+  //
+  // Derived from the address, so this is not a lookup and cannot drift from the
+  // character the driver is actually playing — `driver.driveOne` computes the
+  // identical persona from the identical input.
+  const persona = personaFor(agent.id);
+
   return {
     agentId: agent.id,
     status: agent.status,
+    /**
+     * The agent's character: its house-given callsign and the five traits the
+     * driver actually reads. Shown because an owner watching a bot make choices
+     * they did not configure deserves to know why it keeps doing that.
+     */
+    persona,
+    /**
+     * What it has said lately, rendered from the enums it actually sent.
+     *
+     * The model never wrote any of this — see `voice.ts`. An agent picks one of
+     * six intents on the wire and the words are chosen here, on the way out, so
+     * a rival's message can never become text in front of anyone.
+     */
+    said: negotiate.agreedFor(agent.id).slice(0, 5).map(thread =>
+      voice.line(persona, 'accept', thread.id, {
+        priceCents: thread.agreedCents ?? undefined,
+      }),
+    ),
     attempts,
     /**
      * Proof of life. Without it, an agent with nothing to play is
@@ -363,8 +391,20 @@ export function ledger(player: Player) {
 
   const config = agentRepo.getConfig(agent.id);
   return {
+    // The owner's money: what they set, and what is left of it. Hints only —
+    // house-funded thinking is not billed to a player and must not appear as if
+    // it were. See `budget.remainingToday`.
     remainingMills: budget.remainingToday(agent.id, config),
     dailyBudgetMills: config.dailyBudgetCents * MILLS_PER_CENT,
+    /**
+     * The house's side, shown separately rather than folded in.
+     *
+     * An owner should be able to tell "I am out of budget" from "the house
+     * stopped funding my agent's thinking today" — they have different fixes,
+     * and before the ledgers were split they rendered as the same number.
+     */
+    houseRemainingMills: budget.houseRemainingToday(agent.id),
+    houseDailyMills: env.AGENT_HOUSE_DAILY_MILLS,
     entries: agentRepo.recentSpend(agent.id, 50),
   };
 }

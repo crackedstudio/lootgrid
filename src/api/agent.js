@@ -43,6 +43,40 @@ export const fetchLedger = () => get('/agent/ledger');
 export const fetchActivity = () => get('/agent/activity');
 
 /** A one-line summary of a module's state, for the activity feed. */
+/**
+ * An agent's character, in a phrase.
+ *
+ * The traits are numbers on the wire because a free-text field anywhere near an
+ * agent is a prompt-injection channel (see server `agents/config.ts`). Turning
+ * them into words is a rendering job, and it belongs here on the client rather
+ * than in a string the server sends — a server that shipped prose would be a
+ * server with somewhere for prose to come from.
+ *
+ * Only the two most pronounced traits are named. All five would read as a stat
+ * block, and the point is a character sketch, not a spreadsheet.
+ */
+export function describePersona(persona) {
+  if (!persona) return null;
+
+  const traits = [
+    [persona.boldness, 'bold', 'cautious'],
+    [persona.patience, 'patient', 'impatient'],
+    [persona.thrift, 'thrifty', 'free-spending'],
+    [persona.chattiness, 'talkative', 'quiet'],
+    [persona.nerve, 'reckless', 'steady'],
+  ];
+
+  // Distance from the middle is how pronounced a trait is — a 50 says nothing
+  // about anyone, and listing it would dilute the two that do.
+  const named = traits
+    .map(([v, high, low]) => ({ word: v >= 50 ? high : low, weight: Math.abs(v - 50) }))
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 2)
+    .map(t => t.word);
+
+  return `${named[0]}, ${named[1]}`;
+}
+
 export function describeState(game, state) {
   if (!state) return null;
   const s = typeof state === 'string' ? safeParse(state) : state;

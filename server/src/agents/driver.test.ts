@@ -66,6 +66,9 @@ function setVaultOnChain(over: Partial<vaultChain.VaultState> = {}) {
 beforeEach(() => {
   freshWorld();
   runtime.reset();
+  // These tests are about whether an agent plays and what it refuses, not about
+  // which tick its address likes to start on. Cadence has its own file.
+  driver.setCadenceForTests(false);
 
   mut.AGENTS_ENABLED = true;
   mut.AGENT_MASTER_KEY = MASTER;
@@ -95,6 +98,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  driver.setCadenceForTests(null);
   Object.assign(mut, original);
   inference.setProviderForTests(null);
   vaultChain.setTransportForTests(null, null);

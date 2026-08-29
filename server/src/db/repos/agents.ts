@@ -139,6 +139,9 @@ function build() {
       VALUES (@agentId, @kind, @amountMills, @huntId, @tradeRef, @spentAt)
     `),
     // The two questions the ledger exists to answer.
+    spentSinceByKind: db.prepare(
+      'SELECT COALESCE(SUM(amount_mills), 0) AS total FROM agent_spend WHERE agent_id = ? AND spent_at >= ? AND kind = ?',
+    ),
     spentSince: db.prepare(
       'SELECT COALESCE(SUM(amount_mills), 0) AS total FROM agent_spend WHERE agent_id = ? AND spent_at >= ?',
     ),
@@ -228,9 +231,20 @@ export function addSpend(
   });
 }
 
-/** Everything spent since a timestamp, in mills. Both kinds — see the migration. */
-export function spentSince(agentId: string, since: number): number {
-  return (s().spentSince.get(agentId, since) as { total: number }).total;
+/**
+ * Spend since a timestamp, in mills.
+ *
+ * `kind` is optional and the distinction is the important part: since the house
+ * started paying for inference (`agents/seats.ts`), the two kinds are two
+ * different people's money. Omit it for the combined figure an owner sees on
+ * their ledger; pass it wherever a *ceiling* is being enforced, so that raising
+ * a hint budget cannot quietly authorise more house-funded thinking.
+ */
+export function spentSince(agentId: string, since: number, kind?: SpendKind): number {
+  const row = kind
+    ? s().spentSinceByKind.get(agentId, since, kind)
+    : s().spentSince.get(agentId, since);
+  return (row as { total: number }).total;
 }
 
 export function spentOnHunt(agentId: string, huntId: string, kind: SpendKind): number {

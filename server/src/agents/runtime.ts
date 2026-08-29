@@ -165,6 +165,8 @@ export function buildPrompt(ctx: TurnContext): string {
 interface Job {
   tenant: string;
   run: () => Promise<void>;
+  /** When it joined the queue. See {@link metrics.agentQueueWaitSeconds}. */
+  queuedAt: number;
 }
 
 /** tenant → their waiting turns. A map of queues, not one queue. */
@@ -195,7 +197,7 @@ export const MAX_IN_FLIGHT = env.AGENT_MAX_IN_FLIGHT;
 
 function enqueue(tenant: string, run: () => Promise<void>): void {
   const queue = queues.get(tenant) ?? [];
-  queue.push({ tenant, run });
+  queue.push({ tenant, run, queuedAt: Date.now() });
   queues.set(tenant, queue);
   metrics.agentQueueDepth.set(depth());
 }
@@ -230,6 +232,23 @@ async function drain(): Promise<void> {
     while (depth() > 0) {
       const batch = nextBatch(MAX_IN_FLIGHT);
       if (batch.length === 0) break;
+
+      // ─────────────────── how long a turn waited to be thought about ────────
+      //
+      // Depth alone cannot answer the question that matters. A queue twenty
+      // deep that drains in 200ms is healthy; a queue three deep behind a
+      // five-second provider is losing hunts. Only the WAIT predicts the
+      // failure, because an attempt carries a deadline and a turn that arrives
+      // after it is a lost hunt rather than a slow one.
+      //
+      // This is the number to size MAX_IN_FLIGHT against — raise it until the
+      // upper percentiles sit clear of the turn deadline, rather than raising
+      // it until the depth gauge looks tidy.
+      const started = Date.now();
+      for (const job of batch) {
+        metrics.agentQueueWaitSeconds.observe((started - job.queuedAt) / 1000);
+      }
+
       await Promise.all(batch.map(job => job.run()));
       metrics.agentQueueDepth.set(depth());
     }

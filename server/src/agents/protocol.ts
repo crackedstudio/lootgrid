@@ -63,6 +63,8 @@ export const DECLINE_REASONS = [
   'wrong_zone',
 ] as const;
 
+export type DeclineReason = (typeof DECLINE_REASONS)[number];
+
 const bounded = (max: number) => z.number().int().min(0).max(max);
 
 /** An id we issued. Bounded and pattern-matched: ids are ours, not theirs. */

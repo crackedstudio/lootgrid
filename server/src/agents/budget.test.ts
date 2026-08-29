@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as agentRepo from '../db/repos/agents';
 import { MILLS_PER_CENT } from '../market/fees';
 import { AGENT_DIFFICULTY_WEIGHTS, prizeCentsFor } from '../prizes';
+import { env } from '../env';
 import { freshWorld, teardownWorld } from '../testing/harness';
 import * as budget from './budget';
 import { defaultConfig, type AgentConfig } from './config';
@@ -130,15 +131,44 @@ describe('inference is bounded by what the hunt is worth', () => {
     expect(budget.canInfer(AGENT, tight, { id: 'h2', difficulty: 'med' }, FLASH).ok).toBe(true);
   });
 
-  it('still respects the daily budget', () => {
-    // Inference is cost of goods sold against the same deposit that buys hints,
-    // so it lands in the same daily ledger.
+  /**
+   * ─────────────────────────── whose ceiling stops a call ───────────────────
+   *
+   * This test used to assert the opposite: that inference counted against
+   * `dailyBudgetCents`, on the reasoning that thinking was "cost of goods sold
+   * against the same deposit that buys hints". That stopped being true when the
+   * house started funding inference through seats — a player's deposit no longer
+   * pays for it, so charging it to their ceiling charged them for our costs, and
+   * raising a hint budget quietly authorised more house spending. AGENTS_BYO
+   * §7.5(4). The two ledgers are separate now, and these two tests are the pair
+   * that says so in both directions.
+   */
+  it('is not stopped by the player spending their own budget on hints', () => {
     const oneCentDay = { ...config, dailyBudgetCents: 1, inferenceMillsPerHunt: 100_000 };
     budget.record(AGENT, 'hint', MILLS_PER_CENT, { huntId: 'h1' });
 
-    expect(budget.canInfer(AGENT, oneCentDay, { id: 'h1', difficulty: 'hard' }, FLASH)).toMatchObject(
-      { ok: false, reason: 'daily_budget' },
+    // The player's day is fully spent. The house's is untouched, so the agent
+    // may still think — it simply cannot buy anything.
+    expect(budget.canInfer(AGENT, oneCentDay, { id: 'h1', difficulty: 'hard' }, FLASH).ok).toBe(
+      true,
     );
+    expect(budget.canBuyHint(AGENT, oneCentDay, {
+      priceCents: 1,
+      reliabilityBps: 10_000,
+      zoneId: oneCentDay.zones[0] ?? 'ridge',
+    }).ok).toBe(false);
+  });
+
+  it('is stopped by the house’s own daily ceiling', () => {
+    const roomy = { ...config, dailyBudgetCents: 10_000, inferenceMillsPerHunt: 100_000 };
+    // Spend the house's day, on a different hunt so the per-hunt cap is not
+    // what refuses this — it must be the daily one.
+    budget.record(AGENT, 'inference', env.AGENT_HOUSE_DAILY_MILLS, { huntId: 'h0' });
+
+    expect(budget.canInfer(AGENT, roomy, { id: 'h1', difficulty: 'hard' }, FLASH)).toMatchObject({
+      ok: false,
+      reason: 'house_daily_budget',
+    });
   });
 });
 
@@ -254,14 +284,27 @@ describe('whether a hunt is worth entering at all', () => {
 });
 
 describe('the ledger', () => {
-  it('adds both kinds of spend together', () => {
-    // One question — what has this agent cost its owner today — answered from
-    // one place, so the two kinds cannot disagree.
+  it('still records both kinds in one ledger', () => {
+    // Splitting the CEILINGS did not split the ledger. One question — what has
+    // this agent cost, all in — is still answered from one place.
     budget.record(AGENT, 'hint', 5 * MILLS_PER_CENT, { huntId: 'h1', tradeRef: '0xabc' });
     budget.record(AGENT, 'inference', 12, { huntId: 'h1' });
 
-    const remaining = budget.remainingToday(AGENT, config);
-    expect(remaining).toBe(config.dailyBudgetCents * MILLS_PER_CENT - 5 * MILLS_PER_CENT - 12);
+    const since = Date.now() - 60_000;
+    expect(agentRepo.spentSince(AGENT, since)).toBe(5 * MILLS_PER_CENT + 12);
+  });
+
+  it('shows the owner what THEY have spent, not what the house has', () => {
+    // The kill-switch screen answers "how much of my money is left". Folding
+    // house-funded thinking into that number would bill a player, on screen,
+    // for compute they were told was included.
+    budget.record(AGENT, 'hint', 5 * MILLS_PER_CENT, { huntId: 'h1' });
+    budget.record(AGENT, 'inference', 12, { huntId: 'h1' });
+
+    expect(budget.remainingToday(AGENT, config)).toBe(
+      config.dailyBudgetCents * MILLS_PER_CENT - 5 * MILLS_PER_CENT,
+    );
+    expect(budget.houseRemainingToday(AGENT)).toBe(env.AGENT_HOUSE_DAILY_MILLS - 12);
   });
 
   it('keeps the trade reference for a hint purchase', () => {
