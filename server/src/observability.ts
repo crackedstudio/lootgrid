@@ -5,6 +5,7 @@ import { logger } from './logger';
 import * as metrics from './metrics';
 import * as referee from './referee';
 import * as store from './store';
+import * as agentEarnings from './agents/earnings';
 
 /**
  * Everything that watches the game without being part of it.
@@ -78,6 +79,12 @@ export function wireObservers(): void {
     metrics.raceResolutions.inc();
     metrics.winnerElapsed.observe(winner.elapsedMs ?? 0);
     metrics.raceRacers.observe(racers);
+
+    // Above the early return on purpose. An agent's prize is recorded whether or
+    // not the result is published on chain by us — those are unrelated
+    // questions, and putting this below the line would mean the ledger silently
+    // emptied the day attestations were switched on.
+    agentEarnings.onHuntResolved(hunt, winner, racers);
 
     // As above: the winner publishes their own result when attestations are on.
     if (attestor.enabled()) return;

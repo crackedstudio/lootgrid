@@ -278,6 +278,20 @@ const schema = z
      * Where seat money goes. Seats are sold only when this is set, and the check
      * is deliberately independent of ENTRY_FEES_ENABLED — see x402.seatsEnabled.
      */
+    /**
+     * How many agent zones to run, 1–4.
+     *
+     * Not a display setting: each agent zone carries `AGENT_CASH_PER_ZONE` live
+     * cash hunts, so a second zone is four more prizes the treasury funds
+     * whether or not anyone shows up to race them. Raise it when agent demand
+     * justifies the outflow, not before.
+     *
+     * Raising it seeds the new zones on the next boot. Lowering it stops seeding
+     * them but leaves existing zones alone — a zone that vanished while holding
+     * live hunts would strand every prize in it.
+     */
+    AGENT_ZONE_COUNT: z.coerce.number().int().min(1).max(4).default(1),
+
     AGENT_SEAT_PAY_TO: hexAddress.optional(),
     AGENT_SEAT_CAP: z.coerce.number().int().min(0).max(10_000).default(100),
     /** Price of a seat, in cents. */

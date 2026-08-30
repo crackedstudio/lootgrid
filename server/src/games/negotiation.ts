@@ -1,6 +1,7 @@
 import { NEGOTIATION, RACE } from '../config';
 import { hashInt } from '../hash';
 import type { Difficulty } from '../types';
+import type { Directive } from '../director/types';
 import type { GameModule, StepResult } from './types';
 
 /**
@@ -83,6 +84,17 @@ export interface NegotiationState {
   askBps: number;
   closed: boolean;
   keptBps: number | null;
+  /**
+   * How much they will come down after the next refusal, set when the last one
+   * was answered.
+   *
+   * Recorded rather than recomputed, for the reason every directed module does
+   * it: an offer is judged against the ask the player was actually shown, and a
+   * directive landing mid-round shapes the concession after it. Undefined on
+   * states written before the Director reached this module, which reads as the
+   * counterparty's own schedule.
+   */
+  nextConcedeBps?: number;
 }
 
 export interface NegotiationInput {
@@ -113,6 +125,38 @@ const CONCEDE_BPS = 1_200;
  * whole pot, which is not a negotiation, it is a wall.
  */
 const MAX_OPENS_AT = 4;
+
+/**
+ * The floor under any concession the Director may impose.
+ *
+ * A counterparty that stops conceding is not a hard negotiation, it is a wall:
+ * `generate` promises a deal exists at or above `minKeepBps`, and a schedule
+ * that flattens to nothing can walk the ask past the point where that promise
+ * still holds. Two thirds of the block's own rate is stubborn; zero is a
+ * different game with no answer in it.
+ */
+const MIN_CONCEDE_RATIO = 0.66;
+
+/**
+ * How far they come down after the next refusal.
+ *
+ * The one lever here that stays honest. `askBps` is already emitted every
+ * round, so a changed concession is visible in the next number the player reads
+ * — they are never told a schedule that turns out to be false, only one that
+ * turns out to be steeper. Compare `insultBps`, which is in the spec and read
+ * before an offer is composed: bending that would move a line the player had
+ * already aimed at, and is exactly why it is left alone.
+ */
+function concedeFor(directive: Directive | null, base: number): number {
+  if (!directive) return base;
+
+  // 1 is generous, 5 is stubborn.
+  let ratio = 1 + (3 - directive.difficulty) * 0.12;
+  if (directive.roundType === 'endurance') ratio -= 0.1;
+  if (directive.twist === 'silence') ratio -= 0.1;
+
+  return Math.max(Math.round(base * MIN_CONCEDE_RATIO), Math.round(base * ratio));
+}
 
 export const negotiationModule: GameModule<
   NegotiationSpec,
@@ -156,11 +200,22 @@ export const negotiationModule: GameModule<
     return { ...spec };
   },
 
+  /**
+   * The round the next ask will be served for, or null on the last one.
+   *
+   * Asked for only while a round remains — a directive for a round nobody plays
+   * is a decision the transcript records and nobody took.
+   */
+  directedRound(state, spec) {
+    const next = state.round + 1;
+    return next < spec.rounds ? next : null;
+  },
+
   init(spec) {
     return { round: 0, askBps: spec.openingAskBps, closed: false, keptBps: null };
   },
 
-  step({ spec, secret, state, timing }, input): StepResult {
+  step({ spec, secret, state, timing, directive }, input): StepResult {
     if (timing.sinceStart > spec.limitMs + RACE.latencyGraceMs) {
       return { kind: 'reject', reason: 'too_slow', fatal: true };
     }
@@ -203,7 +258,13 @@ export const negotiationModule: GameModule<
       return { kind: 'reject', reason: 'insulted', fatal: true };
     }
 
-    state.askBps = Math.max(0, ask - secret.concedeBps);
+    // They come down by what they were GOING to come down by — the schedule the
+    // player has been reading for two rounds — not by whatever the Director has
+    // since decided. A concession rewritten under an offer already made would
+    // make the published schedule a lie.
+    state.askBps = Math.max(0, ask - (state.nextConcedeBps ?? secret.concedeBps));
+    state.nextConcedeBps = concedeFor(directive, secret.concedeBps);
+
     return {
       kind: 'progress',
       emit: {

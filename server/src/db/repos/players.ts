@@ -57,6 +57,19 @@ function build() {
     // Incremented in SQL rather than read-modify-written, so two awards landing
     // together cannot lose one. XP is cheap, but silently dropping a reward the
     // player watched themselves earn is not.
+    //
+    // ─────────────────────────── there is no decrement, on purpose ──────────
+    //
+    // This is the only statement that touches the column, and nothing anywhere
+    // spends XP. That reads as an unfinished currency — most treasures on the
+    // map pay XP, and a currency that buys nothing is a reward in name only —
+    // so it is worth saying that it is a decision.
+    //
+    // XP is a record of what a player has done, and a record only goes up. The
+    // reasoning, and the two sinks that were considered and rejected, are in
+    // `rank.standingOf`. If you are here to add a `spendXp`, read that first:
+    // the shorter version is that XP buying hints makes it money, and XP buying
+    // energy makes it a second faucet into the main sybil brake.
     addXp: db.prepare('UPDATE players SET xp = xp + ? WHERE id = ?'),
     // MAX, so this is a high-water mark rather than an assignment. Two advances
     // arriving out of order — a survey ack racing the dig that preceded it —
