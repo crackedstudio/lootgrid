@@ -1,6 +1,7 @@
 import { RACE, SEARCH } from '../config';
 import { hashInt } from '../hash';
 import type { Difficulty } from '../types';
+import type { Directive } from '../director/types';
 import type { GameModule, StepResult } from './types';
 
 /**
@@ -66,6 +67,16 @@ export interface SearchState {
   /** Closest reading so far — the only thing resembling a score. */
   best: number;
   caught: boolean;
+  /**
+   * How far it will run after the next probe, set when the previous one landed.
+   *
+   * Recorded rather than recomputed, the same rule `math.state.window` follows:
+   * a probe is measured against the board the player was shown, and a directive
+   * arriving mid-flight shapes the next move rather than rewriting the last one.
+   * Undefined on states written before the Director reached this module, which
+   * reads as the spec's own step.
+   */
+  nextStep?: number;
 }
 
 export interface SearchInput {
@@ -119,6 +130,42 @@ export function evaderMove(
   return furthest[hashInt(seed, 'evade', index) % furthest.length]!;
 }
 
+/**
+ * The fastest the Director may ever make it run.
+ *
+ * Three cells a turn on an 18-wide grid still leaves a reading worth taking.
+ * Past that the quarry outruns the information and the game becomes a lottery
+ * that looks like a search.
+ */
+const SEARCH_MAX_STEP = 3;
+
+/**
+ * How far the quarry runs after the next probe.
+ *
+ * ─────────────────────────── published, or it is not a game ─────────────────
+ *
+ * `spec.step` is documented as "Published — you must predict it", and that is
+ * the whole contract: catching it is arithmetic about where it will be, so a
+ * speed the player cannot see turns every miss into bad luck. The directive may
+ * change the speed; it may never hide it, which is why `nextStep` goes out in
+ * the emit and is recorded in state before it is ever used.
+ *
+ * Bounded on both sides. A step of zero is a stationary target and the hunt
+ * solves itself; a step past {@link SEARCH_MAX_STEP} makes the reading
+ * meaningless, because a quarry that could be anywhere next turn cannot be
+ * cornered by measuring where it is now.
+ */
+function stepFor(directive: Directive | null, spec: SearchSpec): number {
+  if (!directive) return spec.step;
+
+  // 1 is slow, 5 is fast — one step either side of the block's own pace.
+  let step = spec.step + Math.round((directive.difficulty - 3) / 2);
+  if (directive.roundType === 'sprint' || directive.twist === 'haste') step += 1;
+  if (directive.roundType === 'endurance') step -= 1;
+
+  return Math.max(1, Math.min(step, SEARCH_MAX_STEP));
+}
+
 export const searchModule: GameModule<SearchSpec, SearchSecret, SearchState, SearchInput> = {
   type: 'search',
   durable: true,
@@ -148,13 +195,24 @@ export const searchModule: GameModule<SearchSpec, SearchSecret, SearchState, Sea
     return { ...spec };
   },
 
+  /**
+   * The probe index the next reading will serve, or null on the last one.
+   *
+   * Rounds here are probes. Asked for only while one remains — a directive for
+   * a round nobody plays is a decision the transcript records and nobody took.
+   */
+  directedRound(state, spec) {
+    const next = state.used + 1;
+    return next < spec.probes ? next : null;
+  },
+
   init() {
     // Position is copied out of the secret on the first probe: `init` is handed
     // the spec only, and the spec must not contain the answer.
     return { used: 0, r: -1, c: -1, best: Number.MAX_SAFE_INTEGER, caught: false };
   },
 
-  step({ spec, secret, state, timing }, input): StepResult {
+  step({ spec, secret, state, timing, directive }, input): StepResult {
     if (timing.sinceStart > spec.limitMs + RACE.latencyGraceMs) {
       return { kind: 'reject', reason: 'too_slow', fatal: true };
     }
@@ -184,6 +242,9 @@ export const searchModule: GameModule<SearchSpec, SearchSecret, SearchState, Sea
     }
 
     // Measured first, then it runs — so the reading describes where it *was*.
+    // It runs at the speed it was RUNNING, not at whatever the Director says
+    // next: the reading above describes where it was, and the move it makes now
+    // is the one the player was told to expect when they aimed.
     const next = evaderMove(
       { r: state.r, c: state.c },
       probe,
@@ -191,16 +252,29 @@ export const searchModule: GameModule<SearchSpec, SearchSecret, SearchState, Sea
       state.used,
       spec.rows,
       spec.cols,
-      spec.step,
+      state.nextStep ?? spec.step,
     );
     state.r = next.r;
     state.c = next.c;
+
+    // How fast it runs after the NEXT probe. Published below, because the whole
+    // game is predicting where it will be — a quarry whose speed changed without
+    // saying so would not be harder to catch, it would be impossible to aim at,
+    // and every miss would read as bad luck rather than a bad guess.
+    const nextStep = stepFor(directive, spec);
+    state.nextStep = nextStep;
 
     return {
       kind: 'progress',
       // The distance, and nothing about the direction. A bearing would collapse
       // this to trilateration in three probes.
-      emit: { distance, used: state.used, probesLeft: spec.probes - state.used },
+      emit: {
+        distance,
+        used: state.used,
+        probesLeft: spec.probes - state.used,
+        // Published, always. You must predict it; you are never made to guess it.
+        nextStep,
+      },
     };
   },
 

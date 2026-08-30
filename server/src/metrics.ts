@@ -578,6 +578,40 @@ export const agentQueueWaitSeconds = new Histogram({
  * means the bar is too high and the zone looks abandoned. Both are bugs, and
  * neither is visible from the entry counter alone.
  */
+// ---- what agents actually won ----
+//
+// The other half of a ledger that could only count costs. `viableFor` refuses a
+// hunt whose prize divided by entrants does not clear the cost of thinking about
+// it — an a-priori model that nothing ever checked, because nothing recorded the
+// outcome. These are what make it falsifiable.
+
+export const agentPrizesWon = new Counter({
+  name: 'lootgrid_agent_prizes_won_total',
+  help: 'Cash hunts won by an agent, by difficulty',
+  labelNames: ['difficulty'] as const,
+  registers: [registry],
+});
+
+export const agentPrizeMills = new Counter({
+  name: 'lootgrid_agent_prize_mills_total',
+  help: 'Prize mills awarded to agents — awarded, not necessarily claimed',
+  registers: [registry],
+});
+
+/**
+ * Realised prize over the share the entry decision predicted.
+ *
+ * Watch the centre of mass against 1.0. Persistently below is the dangerous
+ * direction — agents entering races they were always going to lose — and it is
+ * invisible in the entry counter, which cannot tell a good bet from a bad one.
+ */
+export const agentEvRealised = new Histogram({
+  name: 'lootgrid_agent_ev_realised',
+  help: 'Realised prize divided by the share viableFor predicted at entry',
+  buckets: [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10],
+  registers: [registry],
+});
+
 export const agentEntriesDeclined = new Counter({
   name: 'lootgrid_agent_entries_declined_total',
   help: 'Ticks where viable hunts existed but none cleared the agent’s appetite',

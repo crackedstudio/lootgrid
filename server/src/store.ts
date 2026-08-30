@@ -44,13 +44,51 @@ const ZONE_SEED: Array<Pick<Zone, 'id' | 'name' | 'accent' | 'kind'>> = [
   { id: 'flats', name: 'GOLDEN FLATS', accent: '#FFD51F', kind: 'human' },
   { id: 'tide', name: 'NEON TIDE', accent: '#29E6E6', kind: 'human' },
   { id: 'hollow', name: 'DEEP HOLLOW', accent: '#8A3DFF', kind: 'human' },
-  // The first agent zone. It could not exist before phase 6 — with no agent
-  // module registered it would have been a zone that cannot host a cash hunt,
-  // which is a zone with nothing in it. One, not four: this is the zone that
-  // answers whether there is a challenge worth an agent solving, and until it
-  // has, the grid should not be mostly given over to it.
-  { id: 'lattice', name: 'THE LATTICE', accent: '#B7FF3B', kind: 'agent' },
 ];
+
+/**
+ * Agent zones, seeded to `AGENT_ZONE_COUNT`.
+ *
+ * ─────────────────────────── why this is a dial ───────────────────────────
+ *
+ * The first one could not exist before phase 6: with no agent module registered
+ * it would have been a zone that cannot host a cash hunt, which is a zone with
+ * nothing in it. It shipped as one rather than four because it is the zone that
+ * answers whether there is a challenge worth an agent solving, and until it has,
+ * the grid should not be mostly given over to it.
+ *
+ * That reasoning is about *demand*, which changes — and the cost of being wrong
+ * is money. Each agent zone carries `AGENT_CASH_PER_ZONE` live cash hunts, so a
+ * second zone is not a second board, it is four more prizes the treasury funds
+ * whether or not anyone turns up to race them. Leaving the count in code made
+ * that a commit and a deploy; leaving it in the environment makes it a decision
+ * somebody can take when the demand shows, with the cost written next to it.
+ *
+ * Defaults to 1, so today's economy is unchanged.
+ *
+ * The list is fixed rather than generated so a zone's id and name are stable:
+ * ids key hunts, reveals and market listings, and a zone whose id shifted when
+ * the count changed would orphan every row pointing at it.
+ */
+const AGENT_ZONE_SEED: Array<Pick<Zone, 'id' | 'name' | 'accent' | 'kind'>> = [
+  { id: 'lattice', name: 'THE LATTICE', accent: '#B7FF3B', kind: 'agent' },
+  { id: 'foundry', name: 'THE FOUNDRY', accent: '#3BFFD1', kind: 'agent' },
+  { id: 'kiln', name: 'THE KILN', accent: '#FF3B7A', kind: 'agent' },
+  { id: 'strata', name: 'THE STRATA', accent: '#B73BFF', kind: 'agent' },
+];
+
+/**
+ * The zones this deployment runs.
+ *
+ * Slicing rather than filtering, so raising the count only ever ADDS a zone.
+ * Lowering it leaves the extra zones' rows in place and simply stops seeding
+ * them — a zone that vanished from the seed while holding live hunts would
+ * strand every prize in it.
+ */
+function zoneSeed(): Array<Pick<Zone, 'id' | 'name' | 'accent' | 'kind'>> {
+  const agentZones = AGENT_ZONE_SEED.slice(0, env.AGENT_ZONE_COUNT);
+  return [...ZONE_SEED, ...agentZones];
+}
 
 /** Per zone kind — agent hunts outlive human ones. See config's ASYNC block. */
 const huntTtlFor = (kind: ZoneKind): number => ASYNC.huntTtlMs[kind];
@@ -91,16 +129,31 @@ export function bootstrap(): void {
     logger.warn({ abandoned }, 'abandoned in-flight attempts from a previous run');
   }
 
-  if (zoneRepo.list().length === 0) {
-    seedZones();
-    logger.info({ zones: ZONE_SEED.length }, 'seeded fresh world');
-  }
+  const added = seedZones();
+  if (added > 0) logger.info({ added, total: zoneRepo.list().length }, 'seeded zones');
 
   for (const z of zoneRepo.list()) replenish(z.id);
 }
 
-function seedZones(now = Date.now()): void {
-  ZONE_SEED.forEach((z, i) => {
+/**
+ * Insert any seeded zone this database does not have yet. Returns how many.
+ *
+ * Missing-only rather than empty-only, which is what makes `AGENT_ZONE_COUNT` a
+ * usable dial: seeding on an empty world alone would mean raising the count did
+ * nothing until somebody dropped the database, and the one deployment that
+ * matters is the one that already has players in it.
+ *
+ * Idempotent by construction — a zone already present is skipped, so a boot with
+ * an unchanged count inserts nothing and disturbs no epoch, seed or rotation
+ * clock that is already running.
+ */
+function seedZones(now = Date.now()): number {
+  const existing = new Set(zoneRepo.list().map(z => z.id));
+  const seed = zoneSeed();
+  let added = 0;
+
+  seed.forEach((z, i) => {
+    if (existing.has(z.id)) return;
     const seedSecret = randomHex(32);
     zoneRepo.insert(
       {
@@ -109,13 +162,20 @@ function seedZones(now = Date.now()): void {
         seedSecret,
         seedCommit: hash(seedSecret).toString('hex'),
         // Staggered across the rotation window rather than all landing on the
-        // same tick. Four zones resetting together would empty the whole world
-        // at once; spread out, there is always a map partway through its life.
-        rotatesAt: now + Math.round((EPOCH.rotateMs * (i + 1)) / ZONE_SEED.length),
+        // same tick. Zones resetting together would empty the whole world at
+        // once; spread out, there is always a map partway through its life.
+        //
+        // Indexed against the whole seed rather than against what is being
+        // added, so a zone appearing later still lands in its own slot instead
+        // of colliding with the first zone's clock.
+        rotatesAt: now + Math.round((EPOCH.rotateMs * (i + 1)) / seed.length),
       },
       now,
     );
+    added += 1;
   });
+
+  return added;
 }
 
 /**

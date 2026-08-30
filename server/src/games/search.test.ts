@@ -159,10 +159,15 @@ describe('the rules', () => {
     const { probe } = hunt('med', 'salt-1');
     const result = probe(0, 0);
     expect(result.kind).toBe('progress');
+    // A whitelist, not a snapshot: nothing describing DIRECTION may appear
+    // here, or the game collapses to trilateration in three probes. `nextStep`
+    // is a speed — how far it runs next, which the rules already promise to
+    // publish — and carries no bearing.
     expect(Object.keys((result as { emit: object }).emit)).toEqual([
       'distance',
       'used',
       'probesLeft',
+      'nextStep',
     ]);
   });
 

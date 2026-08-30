@@ -234,6 +234,15 @@ export function registerRoutes(app: App): void {
       trustScore: player.trustScore,
       xp: player.xp,
       /**
+       * The title that number carries.
+       *
+       * XP has no sink by design (see `rank.standingOf`), so a bare figure is a
+       * score with nothing to compare it against. Standing is what makes it
+       * legible — and it gates nothing, which is the difference between it and
+       * the Prospector rank a cash hunt actually checks.
+       */
+      standing: rank.standingOf(player.xp),
+      /**
        * The two currencies, side by side on purpose.
        *
        * Energy is the product and can be bought. Keys are entries and cannot

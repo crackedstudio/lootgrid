@@ -165,10 +165,15 @@ describe('answers are truthful and consistent', () => {
     const { probe } = play();
     const result = probe({ kind: 'parity', parity: 'even' });
     expect(result.kind).toBe('progress');
+    // A whitelist, not a snapshot: the point is that nothing describing the
+    // remaining candidate set can appear, so a new field is only allowed here
+    // once someone has looked at it and confirmed it says nothing about where
+    // the treasure is. `nextCost` is the Director's price for the next probe.
     expect(Object.keys((result as { emit: object }).emit)).toEqual([
       'answer',
       'used',
       'budgetLeft',
+      'nextCost',
     ]);
   });
 

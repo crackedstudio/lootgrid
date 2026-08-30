@@ -8,6 +8,7 @@ import type { Player } from '../types';
 import * as budget from './budget';
 import { parseUpdate, type AgentConfig } from './config';
 import * as driver from './driver';
+import * as earnings from './earnings';
 import * as identity from './identity';
 import * as inference from './inference';
 import * as negotiate from './negotiate';
@@ -405,6 +406,19 @@ export function ledger(player: Player) {
      */
     houseRemainingMills: budget.houseRemainingToday(agent.id),
     houseDailyMills: env.AGENT_HOUSE_DAILY_MILLS,
+    /**
+     * What it won, and whether it was worth running.
+     *
+     * The question an owner actually has, and one this endpoint could not answer
+     * at all: it counted four kinds of cost and no income. `netMills` is
+     * routinely negative — an agent that loses more races than it wins is the
+     * normal case, not a bug — and showing that honestly is the point.
+     *
+     * Awarded, never collected: the server pays nobody, so a win here is a prize
+     * the owner may now claim from escrow rather than money in hand.
+     */
+    position: earnings.positionOf(agent.id),
+    wins: agentRepo.recentEarnings(agent.id, 25),
     entries: agentRepo.recentSpend(agent.id, 50),
   };
 }

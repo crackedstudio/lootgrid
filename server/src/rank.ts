@@ -140,3 +140,95 @@ function shortfallTo(
 /** Whether this player may enter a cash hunt on rank grounds. */
 export const canEnterCash = (playerId: string, now = Date.now()): boolean =>
   ordinalOf(rankOf(playerId, now).tier) >= ordinalOf(RANK.minTierForCash);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// XP standing — a different measurement, deliberately kept apart
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What XP is, now that it is written down.
+ *
+ * ─────────────────────────── it has no sink, on purpose ─────────────────────
+ *
+ * `players.addXp` is the only statement that touches the column and nothing
+ * anywhere decrements it. That reads as an unfinished currency — 23 of every 24
+ * treasures pay XP, and a currency that buys nothing is a reward in name only —
+ * so it is worth being explicit that this is a decision rather than a gap.
+ *
+ * XP is a **record of what you have done**. It only goes up because that is what
+ * a record does. Making it spendable was considered and rejected: the two
+ * obvious sinks both damage something that currently works.
+ *
+ *   * **Buying shop goods with XP** puts a second currency beside cents on items
+ *     that exist to be bought with money, and the moment XP buys a hint it is
+ *     buying a shot at a prize — which is the line `seats.ts` and AGENT_TIER.md
+ *     spend so much care not to cross.
+ *   * **Buying energy with XP** weakens the main sybil brake. Energy is slow on
+ *     purpose; a second faucet into it is a second thing an attacker farms.
+ *
+ * So XP stays a score, and this is its ladder.
+ *
+ * ─────────────────────────── NOT the same as rank ───────────────────────────
+ *
+ * Everything above in this file is **Prospector rank**, which gates cash hunts
+ * and is computed from resolved hints, distinct active days and accuracy. It is
+ * an anti-sybil measurement with money behind it.
+ *
+ * This is standing, and it gates **nothing**. It is the number on a profile.
+ * The two must not be merged and neither may be derived from the other: rank is
+ * deliberately not earned by winning — "status earned by being a good prospector
+ * rather than by having won money" — and folding XP into it would make time
+ * spent playing into permission to play for cash, which is the exact door the
+ * gate exists to hold shut.
+ *
+ * If a leaderboard is ever built, this is what it should sort on, and it should
+ * say plainly that it ranks activity rather than skill.
+ */
+export const XP_STANDING = [
+  { at: 0, title: 'DRIFTER' },
+  { at: 100, title: 'DIGGER' },
+  { at: 500, title: 'DELVER' },
+  { at: 1_500, title: 'TUNNELLER' },
+  { at: 4_000, title: 'DEEPHAND' },
+  { at: 10_000, title: 'LODEMASTER' },
+] as const;
+
+export type XpTitle = (typeof XP_STANDING)[number]['title'];
+
+export interface Standing {
+  xp: number;
+  title: XpTitle;
+  /** XP at which the next title arrives, or null at the top of the ladder. */
+  nextAt: number | null;
+  /** How much further. Zero at the top — never null, so the UI can always add. */
+  toNext: number;
+}
+
+/**
+ * A player's standing from their XP alone.
+ *
+ * Pure, so it can be computed anywhere the number is already in hand — there is
+ * no reason to reach for the database to render a title next to a figure that
+ * was just fetched.
+ *
+ * The thresholds are shaped against what XP actually pays: 10 for a puzzle tile,
+ * 50 for a puzzle treasure, 100 for the walkthrough. So DIGGER lands on the
+ * walkthrough alone, DELVER is roughly ten treasures, and LODEMASTER is two
+ * hundred — far enough out to still mean something a year in.
+ */
+export function standingOf(xp: number): Standing {
+  const safe = Math.max(0, Math.floor(xp));
+
+  let index = 0;
+  for (let i = 0; i < XP_STANDING.length; i++) {
+    if (safe >= XP_STANDING[i]!.at) index = i;
+  }
+
+  const next = XP_STANDING[index + 1] ?? null;
+  return {
+    xp: safe,
+    title: XP_STANDING[index]!.title,
+    nextAt: next?.at ?? null,
+    toNext: next ? next.at - safe : 0,
+  };
+}

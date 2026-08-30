@@ -139,6 +139,21 @@ function build() {
       VALUES (@agentId, @kind, @amountMills, @huntId, @tradeRef, @spentAt)
     `),
     // The two questions the ledger exists to answer.
+    recordEarning: db.prepare(
+      `INSERT OR IGNORE INTO agent_earnings
+         (agent_id, hunt_id, amount_mills, difficulty, racers, earned_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ),
+    earnedSince: db.prepare(
+      'SELECT COALESCE(SUM(amount_mills), 0) AS total FROM agent_earnings WHERE agent_id = ? AND earned_at >= ?',
+    ),
+    earningsCount: db.prepare(
+      'SELECT COUNT(*) AS n FROM agent_earnings WHERE agent_id = ? AND earned_at >= ?',
+    ),
+    recentEarnings: db.prepare(
+      `SELECT id, agent_id, hunt_id, amount_mills, difficulty, racers, earned_at, claimed_at
+         FROM agent_earnings WHERE agent_id = ? ORDER BY earned_at DESC LIMIT ?`,
+    ),
     spentSinceByKind: db.prepare(
       'SELECT COALESCE(SUM(amount_mills), 0) AS total FROM agent_spend WHERE agent_id = ? AND spent_at >= ? AND kind = ?',
     ),
@@ -245,6 +260,74 @@ export function spentSince(agentId: string, since: number, kind?: SpendKind): nu
     ? s().spentSinceByKind.get(agentId, since, kind)
     : s().spentSince.get(agentId, since);
   return (row as { total: number }).total;
+}
+
+export interface EarningRow {
+  id: number;
+  agentId: string;
+  huntId: string;
+  amountMills: number;
+  difficulty: string;
+  /** Racers in that hunt — what `viableFor` divided the prize by. */
+  racers: number;
+  earnedAt: number;
+  /** Null until a claim is reconciled. Nothing sets it yet; see migration 022. */
+  claimedAt: number | null;
+}
+
+/**
+ * Record a prize an agent won.
+ *
+ * Idempotent on (agent, hunt): `INSERT OR IGNORE` rather than a check-then-write,
+ * because a hunt resolving twice is the only way a second row could appear and
+ * the database is a better place to refuse that than a race in application code.
+ *
+ * Deliberately NOT part of `addSpend`. See migration 022 — a credit inside the
+ * table that `budget.ts` SUMs to enforce ceilings would let a winning agent
+ * spend more, which is a spending exploit wearing an accounting nicety.
+ */
+export function recordEarning(
+  agentId: string,
+  huntId: string,
+  amountMills: number,
+  difficulty: string,
+  racers: number,
+  now = Date.now(),
+): void {
+  s().recordEarning.run(agentId, huntId, amountMills, difficulty, racers, now);
+}
+
+/** Prize mills won since a timestamp. Never mixed into a spending total. */
+export function earnedSince(agentId: string, since: number): number {
+  return (s().earnedSince.get(agentId, since) as { total: number }).total;
+}
+
+/** How many prizes were won in the window. The divisor for a per-win average. */
+export function winsSince(agentId: string, since: number): number {
+  return (s().earningsCount.get(agentId, since) as { n: number }).n;
+}
+
+export function recentEarnings(agentId: string, limit = 50): EarningRow[] {
+  const rows = s().recentEarnings.all(agentId, limit) as Array<{
+    id: number;
+    agent_id: string;
+    hunt_id: string;
+    amount_mills: number;
+    difficulty: string;
+    racers: number;
+    earned_at: number;
+    claimed_at: number | null;
+  }>;
+  return rows.map(r => ({
+    id: r.id,
+    agentId: r.agent_id,
+    huntId: r.hunt_id,
+    amountMills: r.amount_mills,
+    difficulty: r.difficulty,
+    racers: r.racers,
+    earnedAt: r.earned_at,
+    claimedAt: r.claimed_at,
+  }));
 }
 
 export function spentOnHunt(agentId: string, huntId: string, kind: SpendKind): number {

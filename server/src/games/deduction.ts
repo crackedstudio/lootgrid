@@ -2,6 +2,7 @@ import { DEDUCTION, GRID, RACE } from '../config';
 import { hashInt } from '../hash';
 import { cellMatches, parsePayload, type HintPayload } from '../hints/types';
 import type { Difficulty } from '../types';
+import type { Directive } from '../director/types';
 import type { GameModule, StepResult } from './types';
 
 /**
@@ -57,6 +58,16 @@ export interface DeductionState {
   used: number;
   answers: Array<{ payload: HintPayload; answer: boolean }>;
   solved: boolean;
+  /**
+   * What the next probe will cost against the budget, set when the previous one
+   * was answered.
+   *
+   * Recorded rather than recomputed, for the reason `math.state.rungs` is: a
+   * probe is charged the price it was QUOTED, not whatever the Director happens
+   * to be saying by the time it arrives. Undefined on states written before the
+   * Director reached this module, which reads as the ordinary cost of one.
+   */
+  nextCost?: number;
 }
 
 export interface DeductionInput {
@@ -83,6 +94,32 @@ export function candidates(
     }
   }
   return out;
+}
+
+/**
+ * What the next probe costs, given the round the Director chose.
+ *
+ * ─────────────────────────── the one safe lever here ───────────────────────
+ *
+ * Deduction is a soundness game: the answers must stay true, or the constraints
+ * a player intersects stop describing the board and `candidates()` — which the
+ * agent fallback reasons with — computes a set the treasure is not in. So the
+ * tempting twists are the forbidden ones. A `fog` that made an answer sometimes
+ * wrong would not make the hunt harder; it would make it unwinnable in a way
+ * nobody could detect from inside.
+ *
+ * Price is the lever that leaves truth alone. Every answer is still exactly as
+ * true as it was; a dear round simply costs two of the budget instead of one,
+ * and the player is told before they spend it.
+ *
+ * The hard floor is one, and the ceiling two: no directive may make a probe
+ * free, and none may price one so high that a budget of twelve ends on a
+ * decision the player never got to make.
+ */
+function costFor(directive: Directive | null): number {
+  if (!directive) return 1;
+  const dear = directive.difficulty >= 4 || directive.roundType === 'sprint';
+  return dear ? 2 : 1;
 }
 
 export const deductionModule: GameModule<
@@ -116,10 +153,22 @@ export const deductionModule: GameModule<
   },
 
   init() {
-    return { used: 0, answers: [], solved: false };
+    return { used: 0, answers: [], solved: false, nextCost: 1 };
   },
 
-  step({ spec, secret, state, timing }, input): StepResult {
+  /**
+   * The probe index the next answer will serve, or null on the last one.
+   *
+   * Rounds here are probes. A directive is asked for only while there is a probe
+   * left to shape — a directive for a round nobody plays would sit in the
+   * transcript as a decision never taken.
+   */
+  directedRound(state, spec) {
+    const next = state.used + 1;
+    return next < spec.budget ? next : null;
+  },
+
+  step({ spec, secret, state, timing, directive }, input): StepResult {
     if (timing.sinceStart > spec.limitMs + RACE.latencyGraceMs) {
       return { kind: 'reject', reason: 'too_slow', fatal: true };
     }
@@ -134,15 +183,33 @@ export const deductionModule: GameModule<
       if (!payload) return { kind: 'reject', reason: 'bad_probe', fatal: true };
 
       const answer = cellMatches(payload, secret.r, secret.c);
-      state.used += 1;
+      // Charged at the price it was quoted, never at whatever the Director is
+      // saying now — the same rule `math` follows about the rung a question was
+      // served at. A probe already in flight cannot be repriced under it.
+      state.used += state.nextCost ?? 1;
       state.answers.push({ payload, answer });
+
+      // What the NEXT probe will cost, chosen now and published below so it is
+      // never a surprise. A dear round is a real decision — spend two of a
+      // twelve budget on this question, or wait for a cheaper one — and it is
+      // only a decision if the price is known before the probe is sent.
+      const nextCost = costFor(directive);
+      state.nextCost = nextCost;
+
+      const budgetLeft = Math.max(0, spec.budget - state.used);
 
       // The remaining candidate count is deliberately NOT sent back. Intersecting
       // your own constraints is the game; handing over the count would leave
       // only the arithmetic.
       return {
         kind: 'progress',
-        emit: { answer, used: state.used, budgetLeft: spec.budget - state.used },
+        emit: {
+          answer,
+          used: state.used,
+          budgetLeft,
+          // Published, always. The player is told the price before they pay it.
+          nextCost,
+        },
       };
     }
 

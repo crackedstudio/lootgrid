@@ -988,7 +988,47 @@ export function useGameState() {
     [set],
   );
 
-  const doShare = useCallback(() => set({ shared: true }), [set]);
+  /**
+   * Share the win.
+   *
+   * Was `set({ shared: true })` — the button turned green and nothing left the
+   * device. Three things matter in the real version:
+   *
+   *   * **Cancelling is not sharing.** `navigator.share` rejects with
+   *     `AbortError` when the sheet is dismissed, and treating that as success
+   *     is how the old no-op felt convincing enough to survive. The flag is set
+   *     only on a resolved share or a confirmed clipboard write.
+   *   * **The share sheet is the point on mobile.** MiniPay is a webview over
+   *     HTTPS, so the Web Share API is available and is what a player expects;
+   *     the clipboard is the fallback, not the plan.
+   *   * **No link to a hunt that is over.** The block is resolved by the time
+   *     this renders, so the text carries the result rather than an invitation
+   *     to a race nobody can still enter.
+   */
+  const doShare = useCallback(async () => {
+    const w = stateRef.current.winData;
+    if (!w) return;
+
+    const seconds = (w.elapsedMs / 1000).toFixed(2);
+    const beaten = w.beat > 0 ? ` — beat ${w.beat} ${w.beat === 1 ? 'hunter' : 'hunters'}` : '';
+    const text = `Cracked ${w.prize || 'a block'} on LOOTGRID in ${seconds}s${beaten}.`;
+
+    try {
+      if (navigator.share) {
+        await navigator.share({ text });
+        set({ shared: true });
+        return;
+      }
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        set({ shared: true });
+      }
+      // Neither available: leave the button alone rather than claiming a share
+      // that never happened.
+    } catch {
+      // Dismissed, denied, or unavailable. All three mean not shared.
+    }
+  }, [set]);
 
   return {
     state,
