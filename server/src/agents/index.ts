@@ -51,9 +51,29 @@ export interface AgentView {
   remainingMills: number;
   /** Whether the pool can actually think right now. */
   inferenceLive: boolean;
+  /**
+   * What the FACTORY says, when the chain could be reached.
+   *
+   * Distinct from `vault` above, which is the one the server has recorded and
+   * will let an agent spend from. They come apart in two ways that both matter
+   * to whoever is looking at the screen: a vault the server lost track of (a
+   * reset database, or an `attachVault` that timed out against a lagging node
+   * seconds after creation), and a vault the player revoked on chain, which is
+   * real and holds their money but names no spender this server can use.
+   *
+   * Either way the factory will refuse to make a second one, so the UI needs to
+   * know a vault exists even when it cannot be spent from — otherwise it offers
+   * "create" to somebody whose only possible outcome is a reverted transaction
+   * they paid gas for.
+   */
+  vaultOnChain: { address: string; spendable: boolean } | null;
 }
 
-function view(agentId: string, playerId: string): AgentView {
+function view(
+  agentId: string,
+  playerId: string,
+  onChain: { address: string; spendable: boolean } | null = null,
+): AgentView {
   const agent = agentRepo.get(agentId)!;
   const config = agentRepo.getConfig(agentId);
   return {
@@ -64,7 +84,57 @@ function view(agentId: string, playerId: string): AgentView {
     config,
     remainingMills: budget.remainingToday(agentId, config),
     inferenceLive: inference.enabled(),
+    // A recorded vault is by definition on chain and spendable; saying so keeps
+    // callers from having to check two fields to answer one question.
+    vaultOnChain: onChain ?? (agent.vault ? { address: agent.vault, spendable: true } : null),
   };
+}
+
+/**
+ * The vault this player already has, if the chain will tell us.
+ *
+ * Three outcomes, and collapsing any two of them is a bug: a vault, no vault,
+ * or no answer. `AgentVaultFactory.create` reverts `VaultExists()` on a second
+ * call, so only a confident "no vault" makes it safe to offer — and treating
+ * "the RPC did not respond" as "no vault" is exactly how a player ends up
+ * signing a transaction whose single possible outcome is a revert.
+ *
+ * `undefined` is therefore not the same as `null`. Unknown means we keep the
+ * current behaviour and let the chain be the one to refuse; null means we know.
+ */
+async function vaultOnChain(player: Player): Promise<vaultChain.VaultState | null | undefined> {
+  if (!vaultChain.enabled()) return undefined;
+  try {
+    return await vaultChain.readVault(player.id as Address);
+  } catch {
+    // readVault already logged it. A read failure must not stop a player
+    // reaching their own agent screen.
+    return undefined;
+  }
+}
+
+/**
+ * Write a vault the chain told us about into the server's record.
+ *
+ * Returns null rather than throwing when the vault names a different spender:
+ * whether that is an error depends entirely on who asked. A player opening the
+ * screen should see the truth and no exception; a player explicitly attaching
+ * should be told it failed.
+ */
+function recordVault(
+  agentId: string,
+  playerId: string,
+  vault: vaultChain.VaultState,
+): AgentView | null {
+  const expected = identity.addressFor(playerId);
+  if (vault.spender.toLowerCase() !== expected.toLowerCase()) {
+    // Either revoked, or pointed at a different agent entirely. Both mean the
+    // server must not treat this vault as spendable.
+    agentRepo.setStatus(agentId, 'killed');
+    return null;
+  }
+  agentRepo.setVault(agentId, vault.address);
+  return view(agentId, playerId);
 }
 
 /**
@@ -99,6 +169,34 @@ export function forPlayer(player: Player): AgentView {
 }
 
 /**
+ * The player's agent, reconciled against the chain.
+ *
+ * The row and the factory can disagree, and when they do the factory is right —
+ * it is the only thing that can create a vault and it cannot forget one. The
+ * server can: a restored backup, or the `attachVault` retry loop giving up
+ * against a load-balanced node that had not yet seen the creation block.
+ *
+ * The cost of not doing this is not cosmetic. A screen driven by a row that
+ * says "no vault" shows a create button, and pressing it sends a transaction
+ * the factory reverts `VaultExists()` — the player pays gas to be told they
+ * already have the thing they were asking for, and the button is still there
+ * afterwards. So the read happens here, once, and only when the row has no
+ * vault to begin with.
+ */
+export async function ensureReconciled(player: Player): Promise<AgentView> {
+  const agent = ensure(player);
+  if (agent.vault) return agent;
+
+  const existing = await vaultOnChain(player);
+  if (!existing) return agent;
+
+  const attached = recordVault(agent.id, player.id, existing);
+  // Not spendable — revoked, or naming another agent. Still worth reporting:
+  // it exists, it may hold money, and it blocks creating another one.
+  return attached ?? view(agent.id, player.id, { address: existing.address, spendable: false });
+}
+
+/**
  * Everything the player must sign to bring an agent to life.
  *
  * Two transactions, in order, and both theirs: bind the agent as a session key,
@@ -113,12 +211,25 @@ export async function setupOffer(player: Player) {
   const perTx = toTokenUnits(config.maxHintPriceCents, env.ESCROW_TOKEN_DECIMALS);
   const perDay = toTokenUnits(config.dailyBudgetCents, env.ESCROW_TOKEN_DECIMALS);
 
+  // Ask the chain before offering to deploy. `create` reverts `VaultExists()`
+  // for anybody who already has one, so an unconditional offer is an offer of a
+  // transaction that can only fail — and the player pays for the attempt.
+  const existing = await vaultOnChain(player);
+  const attached = existing ? recordVault(agent.id, player.id, existing) : null;
+
   return {
     agent: agent.id,
     /** Proves the agent key agreed to this binding. The player still has to want it. */
     bind: await identity.bindOffer(player.id),
-    /** Creates the vault. `msg.sender` is the owner, so it can only be theirs. */
-    createVault: identity.createVaultCall(player.id, perTx, perDay),
+    /**
+     * Creates the vault. `msg.sender` is the owner, so it can only be theirs.
+     *
+     * Null when the chain says they already have one: there is nothing left to
+     * sign, and the client should attach rather than deploy.
+     */
+    createVault: existing ? null : identity.createVaultCall(player.id, perTx, perDay),
+    /** What the factory says, so the client never has to guess. */
+    vault: existing ? { address: existing.address, spendable: Boolean(attached) } : null,
     caps: { perTxCents: config.maxHintPriceCents, perDayCents: config.dailyBudgetCents },
   };
 }
@@ -144,16 +255,11 @@ export async function attachVault(player: Player): Promise<AgentView> {
   const vault = await vaultChain.readVault(player.id as Address);
   if (!vault) throw conflict('no_vault_on_chain');
 
-  const expected = identity.addressFor(player.id);
-  if (vault.spender.toLowerCase() !== expected.toLowerCase()) {
-    // Either revoked, or pointed at a different agent entirely. Both mean the
-    // server must not treat this vault as spendable.
-    agentRepo.setStatus(agent.id, 'killed');
-    throw conflict('vault_spender_mismatch');
-  }
-
-  agentRepo.setVault(agent.id, vault.address);
-  return view(agent.id, player.id);
+  const attached = recordVault(agent.id, player.id, vault);
+  // Asked for explicitly, so a mismatch is a failure the caller must hear about
+  // rather than a state to render.
+  if (!attached) throw conflict('vault_spender_mismatch');
+  return attached;
 }
 
 export function configure(player: Player, patch: unknown): AgentView {

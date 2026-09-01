@@ -16,8 +16,11 @@ import {
   fundVault,
   formatToken,
   toRaw,
+  attachVault,
+  centsToRaw,
   fetchAgent,
   fetchLedger,
+  fetchVaultCaps,
   millsToUsd,
   resumeAgent,
   sendPrepared,
@@ -119,6 +122,8 @@ export default function AgentScreen() {
   const [zones, setZones] = useState([]);
   /** The vault's on-chain balance — what the agent can actually spend. */
   const [vaultBalance, setVaultBalance] = useState(0n);
+  /** The caps the vault enforces, which are not always the ones in the config. */
+  const [vaultCaps, setVaultCaps] = useState(null);
   /** The funded seat: inference credit, entirely separate from the vault. */
   const [seat, setSeat] = useState(null);
   /** What it has actually been playing. Polled — an agent moves without asking. */
@@ -164,14 +169,25 @@ export default function AgentScreen() {
 
   // Re-read after every action: funding, withdrawing and the agent's own trades
   // all move it, and a stale balance is how a player funds a vault twice.
+  // Follows the vault the CHAIN knows about, which is not always the one the
+  // server has recorded. A vault the player revoked, or one the server lost
+  // track of, still holds their money — showing nothing there reads as "you
+  // have no vault" to the one player who most needs to know they do.
+  const vaultAddress = agent?.vault ?? agent?.vaultOnChain?.address ?? null;
   useEffect(() => {
     let alive = true;
-    if (!agent?.vault) return undefined;
-    fetchVaultBalance(agent.vault)
+    if (!vaultAddress) return undefined;
+    fetchVaultBalance(vaultAddress)
       .then(b => alive && setVaultBalance(b))
       .catch(() => {});
+    // Same read, same reason: the caps that bind live in the contract, and a
+    // screen showing the config's caps as though they bind is showing a number
+    // the chain has never agreed to.
+    fetchVaultCaps(vaultAddress)
+      .then(c => alive && setVaultCaps(c))
+      .catch(() => {});
     return () => { alive = false; };
-  }, [agent?.vault, note]);
+  }, [vaultAddress, note]);
 
   const load = useCallback(
     () => Promise.all([fetchAgent(), fetchLedger().catch(() => null)]),
@@ -233,7 +249,27 @@ export default function AgentScreen() {
   // than jitter.
   const heartbeatFresh = tickAgo !== null && tickAgo < 20;
   const funded = Boolean(agent.vault);
+  // What the factory says. `create` reverts `VaultExists()` for anybody who has
+  // one, so this — not `funded` — is what decides whether creating is offered.
+  const chainVault = agent.vaultOnChain;
+  /** A vault that exists on chain but that this server cannot spend from. */
+  const orphanVault = !funded && chainVault ? chainVault : null;
   const dirty = draft && JSON.stringify(draft) !== JSON.stringify(agent.config);
+
+  /**
+   * Where the saved config and the vault disagree.
+   *
+   * Compared in RAW token units, using the same conversion the server encodes
+   * `setCaps` with. Comparing in cents would need a division that truncates
+   * whenever a cap was set outside this app, and a drift warning that cannot be
+   * cleared is worse than none.
+   *
+   * `null` while the caps have not been read — unknown is not agreement.
+   */
+  const capsDrift = vaultCaps && (
+    vaultCaps.perTx !== centsToRaw(agent.config.maxHintPriceCents)
+    || vaultCaps.perDay !== centsToRaw(agent.config.dailyBudgetCents)
+  );
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--surface)', overflow: 'hidden' }}>
@@ -367,20 +403,54 @@ export default function AgentScreen() {
             {funded && (
               <Button
                 color="#29E6E6"
-                disabled={busy}
+                // Pushes the SAVED config, never the draft. Sending unsaved
+                // edits on chain would just move the disagreement to the other
+                // side — the vault ahead of the config instead of behind it —
+                // and cost a transaction to do it. Save first, then push.
+                disabled={busy || dirty || capsDrift === false}
                 onClick={() => run(
                   () => vaultAction('setCaps', {
-                    perTxCents: draft.maxHintPriceCents,
-                    perDayCents: draft.dailyBudgetCents,
+                    perTxCents: agent.config.maxHintPriceCents,
+                    perDayCents: agent.config.dailyBudgetCents,
                   }),
                   'Caps updated on chain.',
                 )}
               >PUSH CAPS ON CHAIN</Button>
             )}
           </div>
-          <div style={{ fontFamily: MONO, fontSize: 11, color: '#0C0C10', opacity: .5, marginTop: 8, lineHeight: 1.5 }}>
-            Saving here stops bad trades early. The caps that actually bind live
-            in your vault — push them to change what it can spend.
+
+          {/*
+            What the contract enforces, in the contract's own numbers.
+
+            The driver already checks a trade against these before sending, so
+            drift never costs gas — it costs trades. The agent silently skips
+            anything above the vault's cap (`vault_cap` in the refusal metric)
+            and says nothing, so until this was shown the only symptom of a
+            config the vault never agreed to was an agent that did less than it
+            was told to, for no visible reason.
+          */}
+          {funded && vaultCaps && (
+            <div style={{
+              marginTop: 10, paddingTop: 10,
+              borderTop: '2px solid rgba(12,12,16,.15)',
+            }}>
+              <Label dark>{capsDrift ? 'ON CHAIN — DOES NOT MATCH' : 'ON CHAIN'}</Label>
+              <div style={{ fontFamily: MONO, fontSize: 11, color: '#0C0C10', marginTop: 4, lineHeight: 1.6 }}>
+                {formatToken(vaultCaps.perTx)} PER TRADE · {formatToken(vaultCaps.perDay)} PER DAY
+              </div>
+            </div>
+          )}
+
+          <div style={{
+            fontFamily: MONO, fontSize: 11, marginTop: 8, lineHeight: 1.5,
+            color: capsDrift ? '#B23A00' : '#0C0C10',
+            opacity: capsDrift ? 1 : .5,
+          }}>
+            {capsDrift
+              ? dirty
+                ? 'Your vault enforces the caps above, not the ones set here. Save your limits, then push them on chain to make the two agree.'
+                : 'Your vault enforces the caps above, not the ones set here. Until you push them, your agent silently skips any trade over the vault\u2019s cap \u2014 no error, no transaction, just an agent doing less than you told it to.'
+              : 'Saving here stops bad trades early. The caps that actually bind live in your vault \u2014 push them to change what it can spend.'}
           </div>
         </div>
 
@@ -604,7 +674,14 @@ export default function AgentScreen() {
             LEFT OF {centsToUsd(agent.config.dailyBudgetCents)} — HINTS AND THINKING TOGETHER
           </div>
 
-          {!funded && (
+          {/*
+            Offered only when the chain agrees there is no vault. The factory
+            allows exactly one per player and reverts `VaultExists()` on a
+            second call, so showing this to somebody who already has one is
+            showing them a button whose only outcome is a reverted transaction
+            they paid gas for.
+          */}
+          {!funded && !orphanVault && (
             <div style={{ marginTop: 12 }}>
               <Button
                 disabled={busy}
@@ -619,6 +696,39 @@ export default function AgentScreen() {
                 spends from it within its caps and can never withdraw from it.
                 Costs about 0.35 CELO — it deploys a contract.
               </div>
+            </div>
+          )}
+
+          {/*
+            You already have one. Two ways to get here, and the money is safe in
+            both: the server lost track of a vault that exists, or you revoked
+            the agent's rights on chain and the vault now names no spender.
+            Either way it holds a real balance and a second one cannot be made,
+            so the balance is shown and the create button is not.
+          */}
+          {orphanVault && (
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: '2px solid rgba(12,12,16,.15)' }}>
+              <Label dark>VAULT — ALREADY CREATED</Label>
+              <div style={{ fontFamily: BLACK, fontSize: 22, color: '#0C0C10', marginTop: 4 }}>
+                {formatToken(vaultBalance)}
+              </div>
+              <div style={{ fontFamily: MONO, fontSize: 10, color: '#0C0C10', opacity: .5, wordBreak: 'break-all' }}>
+                {orphanVault.address}
+              </div>
+              <div style={{ fontFamily: MONO, fontSize: 11, color: '#0C0C10', opacity: .5, marginTop: 8, lineHeight: 1.5 }}>
+                {orphanVault.spendable
+                  ? 'This vault is yours and holds the balance above. It just is not connected here yet — reconnect it and your agent can spend again. Nothing to sign.'
+                  : 'This vault is yours and holds the balance above, but it names no spender this server can use — which is what pressing stop on chain does. WITHDRAW ALL still works from your wallet, and it is yours alone.'}
+              </div>
+              {orphanVault.spendable && (
+                <div style={{ marginTop: 10 }}>
+                  <Button
+                    disabled={busy}
+                    wide
+                    onClick={() => run(() => attachVault(), 'Vault reconnected.')}
+                  >RECONNECT IT</Button>
+                </div>
+              )}
             </div>
           )}
 

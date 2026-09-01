@@ -1054,7 +1054,10 @@ export function registerRoutes(app: App): void {
 
   app.get('/agent', async req => {
     const player = await requirePlayer(req);
-    return { agent: agents.ensure(player) };
+    // Reconciled, not just read: when the row has no vault the factory is asked
+    // whether one exists anyway. A screen that trusts a stale row offers to
+    // create a vault the factory will refuse, and the player pays the gas.
+    return { agent: await agents.ensureReconciled(player) };
   });
 
   /**

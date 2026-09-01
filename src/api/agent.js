@@ -11,6 +11,11 @@ const ERC20 = parseAbi([
   'function balanceOf(address owner) view returns (uint256)',
 ]);
 
+const VAULT_READ = parseAbi([
+  'function perTxCap() view returns (uint256)',
+  'function perDayCap() view returns (uint256)',
+]);
+
 /**
  * The player's agent.
  *
@@ -125,9 +130,20 @@ export const configureAgent = patch => put('/agent/config', patch).then(r => r.a
  * gain nothing is not a trade worth making.
  */
 export async function setupAgent() {
+  const offer = await post('/agent/setup');
+
+  // The chain says there is already a vault, so there is nothing to deploy.
+  // `AgentVaultFactory.create` reverts `VaultExists()` on a second call — it
+  // refuses to overwrite, because a second vault would strand the balance in
+  // the first while every index off chain pointed at the new one. Sending it
+  // anyway costs real gas to be told no. Reconnect instead.
+  if (!offer.createVault) {
+    const agent = await attachVault();
+    return { agent, hash: null, caps: offer.caps, existed: true };
+  }
+
   if (!walletAvailable()) throw new Error('no_wallet');
 
-  const offer = await post('/agent/setup');
   // `prompt` because a human just pressed a button: MetaMask answers
   // `eth_accounts` with [] until it has granted this page an account, and a
   // silent send would return null having done nothing at all.
@@ -280,8 +296,40 @@ export async function fundVault(vault, amount) {
   }, { prompt: true });
 }
 
+/**
+ * The caps the vault ACTUALLY enforces.
+ *
+ * Read from the vault rather than the server, for the same reason the balance
+ * is: the server stores the caps the player asked for, and the contract stores
+ * the ones that bind. Those are set at creation and change only when somebody
+ * sends `setCaps`, so editing the config here moves one and not the other.
+ *
+ * The drift is not cosmetic, and it is quiet. The driver compares every trade
+ * against these two values before it sends anything (`agents/driver.ts`), so a
+ * config raised above the vault does not produce a failed transaction — it
+ * produces an agent that skips trades the player believes it can afford and
+ * reports nothing. Showing the numbers the contract holds is the only way that
+ * is visible before the player goes looking for a bug that is not there.
+ */
+export async function fetchVaultCaps(vault) {
+  if (!vault) return null;
+  const contract = { address: vault, abi: VAULT_READ };
+  const [perTx, perDay] = await Promise.all([
+    publicClient().readContract({ ...contract, functionName: 'perTxCap' }),
+    publicClient().readContract({ ...contract, functionName: 'perDayCap' }),
+  ]);
+  return { perTx, perDay };
+}
+
 /** Human amount → raw units. Uses the configured decimals, never a hardcoded 18. */
 export const toRaw = human => BigInt(Math.round(human * 10 ** TOKEN_DECIMALS));
+
+/**
+ * Cents → raw units. MUST match the server's `toTokenUnits`, which is what
+ * encodes `setCaps` — comparing a cap computed one way against one computed
+ * the other is how you get a drift warning that never clears.
+ */
+export const centsToRaw = cents => BigInt(cents) * 10n ** BigInt(TOKEN_DECIMALS - 2);
 
 export const formatToken = raw =>
   `${(Number(raw) / 10 ** TOKEN_DECIMALS).toFixed(2)} ${TOKEN_SYMBOL}`;
