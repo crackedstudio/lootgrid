@@ -1,4 +1,4 @@
-import type { BlockGame, Difficulty, GameType, Hunt, HuntKind } from '../../types';
+import type { BlockGame, Difficulty, GameType, Hunt, HuntKind, ZoneKind } from '../../types';
 import { getDb } from '../index';
 
 interface Row {
@@ -23,6 +23,8 @@ interface Row {
   expires_at: number | null;
   created_at: number;
   resolved_at: number | null;
+  recipe: string | null;
+  recipe_author: string | null;
 }
 
 function toDomain(r: Row): Hunt {
@@ -50,10 +52,23 @@ function toDomain(r: Row): Hunt {
     status: r.status as Hunt['status'],
     winnerId: r.winner_id,
     game,
+    // Parsed permissively: a recipe is validated against the module's schema at
+    // the moment it is used, not here. A row that will not parse must not stop
+    // the hunt loading — it falls back to the salt like an absent one does.
+    recipe: r.recipe ? safeJson(r.recipe) : null,
+    recipeAuthor: (r.recipe_author as Hunt['recipeAuthor']) ?? null,
     publicAt: r.public_at,
     expiresAt: r.expires_at,
     createdAt: r.created_at,
   };
+}
+
+function safeJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }
 
 let cache: ReturnType<typeof build> | null = null;
@@ -139,6 +154,47 @@ function build() {
     saveGame: db.prepare(`
       UPDATE hunts SET game_type = ?, game_spec = ?, game_secret = ?, game_limit_ms = ?
       WHERE id = ?
+    `),
+    /**
+     * Write a recipe, but only onto a hunt that has neither one nor a generated
+     * game yet.
+     *
+     * Both halves of that predicate are load-bearing. Overwriting a recipe
+     * would change the puzzle under whoever is already reasoning about it, and
+     * `game_type IS NULL` is what proves nobody has been served the block yet —
+     * `blockGame` persists the game the first time anyone opens an attempt, so
+     * a row with a game is a row whose puzzle is already public.
+     */
+    saveRecipe: db.prepare(
+      'UPDATE hunts SET recipe = ?, recipe_author = ? WHERE id = ? AND recipe IS NULL AND game_type IS NULL',
+    ),
+    /**
+     * Who authored the puzzles, counted by game and by author.
+     *
+     * Across every epoch on purpose. The question this answers is "has the
+     * model been writing puzzles, or silently falling back since inference
+     * broke?", and scoping it to the live epoch would answer that only for the
+     * last few hours.
+     */
+    recipeAuthorship: db.prepare(`
+      SELECT game_type AS game, recipe_author AS author, COUNT(*) AS n
+      FROM hunts
+      WHERE recipe_author IS NOT NULL
+      GROUP BY game_type, recipe_author
+    `),
+    /**
+     * Live hunts still waiting for an author, oldest first.
+     *
+     * Joins the zone for its kind, which the caller needs in order to work out
+     * which module the block will draw — and joining here is what keeps the
+     * author out of `store`, whose own imports would otherwise close a cycle
+     * back through the game registry.
+     */
+    listUnauthored: db.prepare(`
+      SELECT h.*, z.kind AS zone_kind FROM hunts h
+      JOIN zones z ON z.id = h.zone_id
+      WHERE h.recipe IS NULL AND h.game_type IS NULL AND h.status = 'live'
+      ORDER BY h.created_at ASC LIMIT ?
     `),
     setStatus: db.prepare(
       'UPDATE hunts SET status = ?, winner_id = ?, resolved_at = ? WHERE id = ?',
@@ -238,6 +294,39 @@ export function insert(h: Hunt): void {
     expiresAt: h.expiresAt,
     createdAt: h.createdAt,
   });
+}
+
+/**
+ * Record who chose this block's puzzle, and what they chose.
+ *
+ * Returns whether the write landed. It does not when the hunt already has a
+ * recipe or has already been played — both are ordinary races rather than
+ * errors, because authoring runs in the background and a player can always get
+ * there first.
+ */
+export function saveRecipe(huntId: string, recipe: unknown, author: 'model' | 'salt'): boolean {
+  const res = s().saveRecipe.run(JSON.stringify(recipe), author, huntId);
+  return res.changes > 0;
+}
+
+export interface AuthorshipRow {
+  /** Null until the block has been played — the game is drawn lazily. */
+  game: GameType | null;
+  author: 'model' | 'salt';
+  n: number;
+}
+
+/** How many blocks each author has written, per game. */
+export function recipeAuthorship(): AuthorshipRow[] {
+  return s().recipeAuthorship.all() as AuthorshipRow[];
+}
+
+/** Live hunts nobody has authored a recipe for and nobody has played yet. */
+export function listUnauthored(limit: number): Array<{ hunt: Hunt; zoneKind: ZoneKind }> {
+  return (s().listUnauthored.all(limit) as Array<Row & { zone_kind: string }>).map(r => ({
+    hunt: toDomain(r),
+    zoneKind: r.zone_kind as ZoneKind,
+  }));
 }
 
 /** The block's game is generated once and then immutable — regenerating it mid-race

@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { NEGOTIATION, RACE } from '../config';
 import { hashInt } from '../hash';
 import type { Difficulty } from '../types';
@@ -111,20 +112,101 @@ export function potAfter(round: number, decayBps: number): number {
 }
 
 /**
- * Concession per refusal.
- *
- * Faster than the pot decays, or waiting could never pay and the only rational
- * line would be to close in round 0 regardless of the ask.
- */
-const CONCEDE_BPS = 1_200;
-
-/**
  * Latest round a block may open at.
  *
  * Capped because an `opensAt` further out implies an opening ask above the
  * whole pot, which is not a negotiation, it is a wall.
  */
 const MAX_OPENS_AT = 4;
+
+/**
+ * How fast a block's counterparty softens.
+ *
+ * ─────────────────────────── the variable that never varied ─────────────────
+ *
+ * `concedeBps` is the one thing about a negotiation the player cannot see. It
+ * is in `secret` for exactly that reason — "that they soften is knowable, how
+ * fast is the game" — and it was the constant 1,200 on every block ever
+ * generated. An agent that measured it once knew it forever, on every hunt, in
+ * every zone, and the only genuinely hidden number in the module was a lookup.
+ *
+ * Every rate here still clears {@link NEGOTIATION.decayBps}, which is the
+ * property the original constant was chosen for: concede slower than the pot
+ * shrinks and waiting could never pay, so the only rational line would be to
+ * close in round 0 regardless of the ask.
+ */
+export const CONCEDE_RATES = [1_000, 1_200, 1_400, 1_600, 1_800] as const;
+
+/**
+ * The block a recipe describes: how fast they soften, and when the window opens.
+ *
+ * `openingAskBps` is deliberately NOT here. It is solved from these two and the
+ * difficulty's `minKeepBps` so that a deal at exactly the minimum exists at
+ * `opensAt` and not before — that solve is the module's winnability guarantee,
+ * and a recipe that could state the opening ask directly could state one no
+ * deal is reachable behind.
+ */
+export interface NegotiationRecipe {
+  concedeBps: number;
+  opensAt: number;
+}
+
+export const negotiationRecipeSchema = z
+  .object({
+    concedeBps: z.number().int().refine(v => (CONCEDE_RATES as readonly number[]).includes(v)),
+    opensAt: z.number().int().min(0).max(MAX_OPENS_AT),
+  })
+  .strict();
+
+/**
+ * Whether this block can actually be closed.
+ *
+ * The opening ask is solved rather than chosen, so a fast concession from a
+ * late opening implies an ask above the entire pot — which is the "wall" the
+ * `MAX_OPENS_AT` cap already guards against for the old fixed rate, and which
+ * the faster rates can reach from earlier rounds. On `easy` the minimum keep is
+ * 3,000bps, which leaves the most room for the ask to run away.
+ *
+ * Checked rather than assumed because the constraint couples three numbers —
+ * the rate, the round and the difficulty's floor — and no schema can express a
+ * relation between a field and an argument it was never given.
+ */
+export function isFeasible(recipe: NegotiationRecipe, minKeepBps: number, rounds: number): boolean {
+  if (recipe.opensAt >= rounds) return false;
+  const ask =
+    potAfter(recipe.opensAt, NEGOTIATION.decayBps) - minKeepBps + recipe.concedeBps * recipe.opensAt;
+  // Positive, or the counterparty opens by asking for nothing; and at or below
+  // the whole pot, or it opens by asking for more than exists — the "wall" the
+  // `MAX_OPENS_AT` cap already guards against at the old single rate, which the
+  // faster rates can reach from earlier rounds.
+  return ask > 0 && ask <= 10_000;
+}
+
+/**
+ * The block's own counterparty, drawn from its salt.
+ *
+ * The rate is picked first and the opening round is then drawn from the rounds
+ * that rate can actually support, rather than drawn freely and repaired. A draw
+ * that needed repairing would concentrate blocks on whatever `opensAt` the
+ * repair happened to land on, and the space would be narrower than it reads.
+ */
+export function negotiationRecipeFromSalt(
+  salt: string,
+  difficulty: Difficulty,
+): NegotiationRecipe {
+  const rounds = NEGOTIATION.rounds[difficulty] ?? NEGOTIATION.rounds.med;
+  const minKeepBps = NEGOTIATION.minKeepBps[difficulty] ?? NEGOTIATION.minKeepBps.med;
+  const concedeBps = CONCEDE_RATES[hashInt(salt, 'negotiation:concede') % CONCEDE_RATES.length]!;
+
+  const feasible: number[] = [];
+  for (let opensAt = 0; opensAt <= MAX_OPENS_AT; opensAt++) {
+    if (isFeasible({ concedeBps, opensAt }, minKeepBps, rounds)) feasible.push(opensAt);
+  }
+  // Round 0 is feasible for every rate — the ask is then just `pot - minKeep`,
+  // with no concession multiplied into it — so this list is never empty.
+  const opensAt = feasible[hashInt(salt, 'negotiation:opens') % feasible.length]!;
+  return { concedeBps, opensAt };
+}
 
 /**
  * The floor under any concession the Director may impose.
@@ -167,17 +249,31 @@ export const negotiationModule: GameModule<
   type: 'negotiation',
   durable: true,
 
-  generate(seed, difficulty: Difficulty) {
+  recipe: { schema: negotiationRecipeSchema, fromSalt: negotiationRecipeFromSalt },
+
+  generate(seed, difficulty: Difficulty, ctx) {
     const rounds = NEGOTIATION.rounds[difficulty] ?? NEGOTIATION.rounds.med;
     const minKeepBps = NEGOTIATION.minKeepBps[difficulty] ?? NEGOTIATION.minKeepBps.med;
     const insultBps = NEGOTIATION.insultBps[difficulty] ?? NEGOTIATION.insultBps.med;
 
+    // Parsed, then feasibility-checked, then used. A schema can say the rate is
+    // one of five and the round is 0–4; it cannot say that THIS rate at THIS
+    // round against THIS difficulty's floor leaves a deal on the table, because
+    // the difficulty is an argument the schema never sees. An infeasible recipe
+    // falls back rather than being repaired — a repaired one would be an
+    // author's choice silently replaced by a different one.
+    const parsed = negotiationRecipeSchema.safeParse(ctx?.recipe);
+    const recipe =
+      parsed.success && isFeasible(parsed.data, minKeepBps, rounds)
+        ? parsed.data
+        : negotiationRecipeFromSalt(seed, difficulty);
+
     // Solve for winnability rather than hoping for it: pick the round the
     // window opens, then position the opening ask so that a deal at exactly
     // `minKeepBps` is available then, and not before.
-    const opensAt = hashInt(seed, 'negotiation:opens') % Math.min(rounds, MAX_OPENS_AT + 1);
+    const { opensAt, concedeBps } = recipe;
     const openingAskBps =
-      potAfter(opensAt, NEGOTIATION.decayBps) - minKeepBps + CONCEDE_BPS * opensAt;
+      potAfter(opensAt, NEGOTIATION.decayBps) - minKeepBps + concedeBps * opensAt;
 
     return {
       spec: {
@@ -189,7 +285,7 @@ export const negotiationModule: GameModule<
         decayBps: NEGOTIATION.decayBps,
         limitMs: NEGOTIATION.limitMs,
       },
-      secret: { concedeBps: CONCEDE_BPS, opensAt },
+      secret: { concedeBps, opensAt },
       limitMs: NEGOTIATION.limitMs,
     };
   },

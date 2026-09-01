@@ -440,6 +440,12 @@ export function blockGame(hunt: Hunt): BlockGame {
   // every hint noise. Every other module ignores it.
   const { spec, secret, limitMs } = mod.generate(hunt.salt, hunt.difficulty, {
     cell: { r: hunt.r, c: hunt.c },
+    // The block's puzzle recipe, if anybody authored one. Null is the ordinary
+    // case and every module handles it by falling back to the recipe its own
+    // salt implies — deterministic, always legal, always winnable. Generation
+    // must never depend on an author having spoken, because gameplay never
+    // waits for a model. Same rule as the Director's, one layer earlier.
+    recipe: hunt.recipe ?? undefined,
   });
   const game: BlockGame = { type, spec, secret, limitMs };
 
@@ -532,6 +538,10 @@ export function replenish(zoneId: string, now = Date.now()): number {
       status: 'live',
       winnerId: null,
       game: null,
+      // Authored in the background, if at all. Null plays on the salt's own
+      // recipe, which is what every hunt did before authors existed.
+      recipe: null,
+      recipeAuthor: null,
       // Hidden until somebody digs it, and not forever: a treasure nobody finds
       // goes public at a quarter of its life so the zone never carries a funded
       // hunt that cannot be played. See migration 019.

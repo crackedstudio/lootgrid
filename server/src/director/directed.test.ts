@@ -158,8 +158,12 @@ describe('the referee asks the Director for a round', () => {
     const hunt = huntOfType('math');
     const { attempt } = attemptFor(hunt, '0xee');
 
+    // The block's own count, not a hardcoded three: how many questions a math
+    // round asks is a property of the block now, so a fixed loop would answer
+    // three of a five-question hunt and call the shortfall a Director failure.
+    const rounds = (store.blockGame(hunt).spec as MathSpec).count;
     let t = 600;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < rounds; i++) {
       referee.submitInputs(
         attempt.id,
         [{ seq: i + 1, kind: 'answer', t, value: answerFor(hunt, attempt) }] as never,

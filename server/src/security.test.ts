@@ -239,15 +239,34 @@ describe('game secrecy', () => {
     // five times as much to keep back: not just later rounds, but every rung of
     // this one the player was not served. A leaked rung is a leaked answer for
     // whichever round the Director happens to pick next.
-    const sent = JSON.stringify(spec);
-    for (const [round, rungs] of secret.ladder.entries()) {
-      for (const [rung, q] of rungs.entries()) {
-        if (round === 0 && rung === baseRung) continue;
-        if (q.q === spec.question.q) continue; // two rungs can coincide
-        expect(sent, `round ${round} rung ${rung} leaked`).not.toContain(q.q);
+    //
+    // ─────────────────────── structural, not substring ───────────────────────
+    //
+    // This swept `JSON.stringify(spec)` for each unserved question's text and
+    // asserted the payload did not contain it. That is a substring test on
+    // arithmetic, and arithmetic collides: served "17 × 8" contains the
+    // unserved "7 × 8", and the sweep reports a leak that is not there. It was
+    // rare while a block asked exactly three questions and became reliably
+    // reproducible when the count started varying per block — a flake, and it
+    // was never testing the right thing.
+    //
+    // What a leak actually looks like is an extra question object in the
+    // payload, so that is what is checked: every `q` the client can see, and
+    // there must be exactly one, and it must be the one it was served.
+    const questionsIn = (value: unknown): string[] => {
+      if (Array.isArray(value)) return value.flatMap(questionsIn);
+      if (!value || typeof value !== 'object') return [];
+      const out: string[] = [];
+      for (const [key, v] of Object.entries(value)) {
+        if (key === 'q' && typeof v === 'string') out.push(v);
+        else out.push(...questionsIn(v));
       }
-    }
-    expect(sent).not.toContain('answer');
+      return out;
+    };
+
+    expect(questionsIn(spec)).toEqual([secret.ladder[0]![baseRung]!.q]);
+    // No answer, anywhere, under any key — including the served question's own.
+    expect(JSON.stringify(spec)).not.toContain('answer');
   });
 
   it('keeps memory off cash blocks, where the client must know the answer', () => {

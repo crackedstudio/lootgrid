@@ -15,6 +15,7 @@ import { logger } from './logger';
 import * as hints from './hints';
 import * as metrics from './metrics';
 import * as agentDriver from './agents/driver';
+import * as puzzleAuthor from './games/author';
 import * as x402 from './payments/x402';
 import * as ratelimit from './ratelimit';
 import * as referee from './referee';
@@ -82,6 +83,10 @@ funnel.start();
 // AGENTS_ENABLED=true — and until this existed, every other agent module was a
 // capability nothing ever called.
 agentDriver.start();
+// Asks a model to design each block's puzzle, a few at a time, in the
+// background. A no-op unless inference is configured — and every hunt is fully
+// playable without it, on the recipe its own salt implies.
+puzzleAuthor.start();
 
 if (x402.enabled()) {
   // The one thing no test can establish offline: whether the token's real

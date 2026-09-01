@@ -1,6 +1,7 @@
+import { z } from 'zod';
 import { MATH, RACE } from '../config';
 import type { Directive } from '../director/types';
-import { hash, seededStream } from '../hash';
+import { hash, hashInt, seededStream } from '../hash';
 import type { Difficulty } from '../types';
 import type { GameModule, StepResult } from './types';
 
@@ -62,6 +63,51 @@ const LADDER = [4, 6, 12, 20, 30] as const;
 
 /** Prize difficulty → its rung. The block's floor when nothing directs it. */
 const BASE_RUNG: Record<Difficulty, number> = { easy: 1, med: 2, hard: 3 };
+
+/**
+ * Thinking time per question.
+ *
+ * The config's twenty seconds for three questions, restated per question so a
+ * block with more of them gets proportionally longer. `MATH.maxAnswerMs` bounds
+ * a single answer at eight seconds, which this comfortably clears.
+ */
+const MS_PER_QUESTION = MATH.limitMs / MATH.count;
+
+/** How many questions a block may ask. */
+export const MATH_COUNTS = [3, 4, 5] as const;
+
+/**
+ * The shape of one block's round.
+ *
+ * ─────────────────────────── why `baseRung` is NOT here ─────────────────────
+ *
+ * It was, briefly. `baseRung` is the arithmetic range an undirected hunt sits
+ * at, and varying it per block looks like the obvious second axis — until you
+ * read what rungs 1/2/3 are: the pre-Director easy/med/hard ranges, kept
+ * exactly where they were measured. `math.test.ts` asserts that directly, with
+ * the note that "the Director added a rung either side rather than moving the
+ * ground under the three that were measured". A recipe that moved a block's
+ * floor would move that ground for a different reason and leave the same test
+ * with nothing to stand on.
+ *
+ * So the count is the axis, and it is enough to be honest about: math's CONTENT
+ * already varied from the salt — no two blocks ever posed the same sums — and
+ * the constant was only ever the shape of the round.
+ */
+export interface MathRecipe {
+  count: number;
+}
+
+export const mathRecipeSchema = z
+  .object({
+    count: z.number().int().refine(v => (MATH_COUNTS as readonly number[]).includes(v)),
+  })
+  .strict();
+
+/** The block's own round, drawn from its salt. */
+export function mathRecipeFromSalt(salt: string, _difficulty: Difficulty): MathRecipe {
+  return { count: MATH_COUNTS[hashInt(salt, 'math:count') % MATH_COUNTS.length]! };
+}
 
 /**
  * The question actually served for a round.
@@ -169,15 +215,32 @@ export const mathModule: GameModule<MathSpec, MathSecret, MathState, MathInput> 
    * which rung was taken. Salt plus transcript still replays the exact hunt,
    * which is the property a live model must not be allowed to cost.
    */
-  generate(seed, difficulty) {
+  recipe: { schema: mathRecipeSchema, fromSalt: mathRecipeFromSalt },
+
+  generate(seed, difficulty, ctx) {
+    // Math's CONTENT already varied — `seededStream` draws a different ladder
+    // from every salt, so no two blocks ever posed the same sums. What did not
+    // vary was the shape of the round: three questions, twenty seconds, the
+    // difficulty's rung, on every block in the game. That is why it measured at
+    // one distinct spec while `crack` measured at five hundred, and it is the
+    // half a recipe fixes.
+    const parsed = mathRecipeSchema.safeParse(ctx?.recipe);
+    const recipe = parsed.success ? parsed.data : mathRecipeFromSalt(seed, difficulty);
+
     const rnd = seededStream(hash(seed, 'math'));
-    const ladder = Array.from({ length: MATH.count }, () =>
+    const ladder = Array.from({ length: recipe.count }, () =>
       LADDER.map(max => makeQuestion(rnd, max)),
     );
+    // Scaled with the count rather than fixed, so a five-question block gives
+    // the same thinking time per question a three-question one does. A constant
+    // total would make "more questions" mean "less time each", which is a
+    // different and harsher change than the one being made.
+    const limitMs = Math.round(recipe.count * MS_PER_QUESTION);
+
     return {
-      spec: { count: MATH.count, limitMs: MATH.limitMs, baseRung: BASE_RUNG[difficulty] ?? 2 },
+      spec: { count: recipe.count, limitMs, baseRung: BASE_RUNG[difficulty] ?? 2 },
       secret: { ladder },
-      limitMs: MATH.limitMs,
+      limitMs,
     };
   },
 

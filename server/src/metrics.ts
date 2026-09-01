@@ -463,6 +463,22 @@ export const agentInferenceMills = new Counter({
   registers: [registry],
 });
 
+/**
+ * Who chose each block's puzzle.
+ *
+ * The observability half of authored recipes, and the reason the feature is
+ * worth having twice over: `outcome` tells you whether the model is actually
+ * writing puzzles or whether every hunt in the game has quietly been running on
+ * its salt's fallback since the day inference broke. A feature whose failure
+ * mode is "it silently does the old thing" needs a number, or nobody finds out.
+ */
+export const puzzleRecipes = new Counter({
+  name: 'lootgrid_puzzle_recipes_total',
+  help: 'Puzzle recipes resolved, by game and by who authored them',
+  labelNames: ['game', 'outcome'] as const,
+  registers: [registry],
+});
+
 /** Turns refused before a call was made — the budget doing its job. */
 export const agentBudgetRefusals = new Counter({
   name: 'lootgrid_agent_budget_refusals_total',

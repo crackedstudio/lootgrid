@@ -150,6 +150,17 @@ export interface Hunt {
   winnerId: string | null;
   game: BlockGame | null;
   /**
+   * This block's puzzle recipe — the choices that make its puzzle differ from
+   * every other hunt's. See `games/types.ts`.
+   *
+   * Null until an author has written one, which is the ordinary state and not a
+   * gap: every module falls back to the recipe its own salt implies, which is
+   * deterministic, always legal and always winnable.
+   */
+  recipe: unknown;
+  /** Who chose it. Null alongside a null recipe. */
+  recipeAuthor: 'model' | 'salt' | null;
+  /**
    * When this treasure's location stops being private.
    *
    * Before it, the hunt is visible only to players who have personally dug its

@@ -18,6 +18,7 @@ import * as keys from './keys';
 import * as rank from './rank';
 import { stdev } from './games/tap';
 import { inBounds, tileType } from './grid';
+import * as huntRepo from './db/repos/hunts';
 import * as hints from './hints';
 import * as hintStats from './hints/stats';
 import * as market from './market';
@@ -1387,6 +1388,48 @@ export function registerRoutes(app: App): void {
        * replacement, not an equivalent.
        */
       proves: 'one version of events, identical for every racer',
+    };
+  });
+
+  /**
+   * Who designed the puzzles, and who solved them.
+   *
+   * ─────────────────────────── the question this answers ──────────────────────
+   *
+   * An agent that only ever solves puzzles is an agent you can only half
+   * observe: you see it answer, and you never see it compose. Both halves are
+   * recorded — `recipe_author` says who chose each block's puzzle, and the
+   * hunt's own winner says who cracked it — so this is the one place you can
+   * check that the model is working both ends rather than assume it.
+   *
+   * Public, like the rest of `/audit`. It publishes counts and no recipes: a
+   * live block's recipe is its puzzle, and handing that over early would be
+   * handing over the hunt.
+   */
+  app.get('/audit/recipes', async () => {
+    const rows = huntRepo.recipeAuthorship();
+    const total = rows.reduce((sum, row) => sum + row.n, 0);
+    const byAuthor: Record<'model' | 'salt', number> = { model: 0, salt: 0 };
+    for (const row of rows) byAuthor[row.author] += row.n;
+
+    return {
+      /** Blocks whose puzzle somebody chose. The rest run on their salt. */
+      authored: total,
+      byAuthor,
+      /**
+       * Per game, because the answer differs by module and the difference is
+       * the point: `crack`, `sequence` and `memory` have no recipe at all —
+       * they already vary block for block through their own content — so their
+       * absence here is correct rather than a gap.
+       */
+      byGame: rows,
+      /**
+       * Stated rather than implied. A model that stops answering leaves every
+       * hunt playing on the recipe its own salt implies, which is deterministic
+       * and checkable once the salt is revealed — so `salt` climbing is a
+       * degraded author, never a degraded game.
+       */
+      proves: 'which blocks a model designed, and which fell back to their salt',
     };
   });
 

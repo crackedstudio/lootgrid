@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { RACE, SEARCH } from '../config';
 import { hashInt } from '../hash';
 import type { Difficulty } from '../types';
@@ -40,6 +41,84 @@ import type { GameModule, StepResult } from './types';
  * answers instantly, which is the whole difference between an agent zone and
  * the reflex modules a human zone draws from.
  */
+
+/**
+ * The board shapes a block may be played on.
+ *
+ * ─────────────────────────── measured, not chosen ───────────────────────────
+ *
+ * `SEARCH.board` documents why this game does NOT scale with the map: its
+ * probe budgets are an empirical bound taken on 18×12, and "a pursuit problem
+ * does not scale like a search problem". That comment ends by saying the big
+ * board is unmeasured and to revisit only with fresh measurement.
+ *
+ * This is the fresh measurement, and it is in the suite rather than in a
+ * notebook. `search.test.ts` runs a filter-based hunter — the optimal strategy
+ * the module's own doc describes — against EVERY combination below, at every
+ * difficulty, from a hundred starting positions, and asserts it still catches
+ * the quarry inside `SEARCH.probes`. The space stays small and near the tuned
+ * shape for that reason: it is bounded by what has actually been solved, not by
+ * what seems reasonable.
+ *
+ * The area spread is deliberate — 140 to 308 cells against a 216-cell baseline
+ * — because a taller board and a wider one are genuinely different hunts. A
+ * corner is easier to reach on a narrow board, so where you herd it changes.
+ */
+export const BOARD_ROWS = [14, 16, 18, 20, 22] as const;
+export const BOARD_COLS = [10, 12, 14] as const;
+
+/**
+ * The block's base pace for the quarry.
+ *
+ * One is the tuned value. Two is a genuinely different game rather than a
+ * harder one: at two the quarry clears a probe's neighbourhood in a single
+ * move, so cornering it needs a wall two cells away rather than one. Three is
+ * reachable only through the Director (see {@link SEARCH_MAX_STEP}) and is not
+ * offered as a block's resting pace — a hunt that starts at the speed where
+ * readings stop meaning anything has no slower phase to reason from.
+ */
+export const BOARD_STEPS = [1, 2] as const;
+
+/**
+ * The board one block is played on, and how fast its quarry runs.
+ *
+ * This is the whole variety of the game, and it used to be none: `generate`
+ * returned `SEARCH.board` and `SEARCH.probes[difficulty]` verbatim, so all 500
+ * salts in a measurement produced ONE distinct spec. Only the starting cell
+ * moved, and a starting cell is not a different hunt — the same herding line
+ * works from anywhere.
+ */
+export interface SearchRecipe {
+  rows: number;
+  cols: number;
+  step: number;
+}
+
+export const searchRecipeSchema = z
+  .object({
+    // A closed set rather than a range. `min(14).max(22)` would also admit 15,
+    // 17 and 19 — shapes no test has ever solved — and the bound this schema
+    // is enforcing is "measured", not "plausible".
+    rows: z.number().int().refine(v => (BOARD_ROWS as readonly number[]).includes(v)),
+    cols: z.number().int().refine(v => (BOARD_COLS as readonly number[]).includes(v)),
+    step: z.number().int().refine(v => (BOARD_STEPS as readonly number[]).includes(v)),
+  })
+  .strict();
+
+/**
+ * The block's own board, drawn from its salt.
+ *
+ * A separate hash tag per axis. One tag reused would tie the shape to the pace
+ * — every tall board would also be a fast one — and a space with a hidden
+ * correlation in it is smaller than it looks.
+ */
+export function searchRecipeFromSalt(salt: string, _difficulty: Difficulty): SearchRecipe {
+  return {
+    rows: BOARD_ROWS[hashInt(salt, 'search:rows') % BOARD_ROWS.length]!,
+    cols: BOARD_COLS[hashInt(salt, 'search:cols') % BOARD_COLS.length]!,
+    step: BOARD_STEPS[hashInt(salt, 'search:step') % BOARD_STEPS.length]!,
+  };
+}
 
 export interface SearchSpec {
   rows: number;
@@ -170,19 +249,34 @@ export const searchModule: GameModule<SearchSpec, SearchSecret, SearchState, Sea
   type: 'search',
   durable: true,
 
-  generate(seed, difficulty: Difficulty) {
+  recipe: { schema: searchRecipeSchema, fromSalt: searchRecipeFromSalt },
+
+  generate(seed, difficulty: Difficulty, ctx) {
+    // NOT varied by the recipe. The budget is the measured bound — the number
+    // of probes a filter-based hunter is known to need — and a recipe that
+    // moved it would be a recipe that decides whether the block is winnable.
+    // The board is what varies; how many looks you get at it is the config's.
     const probes = SEARCH.probes[difficulty] ?? SEARCH.probes.med;
+
+    // An absent or unparseable recipe is the ordinary case: it is what every
+    // hunt gets before an author has spoken, and while inference is down.
+    const parsed = searchRecipeSchema.safeParse(ctx?.recipe);
+    const board = parsed.success ? parsed.data : searchRecipeFromSalt(seed, difficulty);
+
     return {
       spec: {
-        rows: SEARCH.board.rows,
-        cols: SEARCH.board.cols,
+        rows: board.rows,
+        cols: board.cols,
         probes,
-        step: SEARCH.evaderStep,
+        step: board.step,
         limitMs: SEARCH.limitMs,
       },
       secret: {
-        r: hashInt(seed, 'search:r') % SEARCH.board.rows,
-        c: hashInt(seed, 'search:c') % SEARCH.board.cols,
+        // Drawn against the block's OWN board, not the config's. A start
+        // derived modulo 18 on a 14-row board would sit outside it, and the
+        // hunt would begin with the quarry somewhere the player cannot probe.
+        r: hashInt(seed, 'search:r') % board.rows,
+        c: hashInt(seed, 'search:c') % board.cols,
         seed,
       },
       limitMs: SEARCH.limitMs,

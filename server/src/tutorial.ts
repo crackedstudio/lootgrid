@@ -190,6 +190,11 @@ export function ensureHunt(player: Player, zone: Zone, now = Date.now()): Hunt |
     status: 'live',
     winnerId: null,
     game: null,
+    // A walkthrough hunt always plays The Crack (see `blockGame`), which has no
+    // recipe of its own — its answer IS the treasure cell, so it already varies
+    // block for block.
+    recipe: null,
+    recipeAuthor: null,
     // An owned hunt is scoped by `ownerId`, never by the public clock — it is
     // placed for one player and is already visible to them. Immediately public
     // keeps it out of the discovery path entirely rather than giving the

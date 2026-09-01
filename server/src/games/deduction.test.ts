@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { DEDUCTION, GRID } from '../config';
 import type { HintPayload } from '../hints/types';
-import { candidates, deductionModule as mod } from './deduction';
-import type { DeductionInput, DeductionSecret, DeductionSpec, DeductionState } from './deduction';
+import { candidates, deductionModule as mod, deductionRecipeSchema, EXTRA_KINDS } from './deduction';
+import type {
+  DeductionInput,
+  DeductionRecipe,
+  DeductionSecret,
+  DeductionSpec,
+  DeductionState,
+} from './deduction';
 import type { Timing } from './types';
 
 /**
@@ -16,8 +22,15 @@ import type { Timing } from './types';
 
 const timing = (sinceStart = 1_000): Timing => ({ sinceStart, sinceLast: null, intervals: [] });
 
-function play(difficulty: 'easy' | 'med' | 'hard' = 'med', seed = 'salt-abc') {
-  const game = mod.generate(seed, difficulty);
+/** A block that lends every probe kind, for tests about answers rather than prices. */
+const ALL_EXTRAS: DeductionRecipe = { extras: [...EXTRA_KINDS], dear: [] };
+
+function play(
+  difficulty: 'easy' | 'med' | 'hard' = 'med',
+  seed = 'salt-abc',
+  recipe?: DeductionRecipe,
+) {
+  const game = mod.generate(seed, difficulty, recipe ? { cell: { r: 0, c: 0 }, recipe } : undefined);
   const spec = game.spec as DeductionSpec;
   const secret = game.secret as DeductionSecret;
   const state = mod.init(spec) as DeductionState;
@@ -63,12 +76,18 @@ describe('generation', () => {
     // The spec is the rules; the secret is the game.
     expect(published).not.toContain('"r"');
     expect(published).not.toContain('"c"');
-    expect(JSON.parse(published)).toEqual({
-      rows: GRID.rows,
-      cols: GRID.cols,
-      budget: DEDUCTION.budget.med,
-      limitMs: DEDUCTION.limitMs,
-    });
+    // The rules, all of them, and nothing else. `allowed` and `dear` are rules
+    // — which questions this block answers and what each costs — and a player
+    // who is not told them is playing a price list they can only discover by
+    // being charged for it.
+    const parsed = JSON.parse(published) as Record<string, unknown>;
+    expect(Object.keys(parsed).sort()).toEqual(
+      ['allowed', 'budget', 'cols', 'dear', 'limitMs', 'rows'],
+    );
+    expect(parsed.rows).toBe(GRID.rows);
+    expect(parsed.cols).toBe(GRID.cols);
+    expect(parsed.budget).toBe(DEDUCTION.budget.med);
+    expect(parsed.limitMs).toBe(DEDUCTION.limitMs);
     void r;
     void c;
   });
@@ -150,7 +169,7 @@ describe('answers are truthful and consistent', () => {
     // Hints and probes share one predicate implementation on purpose: a hint
     // bought in the market is a probe someone else paid for, and the two must
     // mean the same thing.
-    const { secret, probe, state } = play();
+    const { secret, probe, state } = play('med', 'salt-abc', ALL_EXTRAS);
     const payload: HintPayload = { kind: 'region', quadrant: 'NW' };
     probe(payload);
 
@@ -162,7 +181,7 @@ describe('answers are truthful and consistent', () => {
   it('never sends the remaining candidate count back', () => {
     // Intersecting your own constraints IS the game. Returning the count would
     // leave only the arithmetic.
-    const { probe } = play();
+    const { probe } = play('med', 'salt-abc', ALL_EXTRAS);
     const result = probe({ kind: 'parity', parity: 'even' });
     expect(result.kind).toBe('progress');
     // A whitelist, not a snapshot: the point is that nothing describing the
@@ -174,6 +193,9 @@ describe('answers are truthful and consistent', () => {
       'used',
       'budgetLeft',
       'nextCost',
+      // The full price list. Like `nextCost` it is about what a question COSTS,
+      // and neither says anything about which cells are still standing.
+      'prices',
     ]);
   });
 
@@ -315,5 +337,169 @@ describe('progress', () => {
     state.answers = [{ payload: { kind: 'distance', r: 0, c: 0, within: 0 }, answer: true }];
     expect(candidates(state.answers)).toHaveLength(1);
     expect(mod.progress(state, spec)).toBe(99);
+  });
+});
+
+describe('the recipe space', () => {
+  /**
+   * Every recipe the schema can produce, all eighty-one of them.
+   *
+   * `extras` is any subset of four kinds and `dear` any subset of that, so the
+   * space is 3⁴ — small enough to enumerate exhaustively, which is the right
+   * way to test a bound. Sampling would leave the one unwinnable corner to
+   * chance, and the corner is the entire point: a schema that accepts a recipe
+   * nobody can solve is a schema that lets an author take a prize off the board.
+   */
+  function everyRecipe(): DeductionRecipe[] {
+    const out: DeductionRecipe[] = [];
+    for (let mask = 0; mask < 1 << EXTRA_KINDS.length; mask++) {
+      const extras = EXTRA_KINDS.filter((_, i) => mask & (1 << i));
+      for (let dmask = 0; dmask < 1 << extras.length; dmask++) {
+        out.push({ extras: [...extras], dear: extras.filter((_, i) => dmask & (1 << i)) });
+      }
+    }
+    return out;
+  }
+
+  it('enumerates exactly the space the schema accepts', () => {
+    const all = everyRecipe();
+    expect(all).toHaveLength(3 ** EXTRA_KINDS.length);
+    for (const recipe of all) expect(deductionRecipeSchema.safeParse(recipe).success).toBe(true);
+  });
+
+  /**
+   * Bisection on each axis, using only the two kinds every block must lend.
+   *
+   * Deliberately ignores `extras` entirely. The guarantee being tested is not
+   * "some recipe is winnable" but "the floor holds no matter what the recipe
+   * withheld", and the floor is the core pair: ⌈log₂ 60⌉ + ⌈log₂ 60⌉ = 12
+   * probes at one apiece, which is exactly `DEDUCTION.budget.hard`. A solver
+   * that reached for `parity` when it happened to be on offer would prove the
+   * bound only for the blocks that offered it.
+   */
+  function bisect(
+    spec: DeductionSpec,
+    secret: DeductionSecret,
+    probe: (p: HintPayload) => { kind: string },
+  ) {
+    const half = (
+      kind: 'rowBand' | 'colBand',
+      len: number,
+      truth: number,
+    ): { rejected: boolean } => {
+      let lo = 0;
+      let hi = len - 1;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        const result = probe({ kind, from: lo, to: mid });
+        // A rejection here means the block refused a kind it promised, or
+        // charged past a budget the bound says it cannot reach. Either way the
+        // floor is broken and the test must fail loudly rather than loop.
+        if (result.kind !== 'progress') return { rejected: true };
+        if (truth >= lo && truth <= mid) hi = mid;
+        else lo = mid + 1;
+      }
+      return { rejected: false };
+    };
+
+    const rows = half('rowBand', spec.rows, secret.r);
+    if (rows.rejected) return { rejected: true };
+    return half('colBand', spec.cols, secret.c);
+  }
+
+  it('is solvable on every recipe in the space, at the hardest budget', () => {
+    // Hard, because it is the only difficulty with no slack: the budget is the
+    // information-theoretic floor exactly. Easy and med hold a fortiori.
+    for (const recipe of everyRecipe()) {
+      const { spec, secret, state, probe, commit } = play('hard', 'salt-space', recipe);
+
+      expect(bisect(spec, secret, probe as (p: HintPayload) => { kind: string }).rejected).toBe(
+        false,
+      );
+      // The module's own accounting, not the solver's — this is the assertion
+      // the pre-existing winnability tests cannot make, because they count
+      // probes locally and never pay the block's prices.
+      expect(state.used).toBeLessThanOrEqual(spec.budget);
+      expect(candidates(state.answers)).toHaveLength(1);
+      expect(commit(secret.r, secret.c)).toEqual({ kind: 'complete' });
+    }
+  });
+
+  it('never lends less than the core pair, and never prices it dear', () => {
+    for (const recipe of everyRecipe()) {
+      const { spec } = play('hard', 'salt-core', recipe);
+      // The two rules the floor rests on. `dear` cannot name a core kind
+      // because the schema has no way to say one — asserted here as behaviour
+      // rather than trusted as a type, since the spec is what `step` reads.
+      expect(spec.allowed).toEqual(expect.arrayContaining(['rowBand', 'colBand']));
+      expect(spec.dear).not.toContain('rowBand');
+      expect(spec.dear).not.toContain('colBand');
+    }
+  });
+
+  it('refuses a probe of a kind this block does not lend', () => {
+    // Without this the `allowed` list is advice, every block answers all six
+    // kinds, and the recipe varies the description of the puzzle rather than
+    // the puzzle.
+    const { probe } = play('med', 'salt-abc', { extras: ['parity'], dear: [] });
+    expect(probe({ kind: 'region', quadrant: 'NW' })).toEqual({
+      kind: 'reject',
+      reason: 'kind_not_allowed',
+      fatal: true,
+    });
+  });
+
+  it('charges each kind the price it published', () => {
+    const { spec, state, probe } = play('med', 'salt-abc', {
+      extras: ['parity', 'distance'],
+      dear: ['distance'],
+    });
+    expect(spec.dear).toEqual(['distance']);
+
+    probe({ kind: 'parity', parity: 'even' });
+    expect(state.used).toBe(1);
+
+    // Two, because this block priced rings dear — and the player was told so in
+    // `publicSpec` before they spent anything.
+    probe({ kind: 'distance', r: 10, c: 10, within: 4 });
+    expect(state.used).toBe(3);
+  });
+
+  it('quotes the whole price list before the first probe', () => {
+    // `init` has no previous round to have published one, so it quotes its own.
+    // A block whose first probe is charged a price nobody stated is the trap
+    // the published list exists to prevent.
+    const { state } = play('med', 'salt-abc', { extras: ['distance'], dear: ['distance'] });
+    expect(state.nextPrices).toEqual({ rowBand: 1, colBand: 1, distance: 2 });
+  });
+
+  it('gives blocks genuinely different tools and prices', () => {
+    // The measurement that started this. `deduction` produced ONE distinct spec
+    // across 500 salts per difficulty — every hunt in the game posed a
+    // byte-identical question and only the answer moved.
+    const specs = new Set<string>();
+    for (let i = 0; i < 500; i++) {
+      specs.add(JSON.stringify(mod.generate(`variety-${i}`, 'med').spec));
+    }
+    expect(specs.size).toBeGreaterThan(20);
+  });
+
+  it('rejects what an author must not be able to say', () => {
+    const bad: unknown[] = [
+      // A price list for a tool the block never lent you.
+      { extras: ['parity'], dear: ['distance'] },
+      // The same probe advertised twice.
+      { extras: ['parity', 'parity'], dear: [] },
+      // Not in the vocabulary at all.
+      { extras: ['rowBand'], dear: [] },
+      { extras: ['freeText'], dear: [] },
+      // Strict: an extra field is a rejection, not a shrug. A recipe accepted
+      // minus-the-key is an author learning it can smuggle one past the schema.
+      { extras: [], dear: [], budget: 99 },
+      { extras: [], dear: [], limitMs: 1 },
+    ];
+    for (const value of bad) {
+      expect(deductionRecipeSchema.safeParse(value).success, JSON.stringify(value)).toBe(false);
+    }
   });
 });

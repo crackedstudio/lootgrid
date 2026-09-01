@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { MATH } from '../config';
 import type { Directive } from '../director/types';
-import { mathModule, windowFor, type MathSecret, type MathSpec, type MathState } from './math';
+import {
+  mathModule,
+  mathRecipeSchema,
+  MATH_COUNTS,
+  windowFor,
+  type MathSecret,
+  type MathSpec,
+  type MathState,
+} from './math';
 import type { Timing } from './types';
 
 function step(
@@ -43,8 +51,11 @@ describe('math module', () => {
     expect(other.secret.ladder).not.toEqual(secret.ladder);
   });
 
-  it('generates the configured number of questions', () => {
-    expect(secret.ladder).toHaveLength(MATH.count);
+  it('generates the block\u2019s own number of questions', () => {
+    // The block's, not the config's: `count` varies per block now, and the
+    // ladder must be as long as the round the spec advertises.
+    expect(secret.ladder).toHaveLength(spec.count);
+    expect(MATH_COUNTS).toContain(spec.count);
   });
 
   it('always includes the answer among four distinct options, at every rung', () => {
@@ -105,7 +116,7 @@ describe('math module', () => {
     const state = mathModule.init(spec);
     let t = 0;
     let result;
-    for (let i = 0; i < MATH.count; i++) {
+    for (let i = 0; i < spec.count; i++) {
       t += 600;
       result = step(spec, secret, state, t, served(secret, spec, state).answer);
     }
@@ -286,5 +297,66 @@ describe('a directed round', () => {
     const legacy = { questions: base } as MathSecret;
     const state = mathModule.init(spec);
     expect(step(spec, legacy, state, 600, base[0]!.answer)).toMatchObject({ kind: 'progress' });
+  });
+});
+
+
+describe('the recipe space', () => {
+  it('gives blocks genuinely different rounds', () => {
+    // Modest on purpose, and honest about why. Math's CONTENT already varied —
+    // `seededStream` draws a different ladder from every salt, so no two blocks
+    // ever posed the same sums. The constant was the shape of the round: three
+    // questions and twenty seconds on every block in the game, which is what
+    // the one-distinct-spec measurement was actually counting.
+    const specs = new Set<string>();
+    for (let i = 0; i < 500; i++) {
+      specs.add(JSON.stringify(mathModule.generate(`variety-${i}`, 'med').spec));
+    }
+    expect(specs.size).toBe(MATH_COUNTS.length);
+  });
+
+  it('keeps the thinking time per question constant', () => {
+    // A fixed total would make "more questions" quietly mean "less time each",
+    // which is a harsher change than the one being made — and would put a
+    // five-question block under `MATH.maxAnswerMs` for a single answer.
+    for (const count of MATH_COUNTS) {
+      const { spec } = mathModule.generate('salt-x', 'med', {
+        cell: { r: 0, c: 0 },
+        recipe: { count },
+      });
+      if (count === MATH.count) expect(spec.limitMs).toBe(MATH.limitMs);
+      expect(spec.count).toBe(count);
+      // Within a millisecond of the config's pace — `limitMs` is rounded to a
+      // whole millisecond, so three questions still come to exactly the
+      // configured twenty seconds and the others land on the same tempo.
+      expect(Math.abs(spec.limitMs / spec.count - MATH.limitMs / MATH.count)).toBeLessThan(1);
+    }
+  });
+
+  it('never moves the ground under the measured rungs', () => {
+    // Rungs 1/2/3 are the pre-Director easy/med/hard ranges. A recipe has no
+    // way to name a rung, which is why `baseRung` is not a field: the schema
+    // being unable to say it is a stronger guarantee than a check that it did
+    // not.
+    for (let i = 0; i < 200; i++) {
+      expect(mathModule.generate(`salt-${i}`, 'easy').spec.baseRung).toBe(1);
+      expect(mathModule.generate(`salt-${i}`, 'med').spec.baseRung).toBe(2);
+      expect(mathModule.generate(`salt-${i}`, 'hard').spec.baseRung).toBe(3);
+    }
+  });
+
+  it('rejects what an author must not be able to say', () => {
+    const bad: unknown[] = [
+      { count: 2 },
+      { count: 6 },
+      { count: 3.5 },
+      // Strict. The rung is the measured ground and the clock is derived from
+      // the count — neither is an author's to state.
+      { count: 3, baseRung: 4 },
+      { count: 3, limitMs: 1 },
+    ];
+    for (const value of bad) {
+      expect(mathRecipeSchema.safeParse(value).success, JSON.stringify(value)).toBe(false);
+    }
   });
 });

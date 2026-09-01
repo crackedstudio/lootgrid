@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import { RACE, TAP } from '../config';
+import { hashInt } from '../hash';
 import type { Difficulty } from '../types';
 import type { GameModule, StepResult } from './types';
 
@@ -32,14 +34,94 @@ const TARGETS: Record<Difficulty, number> = {
   hard: 20,
 };
 
+/** Clocks a block may run on. */
+export const TAP_LIMITS = [5_000, 6_000, 7_000, 8_000] as const;
+
+/** How far a block's target may sit from its difficulty's. */
+export const TAP_TARGET_SPREAD = 4;
+
+/**
+ * The fastest a block may ever demand, in taps per second.
+ *
+ * `hard` already ships 20 taps in 6 seconds, so this is not a new bar — it is
+ * the existing one, written down so a recipe cannot quietly exceed it. Above it
+ * the module stops measuring whether somebody tapped and starts measuring their
+ * phone, and `TAP.minIntervalMs` is only a generous floor while the pace it is
+ * bounding is reachable.
+ */
+export const MAX_TAP_RATE = TARGETS.hard / TAP.limitMs;
+
+/**
+ * The target and the clock, for one block.
+ *
+ * `generate` used to hand back `TARGETS[difficulty]` and `TAP.limitMs` with no
+ * seed involved at all, which is why `tap` measured at ONE distinct spec across
+ * 500 salts. Every tap block in the game was the same block.
+ */
+export interface TapRecipe {
+  target: number;
+  limitMs: number;
+}
+
+export const tapRecipeSchema = z
+  .object({
+    target: z.number().int().min(TARGETS.easy - TAP_TARGET_SPREAD).max(TARGETS.hard + TAP_TARGET_SPREAD),
+    limitMs: z.number().int().refine(v => (TAP_LIMITS as readonly number[]).includes(v)),
+  })
+  .strict();
+
+/** Whether a block is tappable by a human rather than only by a script. */
+export function isTappable(recipe: TapRecipe): boolean {
+  return recipe.target / recipe.limitMs <= MAX_TAP_RATE;
+}
+
+/**
+ * The block's own target and clock, drawn from its salt.
+ *
+ * The clock is picked first and the target drawn from what that clock can
+ * actually carry, rather than drawn freely and clamped. Clamping would pile
+ * every fast block onto the same maximum target and the space would be
+ * narrower than it reads.
+ */
+export function tapRecipeFromSalt(salt: string, difficulty: Difficulty): TapRecipe {
+  const limitMs = TAP_LIMITS[hashInt(salt, 'tap:limit') % TAP_LIMITS.length]!;
+  const base = TARGETS[difficulty] ?? TAP.target;
+
+  const options: number[] = [];
+  for (let t = base - TAP_TARGET_SPREAD; t <= base + TAP_TARGET_SPREAD; t++) {
+    // Never below the distinct-interval floor: a target of two cannot produce
+    // the three distinct intervals the bot check requires, so the block would
+    // be unwinnable by anybody, human or otherwise.
+    if (t <= TAP.minDistinctIntervals) continue;
+    if (isTappable({ target: t, limitMs })) options.push(t);
+  }
+  const target = options[hashInt(salt, 'tap:target') % options.length] ?? base;
+  return { target, limitMs };
+}
+
 export const tapModule: GameModule<TapSpec, TapSecret, TapState, TapInput> = {
   type: 'tap',
 
-  generate(_seed, difficulty) {
-    // Tap has no randomised content — every player racing the block gets the same
-    // target and the same clock, which is exactly what makes it a fair race.
-    const target = TARGETS[difficulty] ?? TAP.target;
-    return { spec: { target, limitMs: TAP.limitMs }, secret: null, limitMs: TAP.limitMs };
+  recipe: { schema: tapRecipeSchema, fromSalt: tapRecipeFromSalt },
+
+  generate(seed, difficulty, ctx) {
+    // Tap still has no randomised CONTENT — every player racing this block gets
+    // the same target and the same clock, which is what makes it a fair race.
+    // What differs now is one block from another, which that fairness never had
+    // anything to say about: it is a statement about the racers on a block, and
+    // every tap block in the game having the same target was a separate fact
+    // that nothing required.
+    const parsed = tapRecipeSchema.safeParse(ctx?.recipe);
+    const recipe =
+      parsed.success && isTappable(parsed.data)
+        ? parsed.data
+        : tapRecipeFromSalt(seed, difficulty);
+
+    return {
+      spec: { target: recipe.target, limitMs: recipe.limitMs },
+      secret: null,
+      limitMs: recipe.limitMs,
+    };
   },
 
   publicSpec(spec) {

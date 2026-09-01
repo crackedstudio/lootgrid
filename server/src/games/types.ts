@@ -1,3 +1,4 @@
+import type { z } from 'zod';
 import type { Directive } from '../director/types';
 import type { Difficulty, GameType } from '../types';
 
@@ -44,6 +45,75 @@ export type StepResult =
 export interface GenerateContext {
   /** Where the treasure actually is. */
   cell: { r: number; c: number };
+  /**
+   * This block's puzzle recipe — the choices that make one hunt's puzzle
+   * different from another's. See {@link RecipeSpec}.
+   *
+   * Optional, and a module that declares a recipe must still work without one:
+   * `generate` falls back to {@link RecipeSpec.fromSalt}, which is what it gets
+   * on every hunt created before the author ran, and every hunt whose author
+   * was unavailable. Absent is a normal state, never an error.
+   */
+  recipe?: unknown;
+}
+
+/**
+ * The per-hunt puzzle choices a module exposes.
+ *
+ * ─────────────────────────── why this type exists ───────────────────────────
+ *
+ * `generate` was deterministic in the salt and produced a spec with no degrees
+ * of freedom, so every hunt of a given difficulty posed a byte-identical
+ * puzzle: measured at ONE distinct spec across 500 salts for `deduction` and
+ * `search`, and five for `negotiation`. Only the answer moved. An agent playing
+ * an agent zone was re-solving one board with the treasure shuffled, which is
+ * not a reasoning game — it is a lookup with extra steps.
+ *
+ * A recipe is the space the puzzle may vary in. Two things fill it:
+ *
+ *   1. {@link fromSalt} — deterministic, derived from the block's salt, and so
+ *      fixed before anyone enters and checkable once the salt is revealed. This
+ *      is the floor, and it is always available.
+ *   2. An author (see `games/author.ts`) — a model choosing within the same
+ *      space, when one is reachable. Its output goes through {@link schema} and
+ *      nothing else.
+ *
+ * ─────────────────────────── the same containment as the Director ───────────
+ *
+ * A recipe shapes a contest with money attached, so it is written on the
+ * assumption that a model will eventually be talked into saying something it
+ * should not. The containment is `director/types.ts`'s, unchanged: **a closed
+ * vocabulary, a strict schema, and no free-text field, ever.** A fully hijacked
+ * author can emit a legal recipe — a different board, a different price list —
+ * and that is the ceiling of the damage. It cannot emit an instruction, a URL
+ * or an address, because none of those parse.
+ *
+ * ─────────────────────────── winnable is not optional ───────────────────────
+ *
+ * A schema that accepts an unwinnable puzzle is a schema that lets an author
+ * take a prize off the board. Every module's schema therefore bounds the space
+ * so that the guarantee its config documents still holds at every point in it,
+ * and each module's tests assert that by SOLVING every recipe the space can
+ * produce rather than by trusting the bound. See `deduction.test.ts` and
+ * `search.test.ts`.
+ */
+export interface RecipeSpec<R = unknown> {
+  /**
+   * What an author may say. Strict: extra fields are a rejection rather than a
+   * shrug, for the reason `directiveSchema` is strict — a recipe accepted
+   * minus-the-extra-key is a model discovering it can smuggle a field past the
+   * schema into whatever reads the object later.
+   */
+  schema: z.ZodType<R>;
+  /**
+   * The block's own recipe, drawn from its salt.
+   *
+   * Always legal, always winnable, and always available — this is what runs
+   * when no author has spoken, which includes every hunt created while
+   * inference is down. It is also the reference the authored recipe is
+   * validated against, in the sense that both must satisfy the same schema.
+   */
+  fromSalt(salt: string, difficulty: Difficulty): R;
 }
 
 export interface GeneratedGame<Spec, Secret> {
@@ -77,8 +147,25 @@ export interface StepContext<Spec, Secret, State> {
  * know nothing about any specific game, so adding Math Dash / Sequence / Memory
  * later means writing a module and registering it — nothing else moves.
  */
-export interface GameModule<Spec = unknown, Secret = unknown, State = unknown, Input = unknown> {
+export interface GameModule<
+  Spec = unknown,
+  Secret = unknown,
+  State = unknown,
+  Input = unknown,
+  Recipe = unknown,
+> {
   type: GameType;
+
+  /**
+   * The per-hunt variety this module offers, or absent for a module that poses
+   * the same puzzle every time.
+   *
+   * Absent is a real answer rather than a gap to fill later: `crack` already
+   * varies 500-for-500 from the salt because its answer IS the treasure cell,
+   * and `memory` and `sequence` vary through their own content. A recipe is for
+   * modules whose spec was otherwise a constant.
+   */
+  recipe?: RecipeSpec<Recipe>;
 
   /**
    * Whether an attempt at this game must survive a process restart.
@@ -138,4 +225,4 @@ export interface GameModule<Spec = unknown, Secret = unknown, State = unknown, I
   progress(state: State, spec: Spec): number;
 }
 
-export type AnyGameModule = GameModule<any, any, any, any>;
+export type AnyGameModule = GameModule<any, any, any, any, any>;

@@ -53,7 +53,14 @@ const ALL: Directive[] = [1, 2, 3, 4, 5].flatMap(d =>
 
 describe('deduction takes direction by price, never by lying', () => {
   const play = () => {
-    const game = deductionModule.generate('salt-ded', 'med');
+    // A block that lends `parity` at the ordinary price, so everything below
+    // measures the DIRECTIVE's effect on cost and nothing else. Left to the
+    // salt, whether this block answers parity at all — and what it charges —
+    // would vary per block and these tests would be reading the recipe.
+    const game = deductionModule.generate('salt-ded', 'med', {
+      cell: { r: 0, c: 0 },
+      recipe: { extras: ['parity'], dear: [] },
+    });
     return {
       spec: game.spec as DeductionSpec,
       secret: game.secret as DeductionSecret,
